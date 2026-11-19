@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # resolution exists, so it stays off until then and avoids a needless portal step.
     enable_members_intent: bool = Field(default=False)
 
+    # How long a report may wait for follow-up photos before being warned about.
+    # Operator setting on purpose: it is a deployment-tuning value, not a per-channel
+    # admin knob, so it lives in .env rather than in the database.
+    report_group_window_seconds: float = Field(default=120.0)
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")

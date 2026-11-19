@@ -140,7 +140,21 @@ def training_report_schema() -> FormSchemaDef:
                 path="2",
                 type="enum",
                 required=True,
-                options=["SOB", "ARC", "INF", "INF+", "ENG", "ENG+", "MED", "SNP", "RC"],
+                # The full set of valid qualifications. Admin-editable: add or remove
+                # entries in forms/ch-<id>.json and re-import.
+                options=[
+                    "SOB",
+                    "ARC",
+                    "INF",
+                    "INF+",
+                    "ENG",
+                    "ENG+",
+                    "MED",
+                    "SNP",
+                    "RC",
+                    "REAPER",
+                    "666TH",
+                ],
                 hint={
                     "ru": "Укажите название квалификации (например, INF).",
                     "en": "Provide the qualification name (for example, INF).",

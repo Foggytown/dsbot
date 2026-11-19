@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
+from datetime import timedelta
 from typing import Any
 
 import discord
@@ -47,7 +48,11 @@ class Bot(discord.Client):
         self.db = Database(settings)
         self.reply: ReplySink = reply or DiscordReplySink(self)
         self.ingestor = Ingestor(self.db, self.bus)
-        self.reports = ReportService(self.db, self.reply)
+        self.reports = ReportService(
+            self.db,
+            self.reply,
+            group_window=timedelta(seconds=settings.report_group_window_seconds),
+        )
         self.retry = RetryScheduler(self.reports)
         self.reports.attach_retry(self.retry)
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -58,11 +63,38 @@ class Bot(discord.Client):
         await self.db.create_all()
         self.bus.subscribe("message_created", self._on_message_created)
         self.bus.subscribe("message_edited", self._on_message_edited)
+
+        bindings = await self._load_bindings()
+        if not bindings:
+            # Silence with no explanation is the worst failure mode: the bot is running,
+            # the user sees nothing, and there is no clue why. Say it plainly.
+            log.error(
+                "no_channel_bindings",
+                hint=(
+                    "No channel is bound, so every message is ignored. "
+                    "Run: uv run dsbot bind --guild <id> --channel <id>"
+                ),
+            )
+        else:
+            for binding in bindings:
+                log.info(
+                    "binding_active",
+                    channel_id=binding.channel_id,
+                    guild_id=binding.guild_id,
+                    module=binding.module_key,
+                )
+
         log.info(
             "bot_ready",
             database=self.settings.database_url,
             intents=str(self.intents),
+            bindings=len(bindings),
+            group_window_seconds=self.settings.report_group_window_seconds,
         )
+
+    async def _load_bindings(self) -> list[Any]:
+        async with self.db.session() as session:
+            return list(await repos.list_enabled_bindings(session))
 
     async def close(self) -> None:
         await self.retry.aclose()
@@ -81,8 +113,10 @@ class Bot(discord.Client):
         if message.author.bot:
             return
         if message.guild is None:
+            log.debug("dm_ignored", user_id=message.author.id)
             return
         if not await self._is_bound(message.channel.id):
+            log.debug("unbound_channel_ignored", channel_id=message.channel.id)
             return
         await self.ingestor.handle(sink.message_created(message))
 

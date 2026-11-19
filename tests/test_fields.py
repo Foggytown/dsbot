@@ -30,10 +30,46 @@ def test_formation_with_plain_nrp() -> None:
     assert result.value["idn_number"] == "0016"
 
 
-def test_idn_is_zero_padded_for_comparison() -> None:
+def test_idn_is_not_zero_padded() -> None:
+    """An IDN is reproduced exactly as written, never padded."""
     result = parse_formation_idn("ARC | 16", "formation_idn")
     assert result.value is not None
+    assert result.value["idn_number"] == "16"
+    assert any(i.code == "idn_bad_length" for i in result.issues)
+
+
+def test_three_digit_idn_is_rejected() -> None:
+    """`001` must NOT silently become `0001`."""
+    result = parse_formation_idn("SOB | 001", "formation_idn")
+    assert result.value is not None
+    assert result.value["idn_number"] == "001"
+    issue = next(i for i in result.issues if i.code == "idn_bad_length")
+    assert issue.severity == "error"
+
+
+def test_five_digit_idn_is_rejected() -> None:
+    result = parse_formation_idn("SOB | 00016", "formation_idn")
+    assert any(i.code == "idn_bad_length" for i in result.issues)
+
+
+def test_six_digit_idn_is_accepted() -> None:
+    result = parse_formation_idn("SOB | 000016", "formation_idn")
+    assert result.value is not None
+    assert result.value["idn_number"] == "000016"
+    assert not result.issues
+
+
+def test_lore_pair_keeps_exact_number() -> None:
+    result = parse_formation_idn("SOB | 01/0016", "formation_idn")
+    assert result.value is not None
+    assert result.value["sub_unit"] == "01"
     assert result.value["idn_number"] == "0016"
+    assert not result.issues
+
+
+def test_lore_pair_with_bad_length_is_rejected() -> None:
+    result = parse_formation_idn("SOB | 01/016", "formation_idn")
+    assert any(i.code == "idn_bad_length" for i in result.issues)
 
 
 def test_idn_collision_is_not_an_error() -> None:

@@ -44,7 +44,10 @@ More than 10,000 characters share a 4-digit IDN space. Collisions are **expected
 data**. Never add `UNIQUE` on an IDN column, and never reject a report because two
 characters share a number. `idn_text` is preserved verbatim alongside the parsed parts.
 
-- `idn_kind = nrp` -> plain 4-digit server code, e.g. `0016`
+An IDN is **exactly 4 digits, or 6+**. Never zero-pad: `001` is a typo and must be
+rejected with `idn_bad_length`, not silently turned into `0001`.
+
+- `idn_kind = nrp` -> plain server code, e.g. `0016`
 - `idn_kind = rp_lore` -> lore IDN, possibly `01/0016` (sub-unit + number)
 
 A Discord user may have several characters. Which one an instructor was acting as is

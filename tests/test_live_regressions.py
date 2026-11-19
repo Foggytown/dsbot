@@ -145,12 +145,14 @@ def test_unknown_qualification_is_an_error() -> None:
     assert not result.is_valid
 
 
-def test_partial_idn_is_still_parsed() -> None:
+def test_partial_idn_is_still_parsed_but_flagged() -> None:
     result = parse_report(list(DEFAULT_SCHEMAS), group(BAD_ENUM, 0))
     formation = result.field_value("formation_idn")
     assert formation is not None
     assert formation["formation"] == "SOB"
-    assert formation["idn_number"] == "0001"
+    # Extracted verbatim, and flagged as the wrong length rather than padded.
+    assert formation["idn_number"] == "001"
+    assert any(i.code == "idn_bad_length" for i in result.issues)
 
 
 # --- bug 4: a deferral that never resolves --------------------------------
@@ -209,7 +211,7 @@ async def test_grace_window_runs_from_the_report_not_the_latest_message(
 
 async def test_pending_lookup_finds_the_waiting_report(db: Database) -> None:
     service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
-    await post(db, message_id=1, content=REAL_REPORT, minutes=-2)
+    await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
     # The report must have been processed (deferred) before a photo can complete it.
     first = await service.process_message(CHANNEL, AUTHOR, 1)
     assert first is not None and first.action == "deferred"
@@ -225,7 +227,7 @@ async def test_photo_completes_the_report_through_pending_path(db: Database) -> 
     service = ReportService(db, sink, ImmediateRetryScheduler())
 
     # 1. report arrives alone and is deferred
-    await post(db, message_id=1, content=REAL_REPORT, minutes=-2)
+    await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
     first = await service.process_message(CHANNEL, AUTHOR, 1)
     assert first is not None and first.action == "deferred"
 
@@ -245,7 +247,7 @@ async def test_photo_already_present_makes_the_report_valid_immediately(
 ) -> None:
     """If the photo lands before the bot catches up, no deferral is needed."""
     service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
-    await post(db, message_id=1, content=REAL_REPORT, minutes=-2)
+    await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
     await post(db, message_id=2, content="", attachments=2, minutes=-1)
 
     result = await service.process_message(CHANNEL, AUTHOR, 1)

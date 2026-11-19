@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final
 
 from dsbot.modules.reports.text import extract_urls, is_blank_value, normalize, strip_emphasis
 
@@ -20,8 +20,17 @@ DISCORD_LINK_RE = re.compile(
 _IDN_SPLIT_RE = re.compile(
     r"^\s*(?P<formation>[A-Za-zА-Яа-я0-9+_.\-]{1,24})\s*[|/]\s*(?P<rest>.+?)\s*$"
 )
-_PAIR_RE = re.compile(r"^(?P<a>\d{1,2})\s*/\s*(?P<b>\d{1,4})$")
-_NUMBER_RE = re.compile(r"^(?P<n>\d{1,6})$")
+_PAIR_RE = re.compile(r"^(?P<a>\d{1,2})\s*/\s*(?P<b>\d{2,})$")
+_NUMBER_RE = re.compile(r"^(?P<n>\d{2,})$")
+
+# An IDN is exactly 4 digits, or 6 or more. Three and five digit values are rejected:
+# they are almost always a typo or a truncated paste, and quota counting depends on the
+# identifier being right.
+IDN_VALID_LENGTHS: Final = frozenset({4}) | frozenset(range(6, 32))
+
+
+def _idn_length_ok(value: str) -> bool:
+    return len(value) in IDN_VALID_LENGTHS
 
 
 @dataclass(slots=True)
@@ -87,14 +96,34 @@ def parse_formation_idn(raw: str, field_id: str) -> FieldResult:
 
     pair = _PAIR_RE.match(rest)
     if pair:
+        number = pair.group("b")
+        if not _idn_length_ok(number):
+            issues.append(
+                FieldIssue(
+                    code="idn_bad_length",
+                    field_id=field_id,
+                    detail={"raw": number, "expected": "4 digits, or 6+"},
+                )
+            )
         value["idn_kind"] = "rp_lore"
         value["sub_unit"] = pair.group("a").zfill(2)
-        value["idn_number"] = pair.group("b").zfill(4)
+        # Never pad: an IDN is reproduced exactly as written. "001" stays "001" and is
+        # rejected as a bad length rather than silently becoming "0001".
+        value["idn_number"] = number
         return FieldResult(value=value, issues=issues, present=True)
 
     number = _NUMBER_RE.match(rest)
     if number:
-        value["idn_number"] = number.group("n").zfill(4)
+        digits = number.group("n")
+        if not _idn_length_ok(digits):
+            issues.append(
+                FieldIssue(
+                    code="idn_bad_length",
+                    field_id=field_id,
+                    detail={"raw": digits, "expected": "4 digits, or 6+"},
+                )
+            )
+        value["idn_number"] = digits
         return FieldResult(value=value, issues=issues, present=True)
 
     # Anything else is preserved verbatim so nothing is lost.

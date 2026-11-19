@@ -52,7 +52,7 @@ class RetryScheduler(Protocol):
 log = structlog.get_logger(__name__)
 
 # How long a report may wait for follow-up attachments before being warned about.
-DEFAULT_GROUP_WINDOW = timedelta(minutes=5)
+DEFAULT_GROUP_WINDOW = timedelta(minutes=2)
 
 
 @dataclass(slots=True)
@@ -86,10 +86,14 @@ class ReportService:
         db: Database,
         reply: ReplySink | None = None,
         retry: RetryScheduler | None = None,
+        *,
+        group_window: timedelta | None = None,
     ) -> None:
         self._db = db
         self._reply = reply
         self._retry = retry
+        # Operator-level override; per-channel config can still differ.
+        self._group_window = group_window
 
     def attach_retry(self, retry: RetryScheduler) -> None:
         """Late binding, because the scheduler needs the service to exist first."""
@@ -105,14 +109,16 @@ class ReportService:
             rows = await repos.get_schemas_for_binding(session, binding.id)
             schemas = [from_definition(row.definition) for row in rows]
             config = binding.config or {}
-            window_minutes = int(config.get("group_window_minutes", 5))
+            window = self._group_window
+            if window is None:
+                window = timedelta(minutes=float(config.get("group_window_minutes", 2)))
             return ChannelContext(
                 binding_id=binding.id,
                 channel_id=channel_id,
                 guild_id=binding.guild_id,
                 locale=_locale(binding.locale),
                 schemas=schemas,
-                group_window=timedelta(minutes=window_minutes),
+                group_window=window,
             )
 
     # --- processing --------------------------------------------------------

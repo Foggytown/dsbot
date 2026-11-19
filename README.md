@@ -132,6 +132,24 @@ Not built yet: verdicts from reactions, weekly quota evaluation, dashboards.
 `--dry-run` is the safe way to watch parsing decisions: it logs
 `report_processed` with `matched`, `valid`, `action`, and issue codes without posting.
 
+## Config: operator vs admin
+
+Two different levels, on purpose:
+
+| Level | Where | Changed by | Examples |
+|---|---|---|---|
+| Operator | `.env` | you, with a restart | grace window seconds, DB url, log level |
+| Admin | database / form JSON | Discord admins | form fields, enum options, required-ness, quotas, rank ladders, message text |
+
+The grace window (`DSBOT_REPORT_GROUP_WINDOW_SECONDS`) is **operator-only** by design:
+it is deployment tuning, not per-channel policy.
+
+## IDN rules
+
+An IDN is **exactly 4 digits, or 6 or more**. Values are stored verbatim and never
+zero-padded, so `001` stays `001` and is rejected as `idn_bad_length` rather than
+silently becoming `0001`. Lore IDNs use `sub_unit/number`, e.g. `01/0016`.
+
 ## Development
 
 ```powershell

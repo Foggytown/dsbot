@@ -65,6 +65,10 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
         "ru": "- Не удалось разобрать результат теста.",
         "en": "- Could not parse the test result.",
     },
+    "idn_bad_length": {
+        "ru": "- IDN «{detail_raw}» неверной длины: нужно 4 цифры или 6 и больше.",
+        "en": "- IDN '{detail_raw}' has the wrong length: 4 digits, or 6 or more.",
+    },
 }
 
 # Shown when a report validates after previously being warned.
