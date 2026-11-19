@@ -9,9 +9,7 @@ from __future__ import annotations
 import structlog
 
 from dsbot.core.bus import EventBus
-from dsbot.core.events import (
-    Event,
-)
+from dsbot.core.events import Event, MessageCreated, MessageEdited
 from dsbot.storage import repos
 from dsbot.storage.db import Database
 
@@ -24,13 +22,22 @@ class Ingestor:
         self._bus = bus
 
     async def handle(self, event: Event, *, source: str = "gateway") -> None:
-        """Store and forward one event. Safe to call twice with the same event."""
+        """Store and forward one event. Safe to call twice with the same event.
+
+        Archiving the message happens here, in capture, not in a module. Live ingest and
+        backfill then converge on the same stored rows, and a module only ever reads.
+        """
         new = await self._db.run_write(
             lambda session: repos.append_raw_event(session, event, source=source)
         )
         if not new:
             log.debug("duplicate_event_skipped", kind=event.kind, id=event.external_id)
             return
+
+        match event:
+            case MessageCreated(message=snapshot) | MessageEdited(message=snapshot):
+                await self.ingest_message(snapshot)
+
         await self._bus.publish(event)
 
     async def ingest_message(self, snapshot: object) -> None:

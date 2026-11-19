@@ -241,32 +241,180 @@ def analyze(
     write_report(result, sys.stdout)
 
 
-@app.command("parse")
-def parse_text(
-    file: Annotated[Path, typer.Option("--file", "-f", help="Text file with a report")],
+@app.command("run")
+def run(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Parse and log but never post to Discord")
+    ] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Parse a report from a local file and print the result. Offline, no Discord."""
+    """Start the live bot. Ctrl+C to stop."""
+    settings = _settings(verbose)
+
+    from dsbot.bot import Bot, run_bot
+    from dsbot.discord.reply import RecordingReplySink
+
+    async def main() -> None:
+        if dry_run:
+            bot = Bot(settings, reply=RecordingReplySink())
+        else:
+            await run_bot(settings)
+            return
+        # Dry run: still connect and ingest, but never touch the channel.
+        try:
+            await bot.start(settings.discord_token)
+        finally:
+            await bot.close()
+
+    asyncio.run(main())
+
+
+@app.command("form-export")
+def form_export(
+    channel: Annotated[int, typer.Option(help="Channel id")],
+    out: Annotated[
+        Path | None, typer.Option(help="Output JSON path (default forms/ch-<id>.json)")
+    ] = None,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Export a channel's form schema(s) as editable JSON."""
+    settings = _settings(verbose)
+    target = out or Path("forms") / f"ch-{channel}.json"
+
+    from dsbot.modules.reports.authoring import export_forms
+
+    async def run_export() -> None:
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                bundle = await export_forms(session, channel)
+        finally:
+            await db.dispose()
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(bundle.to_json(), encoding="utf-8")
+        if not bundle.schemas:
+            typer.echo(f"channel {channel} has no forms bound; wrote an empty bundle")
+        typer.echo(f"wrote {target}")
+
+    asyncio.run(run_export())
+
+
+@app.command("form-template")
+def form_template(
+    out: Annotated[Path, typer.Option(help="Output JSON path")] = Path("forms/starter.json"),
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Write a blank starter form to edit for a new channel."""
     import json
 
     _settings(verbose)
 
+    from dsbot.modules.reports.authoring import STARTER_DEFINITION
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps({"schemas": [STARTER_DEFINITION]}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    typer.echo(f"wrote {out}")
+
+
+@app.command("form-import")
+def form_import(
+    channel: Annotated[int, typer.Option(help="Channel id")],
+    file: Annotated[Path, typer.Option("--file", "-f", help="Form JSON to import")],
+    guild: Annotated[int | None, typer.Option(help="Guild id, for a new binding")] = None,
+    rank_guild: Annotated[int | None, typer.Option(help="Rank source guild id")] = None,
+    locale: Annotated[str, typer.Option(help="Bot message locale")] = "ru",
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Validate and import a form JSON, binding it to the channel."""
+    settings = _settings(verbose)
+
+    from dsbot.modules.reports.authoring import import_forms, load_definition_file
+
+    async def run_import() -> None:
+        payload = load_definition_file(file)
+        db = Database(settings)
+        try:
+            async with db.write_session() as session:
+                result = await import_forms(
+                    session,
+                    channel_id=channel,
+                    payload=payload,
+                    guild_id=guild,
+                    rank_source_guild_id=rank_guild,
+                    locale=locale,
+                )
+            typer.echo(
+                f"imported {', '.join(result.imported)} "
+                f"(created: {', '.join(result.created) or '-'}; "
+                f"updated: {', '.join(result.updated) or '-'})"
+            )
+        finally:
+            await db.dispose()
+
+    try:
+        asyncio.run(run_import())
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+@app.command("parse")
+def parse_text(
+    file: Annotated[Path, typer.Option("--file", "-f", help="Text file with a report")],
+    channel: Annotated[
+        int | None,
+        typer.Option(help="Use this channel's real form instead of the built-in one"),
+    ] = None,
+    attachments: Annotated[int, typer.Option(help="Pretend N attachments present")] = 0,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Parse a report from a local file using a channel's form. Offline, no Discord."""
+    import json
+
+    settings = _settings(verbose)
+
     from dsbot.modules.reports.parser import GroupMessage, ReportCandidate, parse_report
-    from dsbot.modules.reports.schema import DEFAULT_SCHEMAS
+    from dsbot.modules.reports.schema import DEFAULT_SCHEMAS, from_definition
 
     content = file.read_text(encoding="utf-8")
+
+    async def load_schemas() -> list:
+        if channel is None:
+            return list(DEFAULT_SCHEMAS)
+        from dsbot.storage import repos
+
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel)
+                if binding is None:
+                    raise typer.BadParameter(f"channel {channel} is not bound")
+                rows = await repos.get_schemas_for_binding(session, binding.id)
+                return [from_definition(row.definition) for row in rows]
+        finally:
+            await db.dispose()
+
+    schemas = asyncio.run(load_schemas())
+    if not schemas:
+        raise typer.BadParameter("channel has no form schemas bound")
+
+    from datetime import UTC, datetime
+
     group = ReportCandidate(
         messages=[
             GroupMessage(
                 message_id=0,
                 author_id=0,
-                created_at=__import__("datetime").datetime.now(),
+                created_at=datetime.now(UTC),
                 content=content,
-                attachment_count=0,
+                attachment_count=attachments,
             )
         ]
     )
-    result = parse_report(list(DEFAULT_SCHEMAS), group)
+    result = parse_report(schemas, group)
     typer.echo(
         json.dumps(
             {

@@ -67,10 +67,21 @@ report text) and **Server Members Intent** (required to resolve ranks).
 
 ```powershell
 uv run dsbot init-db
+uv run dsbot run                      # live bot; Ctrl+C to stop
+uv run dsbot run --dry-run            # ingest + parse, never post
+
+# channel setup
 uv run dsbot bind --guild <guild> --channel <channel> --rank-guild <guild>
+
+# per-channel forms (this is how a second channel gets its own format)
+uv run dsbot form-export --channel <channel>     # -> forms/ch-<id>.json
+uv run dsbot form-template --out forms/x.json    # blank starter to edit
+uv run dsbot form-import --channel <channel> --file forms/ch-<id>.json
+uv run dsbot parse --file sample.txt --channel <channel>
+
+# history / analysis
 uv run dsbot backfill --channel <channel> --since 14d --out backfill-out/reports.jsonl
 uv run dsbot analyze --dump backfill-out/reports.jsonl
-uv run dsbot parse --file report.txt
 uv run dsbot export --channel <channel> --out backfill-out/reports.csv
 ```
 
@@ -80,6 +91,46 @@ ISO date or a relative duration (`14d`, `36h`).
 `analyze` is the important one before going live: it runs the *same* parser over a
 real dump and reports match rate, which fields are missing, and sample messages the
 schema does not yet cover.
+
+## How per-channel forms work
+
+A channel is bound to one or more **form schemas**, stored as JSON in the database and
+selected per message by scoring. Adding a channel with a different format is adding a
+JSON file — no code change:
+
+```powershell
+uv run dsbot form-export --channel <id>      # inspect what it currently uses
+# edit the JSON: fields, labels, required-ness, enum options, typing
+uv run dsbot form-import --channel <id> --file forms/ch-<id>.json
+uv run dsbot parse --file example.txt --channel <id>   # verify before going live
+```
+
+Field `type` options: `text`, `long_text`, `enum`, `formation_idn`,
+`discord_message_ref`, `attachment_required`, `count_fraction`, `name_ref`, `any`.
+
+## What exists today
+
+- `dsbot run` — live bot: ingests, parses, warns, clears warnings on fix
+- `dsbot run --dry-run` — same pipeline, never posts
+- per-channel form authoring: `form-export` / `form-template` / `form-import`
+- `dsbot backfill` + `dsbot analyze` — measure the parser against real history
+- `dsbot parse --channel <id>` — test a message against a channel's real form
+
+Not built yet: verdicts from reactions, weekly quota evaluation, dashboards.
+
+## Testing locally before touching the real server
+
+1. Create a private test server and one channel in it.
+2. `uv run dsbot init-db`
+3. `uv run dsbot bind --guild <guild> --channel <channel>`
+4. `uv run dsbot run`
+5. Post a valid report, an incomplete report, and plain chat. Expect: no reply for
+   chat, no immediate reply for a fresh incomplete report (a grace window), a warning
+   for an old incomplete report, and the warning deleting itself when you edit the
+   message to be complete.
+
+`--dry-run` is the safe way to watch parsing decisions: it logs
+`report_processed` with `matched`, `valid`, `action`, and issue codes without posting.
 
 ## Development
 

@@ -185,3 +185,12 @@ def training_report_schema() -> FormSchemaDef:
 
 
 DEFAULT_SCHEMAS: tuple[FormSchemaDef, ...] = (training_report_schema(),)
+
+
+def from_definition(definition: dict[str, Any]) -> FormSchemaDef:
+    """Rebuild a schema from its stored JSON.
+
+    Schemas live in the database and are edited by admins, so the parser must accept
+    a definition it has never seen as source code.
+    """
+    return FormSchemaDef.model_validate(definition)

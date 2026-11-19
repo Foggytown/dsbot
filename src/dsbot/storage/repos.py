@@ -23,14 +23,18 @@ from dsbot.core.events import (
     event_payload,
 )
 from dsbot.storage.models import (
+    BindingSchema,
     Channel,
     ChannelBinding,
+    FormSchema,
     Guild,
     Message,
     MessageReaction,
     RawEvent,
     Report,
+    ReportField,
     UserRankCache,
+    ValidationMessage,
 )
 
 # --- raw events ------------------------------------------------------------
@@ -351,8 +355,6 @@ async def count_reports(
 
 
 # --- rank cache ------------------------------------------------------------
-
-
 async def get_cached_rank(
     session: AsyncSession, guild_id: int, user_id: int
 ) -> UserRankCache | None:
@@ -361,6 +363,79 @@ async def get_cached_rank(
             UserRankCache.guild_id == guild_id, UserRankCache.user_id == user_id
         )
     )
+
+
+async def replace_report_fields(
+    session: AsyncSession, report_id: int, fields: list[dict[str, Any]]
+) -> None:
+    """Rewrite a report's fields wholesale.
+
+    Re-parsing is always a full replacement: a report is derived state, and partial
+    updates would leave stale fields from a previous interpretation.
+    """
+    await session.execute(delete(ReportField).where(ReportField.report_id == report_id))
+    for row in fields:
+        session.add(ReportField(report_id=report_id, **row))
+
+
+async def get_validation_message(
+    session: AsyncSession, report_id: int, kind: str = "warning"
+) -> ValidationMessage | None:
+    return await session.scalar(
+        select(ValidationMessage).where(
+            ValidationMessage.report_id == report_id, ValidationMessage.kind == kind
+        )
+    )
+
+
+async def put_validation_message(
+    session: AsyncSession,
+    *,
+    report_id: int,
+    channel_id: int,
+    message_id: int,
+    issue_codes: list[str],
+    kind: str = "warning",
+) -> None:
+    existing = await get_validation_message(session, report_id, kind)
+    if existing is None:
+        session.add(
+            ValidationMessage(
+                report_id=report_id,
+                kind=kind,
+                channel_id=channel_id,
+                message_id=message_id,
+                issue_codes=issue_codes,
+            )
+        )
+        return
+    existing.channel_id = channel_id
+    existing.message_id = message_id
+    existing.issue_codes = issue_codes
+
+
+async def delete_validation_message(
+    session: AsyncSession, report_id: int, kind: str = "warning"
+) -> None:
+    await session.execute(
+        delete(ValidationMessage).where(
+            ValidationMessage.report_id == report_id, ValidationMessage.kind == kind
+        )
+    )
+
+
+async def get_form_schema_by_key(session: AsyncSession, key: str) -> FormSchema | None:
+    return await session.scalar(select(FormSchema).where(FormSchema.key == key))
+
+
+async def get_schemas_for_binding(session: AsyncSession, binding_id: int) -> Sequence[FormSchema]:
+    stmt = (
+        select(FormSchema)
+        .join(BindingSchema, BindingSchema.schema_id == FormSchema.id)
+        .where(BindingSchema.binding_id == binding_id)
+        .order_by(BindingSchema.priority)
+    )
+    return (await session.scalars(stmt)).all()
 
 
 async def put_cached_rank(
