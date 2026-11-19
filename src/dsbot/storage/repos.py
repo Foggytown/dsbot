@@ -354,6 +354,32 @@ async def count_reports(
     return int(await session.scalar(stmt) or 0)
 
 
+async def list_pending_reports(
+    session: AsyncSession,
+    *,
+    channel_id: int,
+    author_id: int,
+    after: datetime,
+    before: datetime,
+) -> Sequence[Report]:
+    """Reports still waiting for evidence: deferred, or invalid without a warning yet.
+
+    Chat never enters this set because it is stored as `ignored`.
+    """
+    stmt = (
+        select(Report)
+        .where(
+            Report.channel_id == channel_id,
+            Report.author_user_id == author_id,
+            Report.status.in_(("deferred", "invalid")),
+            Report.created_at >= after,
+            Report.created_at <= before,
+        )
+        .order_by(Report.created_at.desc())
+    )
+    return (await session.scalars(stmt)).all()
+
+
 # --- rank cache ------------------------------------------------------------
 async def get_cached_rank(
     session: AsyncSession, guild_id: int, user_id: int

@@ -258,7 +258,13 @@ def bind_fields(
         elif spec.path is not None:
             path = spec.path_tuple
             assert path is not None
+            # A nested path like 3.1 falls back to its parent item when the schema
+            # defines sub-fields but the reporter wrote evidence as one block.
             positional = tokenized.item_at(path) if path not in used_paths else None
+            if positional is None and len(path) > 1:
+                parent = tokenized.item_at((path[0],))
+                if parent is not None and parent.path not in used_paths:
+                    positional = parent
             resolution = "ordinal"
             if positional is not None:
                 item = positional
@@ -270,9 +276,11 @@ def bind_fields(
                 if label is not None and is_blank_value(rest):
                     raw_value = ""
 
+        evidence_slot = _attachment_slot(schema, spec)
+
         if item is None:
-            if spec.accepts_attachments and attachment_count > 0:
-                result = parse_attachment("", spec.id, attachment_count)
+            if spec.accepts_attachments and attachment_count > evidence_slot:
+                result = parse_attachment("", spec.id, attachment_count, evidence_slot)
                 bound.append(
                     BoundField(
                         spec=spec,
@@ -296,7 +304,7 @@ def bind_fields(
             )
             continue
 
-        result = _parse_by_type(spec, raw_value, attachment_count)
+        result = _parse_by_type(spec, raw_value, attachment_count, evidence_slot)
         bound.append(
             BoundField(
                 spec=spec,
@@ -311,16 +319,30 @@ def bind_fields(
     return bound
 
 
-def _parse_by_type(spec: FieldSpec, raw: str, attachment_count: int) -> FieldResult:
+def _attachment_slot(schema: FormSchemaDef, spec: FieldSpec) -> int:
+    """Which attachment index this evidence field may claim.
+
+    Ordered by declaration, so "3.1" takes the first photo and "3.2" the second.
+    """
+    index = 0
+    for candidate in schema.fields:
+        if candidate.id == spec.id:
+            return index
+        if candidate.accepts_attachments:
+            index += 1
+    return index
+
+
+def _parse_by_type(spec: FieldSpec, raw: str, attachment_count: int, slot: int = 0) -> FieldResult:
     match spec.type:
         case "formation_idn":
             return parse_formation_idn(raw, spec.id)
         case "enum":
-            return parse_enum(raw, spec.id, spec.options)
+            return parse_enum(raw, spec.id, spec.options, strict=spec.strict_options)
         case "discord_message_ref":
             return parse_discord_link(raw, spec.id)
         case "attachment_required":
-            return parse_attachment(raw, spec.id, attachment_count)
+            return parse_attachment(raw, spec.id, attachment_count, slot)
         case "count_fraction":
             return parse_count_fraction(raw, spec.id)
         case "name_ref":

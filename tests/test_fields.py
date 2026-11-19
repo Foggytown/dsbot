@@ -63,8 +63,17 @@ def test_enum_matches_case_and_spaces() -> None:
     assert result.value["code"] == "INF+"
 
 
-def test_enum_unknown_is_a_warning() -> None:
+def test_enum_unknown_is_an_error_by_default() -> None:
+    """An unrecognised qualification cannot be counted, so it is an error."""
     result = parse_enum("XYZ", "qualification", ["INF", "ENG"])
+    assert result.present
+    assert any(i.code == "enum_unknown_option" for i in result.issues)
+    assert all(i.severity == "error" for i in result.issues)
+
+
+def test_enum_unknown_can_be_downgraded_to_warning() -> None:
+    """Free-text schemas can opt out of strict matching."""
+    result = parse_enum("XYZ", "qualification", ["INF", "ENG"], strict=False)
     assert result.present
     assert any(i.code == "enum_unknown_option" for i in result.issues)
     assert all(i.severity == "warning" for i in result.issues)

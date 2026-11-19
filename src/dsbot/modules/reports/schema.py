@@ -39,6 +39,9 @@ class FieldSpec(BaseModel):
     required_when: dict[str, list[str]] | None = None
     # For enum fields. Seeded from real data, admin-editable.
     options: list[str] = Field(default_factory=list)
+    # When true, a value outside `options` is an error rather than a warning. A wrong
+    # qualification breaks quota counting, so this defaults to strict.
+    strict_options: bool = True
     # Value may legitimately be an attachment rather than text.
     accepts_attachments: bool = False
     # Free-text note shown to a reporter in the warning message.

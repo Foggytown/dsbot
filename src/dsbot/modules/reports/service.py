@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
@@ -35,6 +35,19 @@ from dsbot.storage.db import Database
 
 if TYPE_CHECKING:
     from dsbot.discord.reply import ReplySink
+
+
+class RetryScheduler(Protocol):
+    """Schedules a delayed re-check of one report.
+
+    Declared as a protocol so the reports module does not depend on the scheduler
+    implementation, and tests can use a purely in-memory one.
+    """
+
+    async def schedule(
+        self, *, when: datetime, channel_id: int, message_id: int, key: str
+    ) -> None: ...
+
 
 log = structlog.get_logger(__name__)
 
@@ -65,9 +78,22 @@ class ProcessResult:
 
 
 class ReportService:
-    def __init__(self, db: Database, reply: ReplySink | None = None) -> None:
+    # How far back to look for a report still waiting for this author's attachments.
+    pending_lookback: timedelta = timedelta(minutes=30)
+
+    def __init__(
+        self,
+        db: Database,
+        reply: ReplySink | None = None,
+        retry: RetryScheduler | None = None,
+    ) -> None:
         self._db = db
         self._reply = reply
+        self._retry = retry
+
+    def attach_retry(self, retry: RetryScheduler) -> None:
+        """Late binding, because the scheduler needs the service to exist first."""
+        self._retry = retry
 
     # --- context -----------------------------------------------------------
 
@@ -103,12 +129,26 @@ class ReportService:
         if group is None:
             return None
 
+        return await self.process_group(context, group)
+
+    async def process_group(
+        self, context: ChannelContext, group: list[GroupMessage]
+    ) -> ProcessResult | None:
+        """Parse an assembled group. Shared by live ingest, edits, retries and replay."""
+        return await self._evaluate(context, group, phase="initial")
+
+    async def _evaluate(
+        self, context: ChannelContext, group: list[GroupMessage], *, phase: str
+    ) -> ProcessResult | None:
+        """One parsing pass. `phase` decides whether the grace window still applies."""
+        if not group:
+            return None
         candidate = ReportCandidate(messages=group)
         parsed = parse_report(context.schemas, candidate)
-        report_id = await self._persist(context, candidate, parsed)
 
         issue_codes = [i.code for i in parsed.issues]
         if not parsed.matched:
+            report_id = await self._persist(context, candidate, parsed, status="ignored")
             # Not a report attempt at all. Do not nag: an unbound-looking message in a
             # report channel is chat, not an error.
             return ProcessResult(
@@ -121,6 +161,7 @@ class ReportService:
             )
 
         if parsed.is_valid:
+            report_id = await self._persist(context, candidate, parsed, status="valid")
             cleared = await self._clear_warning(context, report_id)
             return ProcessResult(
                 report_id=report_id,
@@ -131,8 +172,10 @@ class ReportService:
                 action="cleared" if cleared else "none",
             )
 
-        # Defer the warning if attachments may still be on their way.
-        if self._awaiting_attachments(parsed, group, context):
+        # Still inside the grace window: wait for the follow-up photos.
+        if phase != "retry" and self._awaiting_attachments(parsed, group, context):
+            report_id = await self._persist(context, candidate, parsed, status="deferred")
+            await self._schedule_retry(context, group, report_id)
             return ProcessResult(
                 report_id=report_id,
                 matched=True,
@@ -142,7 +185,8 @@ class ReportService:
                 action="deferred",
             )
 
-        await self._warn(context, report_id, parsed, author_id)
+        report_id = await self._persist(context, candidate, parsed, status="invalid")
+        await self._warn(context, report_id, parsed, author_id=group[0].author_id)
         return ProcessResult(
             report_id=report_id,
             matched=True,
@@ -151,6 +195,22 @@ class ReportService:
             field_count=len(parsed.fields),
             action="warned",
         )
+
+    async def retry_group(self, channel_id: int, message_id: int) -> ProcessResult | None:
+        """Re-examine a deferred report after its grace window expired."""
+        context = await self.channel_context(channel_id)
+        if context is None or not context.schemas:
+            return None
+        async with self._db.session() as session:
+            message = await repos.get_message(session, channel_id, message_id)
+            if message is None:
+                return None
+            author_id = message.author_id
+
+        group = await self._load_group(context, author_id, message_id)
+        if group is None:
+            return None
+        return await self._evaluate(context, group, phase="retry")
 
     async def _load_group(
         self, context: ChannelContext, author_id: int, message_id: int
@@ -212,7 +272,10 @@ class ReportService:
         return group
 
     def _awaiting_attachments(
-        self, parsed: ParseOutput, group: list[GroupMessage], context: ChannelContext
+        self,
+        parsed: ParseOutput,
+        group: list[GroupMessage],
+        context: ChannelContext,
     ) -> bool:
         """True while missing evidence could still arrive in a follow-up."""
         missing_evidence = [
@@ -230,13 +293,67 @@ class ReportService:
         if not needs_attachments:
             return False
 
-        last_message_at = max(m.created_at for m in group)
-        return datetime.now(UTC) - last_message_at < context.group_window
+        # The deadline runs from the *report* message, not the newest follower, so a
+        # stream of chatter cannot postpone the warning indefinitely.
+        first_message_at = min(m.created_at for m in group)
+        return datetime.now(UTC) - first_message_at < context.group_window
+
+    async def _schedule_retry(
+        self,
+        context: ChannelContext,
+        group: list[GroupMessage],
+        report_id: int,
+    ) -> None:
+        """Fire a re-check when the grace window expires.
+
+        Without this, a deferred report is a dead end: nothing else ever looks at it
+        again if the author simply stops posting.
+        """
+        if self._retry is None:
+            return
+        first_message_at = min(m.created_at for m in group)
+        due = first_message_at + context.group_window + timedelta(seconds=2)
+        await self._retry.schedule(
+            when=due,
+            channel_id=context.channel_id,
+            message_id=group[0].message_id,
+            key=f"{context.channel_id}:{group[0].message_id}",
+        )
+
+    async def pending_for_author(
+        self, channel_id: int, author_id: int, after_message_id: int
+    ) -> list[int]:
+        """Find reports by this author still awaiting evidence.
+
+        This is the fix for "photo posted, report never re-checked": a follow-up
+        message cannot know which earlier report it belongs to, so the reports that
+        are still waiting for it have to be found and re-examined.
+
+        The database already knows which ones are waiting, so ask it rather than
+        guessing from message text. Chat is stored as `ignored` and cannot match.
+        """
+        async with self._db.session() as session:
+            message = await repos.get_message(session, channel_id, after_message_id)
+            if message is None:
+                return []
+            rows = await repos.list_pending_reports(
+                session,
+                channel_id=channel_id,
+                author_id=author_id,
+                after=message.created_at - self.pending_lookback,
+                before=message.created_at,
+            )
+        return [row.message_id for row in rows]
 
     # --- persistence -------------------------------------------------------
 
     async def _persist(
-        self, context: ChannelContext, candidate: ReportCandidate, parsed: ParseOutput
+        self,
+        context: ChannelContext,
+        candidate: ReportCandidate,
+        parsed: ParseOutput,
+        *,
+        status: str,
     ) -> int:
         primary = candidate.primary
         field_rows = [
@@ -264,7 +381,7 @@ class ReportService:
                 schema_id=None,
                 schema_key=parsed.schema_key,
             )
-            report.status = _status_for(parsed)
+            report.status = status
             report.parsing = _json_safe(parsed.diagnostics)
             report.issues = [i.to_payload() for i in parsed.issues]
             report.attributed_user_id = primary.author_id

@@ -28,6 +28,7 @@ from dsbot.core.events import (
 from dsbot.discord import sink
 from dsbot.discord.reply import DiscordReplySink, ReplySink
 from dsbot.ingest import Ingestor
+from dsbot.jobs.retry import RetryScheduler
 from dsbot.modules.reports.service import ReportService
 from dsbot.storage import repos
 from dsbot.storage.db import Database
@@ -47,6 +48,8 @@ class Bot(discord.Client):
         self.reply: ReplySink = reply or DiscordReplySink(self)
         self.ingestor = Ingestor(self.db, self.bus)
         self.reports = ReportService(self.db, self.reply)
+        self.retry = RetryScheduler(self.reports)
+        self.reports.attach_retry(self.retry)
         self._tasks: set[asyncio.Task[Any]] = set()
 
     # --- lifecycle ---------------------------------------------------------
@@ -62,6 +65,7 @@ class Bot(discord.Client):
         )
 
     async def close(self) -> None:
+        await self.retry.aclose()
         await self.bus.aclose()
         await self.db.dispose()
         await super().close()
@@ -151,8 +155,16 @@ class Bot(discord.Client):
     # --- handlers ----------------------------------------------------------
 
     async def _on_message_created(self, event: MessageCreated) -> None:
+        snapshot = event.message
+        # A bare photo usually completes an earlier report, so the reports still
+        # waiting for this author must be re-examined. Their own group cannot see
+        # backwards, which is why this cannot be handled by the new message alone.
+        if not (snapshot.content or "").strip() and snapshot.attachments:
+            await self._complete_pending(snapshot)
+            return
+
         result = await self.reports.process_message(
-            event.message.channel_id, event.message.author_id, event.message.message_id
+            snapshot.channel_id, snapshot.author_id, snapshot.message_id
         )
         if result is not None:
             log.info(
@@ -163,6 +175,29 @@ class Bot(discord.Client):
                 action=result.action,
                 issues=result.issues,
             )
+
+    async def _complete_pending(self, snapshot: Any) -> None:
+        pending = await self.reports.pending_for_author(
+            snapshot.channel_id, snapshot.author_id, snapshot.message_id
+        )
+        if not pending:
+            return
+        for message_id in pending:
+            result = await self.reports.process_message(
+                snapshot.channel_id, snapshot.author_id, message_id
+            )
+            if result is None:
+                continue
+            log.info(
+                "report_rechecked",
+                report_id=result.report_id,
+                triggered_by=snapshot.message_id,
+                action=result.action,
+                valid=result.valid,
+                issues=result.issues,
+            )
+            if result.valid:
+                break
 
     async def _on_message_edited(self, event: MessageEdited) -> None:
         # An edit can complete a report, so re-parse the same group.

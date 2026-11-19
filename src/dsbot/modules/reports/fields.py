@@ -108,7 +108,7 @@ def parse_formation_idn(raw: str, field_id: str) -> FieldResult:
     return FieldResult(value=value, issues=issues, present=True)
 
 
-def parse_enum(raw: str, field_id: str, options: list[str]) -> FieldResult:
+def parse_enum(raw: str, field_id: str, options: list[str], *, strict: bool = True) -> FieldResult:
     """Match a qualification code, tolerating case and surrounding punctuation."""
     text = strip_emphasis(normalize(raw)).strip(" .:-|")
     if is_blank_value(text):
@@ -134,7 +134,9 @@ def parse_enum(raw: str, field_id: str, options: list[str]) -> FieldResult:
             FieldIssue(
                 code="enum_unknown_option",
                 field_id=field_id,
-                severity="warning",
+                # An unrecognised qualification cannot be counted, so by default this
+                # is an error. Schemas that expect free text can opt out.
+                severity="error" if strict else "warning",
                 detail={"raw": text, "options": options},
             )
         ],
@@ -175,23 +177,29 @@ def parse_discord_link(raw: str, field_id: str) -> FieldResult:
     )
 
 
-def parse_attachment(raw: str, field_id: str, attachment_count: int) -> FieldResult:
+def parse_attachment(raw: str, field_id: str, attachment_count: int, slot: int = 0) -> FieldResult:
     """Evidence fields: the value is an attachment, not text.
 
     Handles "3. <photo>" (attachment in the same message), "3." with nothing
     (attachment in a follow-up message from the same author), and junk leftovers.
-    Attachment resolution happens later, once the message group is assembled.
+
+    Each evidence field claims exactly one attachment slot, so one photo cannot
+    satisfy two separate evidence requirements.
     """
     text = strip_emphasis(normalize(raw)).strip()
     has_text = not is_blank_value(text)
-    if attachment_count > 0:
+    if attachment_count > slot:
         return FieldResult(
-            value={"attachment_count": attachment_count, "raw": text if has_text else None},
+            value={
+                "attachment_count": attachment_count,
+                "slot": slot,
+                "raw": text if has_text else None,
+            },
             present=True,
         )
     if has_text:
         return FieldResult(
-            value={"raw": text, "attachment_count": 0},
+            value={"raw": text, "attachment_count": attachment_count, "slot": slot},
             issues=[
                 FieldIssue(
                     code="evidence_text_without_file",
