@@ -42,6 +42,10 @@ class FieldSpec(BaseModel):
     # When true, a value outside `options` is an error rather than a warning. A wrong
     # qualification breaks quota counting, so this defaults to strict.
     strict_options: bool = True
+    # For formation_idn fields: the closed set of formations. Formations are finite and
+    # known (SOB, ARC, RC, Reaper, 666th, ...). The IDN that follows is NOT finite and
+    # is never checked against a list.
+    formations: list[str] = Field(default_factory=list)
     # Value may legitimately be an attachment rather than text.
     accepts_attachments: bool = False
     # Free-text note shown to a reporter in the warning message.
@@ -129,6 +133,17 @@ def training_report_schema() -> FormSchemaDef:
                 path="1",
                 type="formation_idn",
                 required=True,
+                # Formations are a finite, known set. The IDN after the pipe is
+                # open-ended and is never validated against a list.
+                formations=[
+                    "SOB",
+                    "ARC",
+                    "RC",
+                    "REAPER",
+                    "666TH",
+                    "NULL",
+                    "ALPHA",
+                ],
                 hint={
                     "ru": "Укажите формирование и IDN: «SOB | 0016» или «ARC | 01/0016».",
                     "en": "Provide formation and IDN: 'SOB | 0016' or 'ARC | 01/0016'.",
@@ -140,20 +155,16 @@ def training_report_schema() -> FormSchemaDef:
                 path="2",
                 type="enum",
                 required=True,
-                # The full set of valid qualifications. Admin-editable: add or remove
-                # entries in forms/ch-<id>.json and re-import.
+                # Qualifications a soldier is trained FOR. Admin-editable: add or
+                # remove entries in forms/ch-<id>.json and re-import.
                 options=[
-                    "SOB",
-                    "ARC",
                     "INF",
                     "INF+",
                     "ENG",
                     "ENG+",
                     "MED",
                     "SNP",
-                    "RC",
-                    "REAPER",
-                    "666TH",
+                    "SOB",
                 ],
                 hint={
                     "ru": "Укажите название квалификации (например, INF).",

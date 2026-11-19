@@ -21,8 +21,8 @@ class Ingestor:
         self._db = db
         self._bus = bus
 
-    async def handle(self, event: Event, *, source: str = "gateway") -> None:
-        """Store and forward one event. Safe to call twice with the same event.
+    async def handle(self, event: Event, *, source: str = "gateway") -> bool:
+        """Store and forward one event. Returns False if it was already stored.
 
         Archiving the message happens here, in capture, not in a module. Live ingest and
         backfill then converge on the same stored rows, and a module only ever reads.
@@ -32,13 +32,14 @@ class Ingestor:
         )
         if not new:
             log.debug("duplicate_event_skipped", kind=event.kind, id=event.external_id)
-            return
+            return False
 
         match event:
             case MessageCreated(message=snapshot) | MessageEdited(message=snapshot):
                 await self.ingest_message(snapshot)
 
         await self._bus.publish(event)
+        return True
 
     async def ingest_message(self, snapshot: object) -> None:
         """Archive a message snapshot. Used by live ingest and backfill alike."""

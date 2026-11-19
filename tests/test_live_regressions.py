@@ -237,6 +237,42 @@ def test_empty_link_field_is_absent_not_an_error() -> None:
     assert "link_not_a_url" not in {i.code for i in result.issues}
 
 
+# --- bug: a later report's photos were stolen by an earlier one ------------
+
+
+async def test_followup_with_text_and_photo_does_not_join_the_group(db: Database) -> None:
+    """Real bug: a photo-less report was marked valid using a later report's photos."""
+    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
+
+    # Report A: no photos
+    await post(db, message_id=1, content=REAL_REPORT, minutes=-3)
+    # Report B: text AND photos in one message
+    await post(db, message_id=2, content=REAL_REPORT, attachments=2, minutes=-1)
+
+    result = await service.process_message(CHANNEL, AUTHOR, 1)
+    assert result is not None
+    assert not result.valid, "report A stole report B's photos"
+
+
+async def test_photo_only_followup_still_completes_the_report(db: Database) -> None:
+    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
+    await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
+    await post(db, message_id=2, content="", attachments=2, minutes=-0.5)
+
+    result = await service.process_message(CHANNEL, AUTHOR, 1)
+    assert result is not None
+    assert result.valid
+
+
+async def test_report_with_photos_in_its_own_message_is_valid(db: Database) -> None:
+    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
+    await post(db, message_id=1, content=REAL_REPORT, attachments=2, minutes=-1)
+
+    result = await service.process_message(CHANNEL, AUTHOR, 1)
+    assert result is not None
+    assert result.valid
+
+
 # --- bug 5: the photo formed its own orphan group -------------------------
 
 

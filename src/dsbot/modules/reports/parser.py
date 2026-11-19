@@ -336,7 +336,7 @@ def _attachment_slot(schema: FormSchemaDef, spec: FieldSpec) -> int:
 def _parse_by_type(spec: FieldSpec, raw: str, attachment_count: int, slot: int = 0) -> FieldResult:
     match spec.type:
         case "formation_idn":
-            return parse_formation_idn(raw, spec.id)
+            return parse_formation_idn(raw, spec.id, spec.formations)
         case "enum":
             return parse_enum(raw, spec.id, spec.options, strict=spec.strict_options)
         case "discord_message_ref":

@@ -258,15 +258,14 @@ class ReportService:
         for follower in later:
             if follower.message_id == message.message_id:
                 continue
-            has_attachments = bool(follower.attachments)
             content = (follower.content or "").strip()
-            # A follower continues the report only if it carries attachments, or is
-            # empty. Any actual text means the author moved on: either to a new report
-            # or to chat. Absorbing that text corrupted real data once already.
-            if has_attachments or not content:
-                group.append(_group_message(follower))
-            else:
+            # Only an attachment-only message continues a report. Anything with text is
+            # either a new report or chat, and joining it causes real corruption: an
+            # earlier report without photos once stole the photos of a later one because
+            # that later message had both text and attachments.
+            if content:
                 break
+            group.append(_group_message(follower))
 
         return group
 

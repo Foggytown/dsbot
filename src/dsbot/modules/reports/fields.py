@@ -56,12 +56,17 @@ class FieldResult:
     present: bool = False
 
 
-def parse_formation_idn(raw: str, field_id: str) -> FieldResult:
+def parse_formation_idn(
+    raw: str, field_id: str, formations: list[str] | None = None
+) -> FieldResult:
     """Parse `SOB | 01/0016` into formation plus IDN parts.
 
-    IDNs are never unique: more than 10k characters share a 4-digit space, so a
-    collision is data, not an error. Parts are stored separately so a future roster
-    can enforce rules without re-parsing history.
+    Formations are a closed, finite set and are validated against it. The IDN that
+    follows is *not* checked against any list: there are more than 10k characters and
+    the numbering is open-ended.
+
+    IDNs are never unique, so a collision is data, not an error. Parts are stored
+    separately so a future roster can enforce rules without re-parsing history.
     """
     text = strip_emphasis(normalize(raw)).strip()
     if is_blank_value(text):
@@ -84,6 +89,17 @@ def parse_formation_idn(raw: str, field_id: str) -> FieldResult:
                 detail={"raw": text},
             )
         )
+
+    if formation is not None and formations:
+        known = {f.upper() for f in formations}
+        if formation not in known:
+            issues.append(
+                FieldIssue(
+                    code="formation_unknown",
+                    field_id=field_id,
+                    detail={"raw": formation, "formations": sorted(known)},
+                )
+            )
 
     value: dict[str, Any] = {
         "formation": formation,

@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
+import sys
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import discord
@@ -26,6 +28,7 @@ from dsbot.core.events import (
     MessageEdited,
     ReactionCleared,
 )
+from dsbot.core.lock import InstanceLock
 from dsbot.discord import sink
 from dsbot.discord.reply import DiscordReplySink, ReplySink
 from dsbot.ingest import Ingestor
@@ -259,6 +262,15 @@ async def run_bot(settings: Settings) -> None:
     if not settings.discord_token:
         raise RuntimeError("DSBOT_DISCORD_TOKEN is empty; put your token in .env")
 
+    # One instance per database. Two bots handling the same events looks like random
+    # behaviour and corrupts state, so refuse to start rather than misbehave.
+    lock = InstanceLock(Path("var/dsbot.lock"))
+    try:
+        lock.acquire()
+    except RuntimeError as exc:
+        typer_echo_error(str(exc))
+        raise SystemExit(1) from None
+
     bot = Bot(settings)
     stop = asyncio.Event()
 
@@ -267,13 +279,21 @@ async def run_bot(settings: Settings) -> None:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
 
-    runner = asyncio.create_task(bot.start(settings.discord_token))
-    await stop.wait()
-    log.info("shutdown_requested")
-    await bot.close()
-    runner.cancel()
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await runner
+    try:
+        runner = asyncio.create_task(bot.start(settings.discord_token))
+        await stop.wait()
+        log.info("shutdown_requested")
+        await bot.close()
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await runner
+    finally:
+        lock.release()
+
+
+def typer_echo_error(message: str) -> None:
+    """Print to stderr without importing click at module scope."""
+    print(message, file=sys.stderr)
 
 
 __all__ = ["Bot", "run_bot"]

@@ -47,17 +47,20 @@ async def append_raw_event(
     source: str = "gateway",
     occurred_at: datetime | None = None,
 ) -> bool:
-    """Append to the raw log. Returns False when the event was already stored."""
-    external_id = event.external_id
-    existing = await session.scalar(
-        select(RawEvent.id).where(RawEvent.external_id == external_id).limit(1)
-    )
-    if existing is not None:
-        return False
+    """Append to the raw log. Returns False when the event was already stored.
 
-    session.add(
-        RawEvent(
-            external_id=external_id,
+    Implemented as an atomic insert-or-ignore rather than check-then-insert. Two bot
+    processes running at once, or a backfill racing live traffic, would otherwise both
+    pass the existence check and the loser would crash on the unique constraint. That
+    actually happened: a stray `dsbot run` left running made message handling die
+    intermittently with `UNIQUE constraint failed: raw_events.external_id`.
+    """
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+    stmt = (
+        sqlite_insert(RawEvent)
+        .values(
+            external_id=event.external_id,
             kind=event.kind,
             channel_id=event_channel_id(event),
             guild_id=_event_guild(event),
@@ -66,8 +69,11 @@ async def append_raw_event(
             source=source,
             payload=_jsonable(event_payload(event)),
         )
+        .on_conflict_do_nothing(index_elements=["external_id"])
+        .returning(RawEvent.id)
     )
-    return True
+    inserted = await session.scalar(stmt)
+    return inserted is not None
 
 
 def _event_guild(event: Event) -> int | None:
