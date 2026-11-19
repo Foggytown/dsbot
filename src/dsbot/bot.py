@@ -34,16 +34,13 @@ from dsbot.storage.db import Database
 
 log = structlog.get_logger(__name__)
 
-# Discord requires these to read message text and resolve members across guilds.
-INTENTS = discord.Intents.default()
-INTENTS.message_content = True
-INTENTS.members = True
-INTENTS.reactions = True
+# Intents come from settings so the required portal toggles match what is implemented.
+# Message Content is always on (reports are text). Members is opt-in until ranks exist.
 
 
 class Bot(discord.Client):
     def __init__(self, settings: Settings, *, reply: ReplySink | None = None) -> None:
-        super().__init__(intents=INTENTS)
+        super().__init__(intents=settings.intents())
         self.settings = settings
         self.bus = EventBus()
         self.db = Database(settings)
@@ -210,4 +207,4 @@ async def run_bot(settings: Settings) -> None:
         await runner
 
 
-__all__ = ["INTENTS", "Bot", "run_bot"]
+__all__ = ["Bot", "run_bot"]

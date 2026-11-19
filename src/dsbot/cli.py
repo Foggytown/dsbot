@@ -134,7 +134,7 @@ def backfill(
             # A gateway session is started so history() has an authenticated HTTP
             # session. No intents are requested: backfill only reads history.
             runner = asyncio.create_task(client.start(settings.discord_token))
-            await _wait_until_ready(client, deadline_seconds=60.0)
+            await _wait_until_ready(client, deadline_seconds=60.0, runner=runner)
 
             ch = client.get_channel(channel)
             if ch is None:
@@ -182,11 +182,21 @@ async def _wait_until_ready(
     client: discord.Client,
     *,
     deadline_seconds: float,
+    runner: asyncio.Task[None] | None = None,
 ) -> None:
-    """Poll for READY. discord.py exposes no awaitable equivalent on Client."""
+    """Poll for READY. discord.py exposes no awaitable equivalent on Client.
+
+    If the start task fails (bad token, unknown intent, network), that exception is
+    re-raised instead of being masked by a generic timeout. A wrong token must say so.
+    """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + deadline_seconds
     while not client.is_ready():
+        if runner is not None and runner.done():
+            exc = runner.exception()
+            if exc is not None:
+                raise exc
+            raise RuntimeError("discord client stopped before becoming ready")
         if client.is_closed():
             raise RuntimeError("discord client closed before becoming ready")
         if loop.time() > deadline:
@@ -239,6 +249,99 @@ def analyze(
     records = read_records(dump)
     result = analyze_records(records, window_minutes=window, sample_limit=sample)
     write_report(result, sys.stdout)
+
+
+@app.command("doctor")
+def doctor(
+    guild: Annotated[int | None, typer.Option(help="Guild id to check")] = None,
+    channel: Annotated[int | None, typer.Option(help="Channel id to check")] = None,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Verify token, intents, and permissions. Posts nothing."""
+    settings = _settings(verbose)
+
+    if not settings.discord_token:
+        raise typer.BadParameter("DSBOT_DISCORD_TOKEN is empty in .env")
+
+    async def run_doctor() -> None:
+        import discord as _discord
+
+        from dsbot.discord.preflight import describe, preflight
+
+        intents = settings.intents()
+        client = _discord.Client(intents=intents)
+        runner: asyncio.Task[None] | None = None
+
+        try:
+            runner = asyncio.create_task(client.start(settings.discord_token))
+            try:
+                await _wait_until_ready(client, deadline_seconds=60.0, runner=runner)
+            except _discord.PrivilegedIntentsRequired:
+                typer.echo("--- connection ---")
+                typer.echo("FAILED: a privileged intent is not enabled for this app.")
+                typer.echo("")
+                typer.echo("Fix in the Discord developer portal:")
+                typer.echo("  1. https://discord.com/developers/applications")
+                typer.echo("  2. select your application -> Bot")
+                typer.echo("  3. Privileged Gateway Intents:")
+                typer.echo("     [x] Message Content Intent   <- required to read report text")
+                if settings.enable_members_intent:
+                    typer.echo("     [x] Server Members Intent    <- enabled in .env")
+                else:
+                    typer.echo(
+                        "     [ ] Server Members Intent    <- not needed yet "
+                        "(set DSBOT_ENABLE_MEMBERS_INTENT=true when ranks land)"
+                    )
+                typer.echo("  4. Save Changes, then re-run `dsbot doctor`")
+                raise typer.Exit(code=1) from None
+            except _discord.LoginFailure:
+                typer.echo("FAILED: the token was rejected. Reset it in the portal and")
+                typer.echo("update DSBOT_DISCORD_TOKEN in .env (no quotes, no 'Bot ' prefix).")
+                raise typer.Exit(code=1) from None
+
+            target_guild = guild
+            target_channel = channel
+
+            # Fall back to the single bound channel when ids are omitted.
+            if target_channel is None:
+                db = Database(settings)
+                try:
+                    from dsbot.storage import repos
+
+                    async with db.session() as session:
+                        bindings = await repos.list_enabled_bindings(session)
+                    if bindings:
+                        target_channel = bindings[0].channel_id
+                        target_guild = target_guild or bindings[0].guild_id
+                finally:
+                    await db.dispose()
+
+            if target_guild is None or target_channel is None:
+                typer.echo("no guild/channel given and none bound; run `dsbot bind` first")
+                raise typer.Exit(code=1)
+
+            info = describe(client, target_guild, target_channel)
+            typer.echo("--- connection ---")
+            for key, value in info.items():
+                typer.echo(f"{key}: {value}")
+
+            problems = await preflight(client, target_guild, target_channel)
+            typer.echo("\n--- checks ---")
+            if not problems:
+                typer.echo("all checks passed")
+            else:
+                for problem in problems:
+                    typer.echo(f"PROBLEM: {problem}")
+                raise typer.Exit(code=1)
+        finally:
+            if not client.is_closed():
+                await client.close()
+            if runner is not None:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+
+    asyncio.run(run_doctor())
 
 
 @app.command("run")
