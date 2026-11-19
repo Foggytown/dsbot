@@ -1,0 +1,70 @@
+[project]
+name = "dsbot"
+version = "0.1.0"
+description = "Discord report monitoring and aggregation for RP military communities"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "discord.py>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20",
+    "alembic>=1.14",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "structlog>=24.4",
+    "apscheduler>=3.11,<4",
+    "typer>=0.15",
+    "tzdata>=2024.2",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+    "basedpyright>=1.22",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "time-machine>=2.16",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dsbot"]
+
+[project.scripts]
+dsbot = "dsbot.cli:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ASYNC", "N"]
+# RUF001/002/003 flag Cyrillic and typographic characters as "ambiguous unicode".
+# This project parses Russian report text, so those are legitimate content.
+ignore = ["N818", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.basedpyright]
+include = ["src", "tests"]
+typeCheckingMode = "standard"
+pythonVersion = "3.13"
+reportMissingTypeStubs = false
+reportUnusedCallResult = false
+
+[tool.coverage.run]
+source = ["src/dsbot"]
