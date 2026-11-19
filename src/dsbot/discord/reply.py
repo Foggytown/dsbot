@@ -16,7 +16,12 @@ log = structlog.get_logger(__name__)
 
 class ReplySink(Protocol):
     async def send(
-        self, channel_id: int, content: str, *, ephemeral: bool = False
+        self,
+        channel_id: int,
+        content: str,
+        *,
+        ephemeral: bool = False,
+        reference_message_id: int | None = None,
     ) -> int | None: ...
     async def edit(
         self, channel_id: int, message_id: int, content: str, *, ephemeral: bool = False
@@ -56,17 +61,32 @@ class DiscordReplySink:
         log.info("reply_channel_fetched", channel_id=channel_id)
         return channel
 
-    async def send(self, channel_id: int, content: str, *, ephemeral: bool = False) -> int | None:
+    async def send(
+        self,
+        channel_id: int,
+        content: str,
+        *,
+        ephemeral: bool = False,
+        reference_message_id: int | None = None,
+    ) -> int | None:
         channel = await self._resolve(channel_id)
         if not isinstance(channel, discord.abc.Messageable):
             log.error("reply_channel_not_messageable", channel_id=channel_id)
             return None
+        reference: Any = None
+        if reference_message_id is not None:
+            getter = getattr(channel, "get_partial_message", None)
+            if getter is not None:
+                reference = getter(reference_message_id)
         try:
-            # `ephemeral` cannot be honoured outside an interaction. Warning a report in
-            # a channel must be visible to the reporter openly, so this flag is accepted
-            # for interface compatibility and ignored here.
+            # `ephemeral` cannot be honoured outside an interaction. A report warning must
+            # be visible to the reporter openly, so this flag exists only for interface
+            # compatibility and is ignored here.
             message = await channel.send(
-                content, allowed_mentions=discord.AllowedMentions(users=True)
+                content,
+                allowed_mentions=discord.AllowedMentions(users=True),
+                reference=reference,
+                mention_author=False,
             )
         except discord.Forbidden:
             log.error("reply_forbidden", channel_id=channel_id)
@@ -126,12 +146,21 @@ class RecordingReplySink:
 
     def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
+        self.references: list[int | None] = []
         self.edited: list[tuple[int, int, str]] = []
         self.cleared: list[tuple[int, int]] = []
         self._next_id = 1000
 
-    async def send(self, channel_id: int, content: str, *, ephemeral: bool = False) -> int | None:
+    async def send(
+        self,
+        channel_id: int,
+        content: str,
+        *,
+        ephemeral: bool = False,
+        reference_message_id: int | None = None,
+    ) -> int | None:
         self.sent.append((channel_id, content))
+        self.references.append(reference_message_id)
         self._next_id += 1
         return self._next_id
 

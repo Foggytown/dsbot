@@ -150,6 +150,23 @@ An IDN is **exactly 4 digits, or 6 or more**. Values are stored verbatim and nev
 zero-padded, so `001` stays `001` and is rejected as `idn_bad_length` rather than
 silently becoming `0001`. Lore IDNs use `sub_unit/number`, e.g. `01/0016`.
 
+## Stopping the bot
+
+Closing the terminal, or pressing Ctrl+C in the wrong window, does **not** stop the bot:
+`uv run dsbot run` spawns a child process that survives. Messages keep being answered
+until that process dies. Use the commands instead:
+
+```powershell
+uv run dsbot status    # is it running, and which pid
+uv run dsbot stop      # stop it cleanly (escalates to force)
+```
+
+`stop` signals politely, then terminates if needed, and confirms the process is gone.
+A pid file in `var/dsbot.pid` makes this work no matter how the bot was started.
+
+If `stop` ever fails, the pid is printed; terminate directly with
+`Stop-Process -Id <pid> -Force`.
+
 ## Development
 
 ```powershell

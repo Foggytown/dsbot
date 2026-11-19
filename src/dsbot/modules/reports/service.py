@@ -99,6 +99,8 @@ class ReportService:
         # same pipeline, which is the only way to exercise the live gateway path
         # without a second Discord account.
         self._allow_bot_authors = allow_bot_authors
+        # The message currently being evaluated, so a reply can quote it.
+        self._report_message_id: int = 0
 
     def attach_retry(self, retry: RetryScheduler) -> None:
         """Late binding, because the scheduler needs the service to exist first."""
@@ -154,6 +156,7 @@ class ReportService:
         """One parsing pass. `phase` decides whether the grace window still applies."""
         if not group:
             return None
+        self._report_message_id = group[0].message_id
         candidate = ReportCandidate(messages=group)
         parsed = parse_report(context.schemas, candidate)
 
@@ -359,7 +362,10 @@ class ReportService:
             existing = await repos.get_validation_message(session, report_id)
 
         post_message_id = await self._post_or_edit(
-            context, existing.message_id if existing else None, body
+            context,
+            existing.message_id if existing else None,
+            body,
+            report_message_id=self._report_message_id,
         )
         if post_message_id is None:
             # Never silently swallow this: a report that should have been warned about
@@ -403,7 +409,11 @@ class ReportService:
         return cleared
 
     async def _post_or_edit(
-        self, context: ChannelContext, message_id: int | None, body: str
+        self,
+        context: ChannelContext,
+        message_id: int | None,
+        body: str,
+        report_message_id: int,
     ) -> int | None:
         assert self._reply is not None
         if message_id is not None:
@@ -411,7 +421,9 @@ class ReportService:
             if edited:
                 return message_id
             message_id = None
-        return await self._reply.send(context.channel_id, body)
+        return await self._reply.send(
+            context.channel_id, body, reference_message_id=report_message_id
+        )
 
     def _compose_warning(self, locale: str, parsed: ParseOutput, author_id: int) -> str:
         template = REPORT_ISSUES.get(locale) or REPORT_ISSUES[DEFAULT_LOCALE]

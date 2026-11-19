@@ -159,6 +159,18 @@ async def test_old_incomplete_report_is_warned(bound_db: Database) -> None:
     assert f"<@{AUTHOR}>" in body
 
 
+async def test_warning_quotes_the_report_message(bound_db: Database) -> None:
+    """The warning should sit under the report it is about, not float loose."""
+    sink = RecordingReplySink()
+    service = ReportService(bound_db, sink)
+    await store_message(bound_db, message_id=1, content="1. SOB | 0016\n2. INF\n3.")
+
+    await service.process_message(CHANNEL, AUTHOR, 1)
+
+    assert len(sink.sent) == 1
+    assert sink.references == [1]
+
+
 async def test_warning_mentions_the_missing_field(bound_db: Database) -> None:
     sink = RecordingReplySink()
     service = ReportService(bound_db, sink)

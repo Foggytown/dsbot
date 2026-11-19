@@ -453,6 +453,55 @@ def replay(
     asyncio.run(run_replay())
 
 
+@app.command("stop")
+def stop(
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Stop the running bot, however it was started.
+
+    Closing the terminal does not stop the bot: `uv run` leaves the child process alive,
+    which is why messages keep arriving after Ctrl+C. Use this instead.
+    """
+    _settings(verbose)
+
+    from dsbot.core.lock import DEFAULT_PID_PATH, is_running, read_pid, stop_running
+
+    pid = read_pid(DEFAULT_PID_PATH)
+    if pid is None:
+        typer.echo("not running (no pid file)")
+        return
+
+    outcome = stop_running()
+    typer.echo(outcome)
+    if is_running(pid):
+        typer.echo(f"If it refuses to die, terminate it directly:\n  Stop-Process -Id {pid} -Force")
+        raise typer.Exit(code=1)
+
+
+@app.command("status")
+def status(
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Show whether the bot is running, and which process."""
+    _settings(verbose)
+
+    from dsbot.core.lock import DEFAULT_PID_PATH, is_running, read_pid
+
+    pid = read_pid(DEFAULT_PID_PATH)
+    if pid is None:
+        typer.echo("stopped (no pid file)")
+        return
+    if is_running(pid):
+        typer.echo(f"running (pid {pid})")
+    else:
+        typer.echo(f"stopped (stale pid file, pid {pid} is gone)")
+        # A pid file left behind by a crash or a force kill would make the next
+        # `dsbot stop` act on a recycled pid, so clear it here.
+        from dsbot.core.lock import clear_pid
+
+        clear_pid(DEFAULT_PID_PATH)
+
+
 @app.command("run")
 def run(
     dry_run: Annotated[
