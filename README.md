@@ -69,6 +69,7 @@ report text) and **Server Members Intent** (required to resolve ranks).
 uv run dsbot init-db
 uv run dsbot bind --guild <guild> --channel <channel> --rank-guild <guild>
 uv run dsbot backfill --channel <channel> --since 14d --out backfill-out/reports.jsonl
+uv run dsbot analyze --dump backfill-out/reports.jsonl
 uv run dsbot parse --file report.txt
 uv run dsbot export --channel <channel> --out backfill-out/reports.csv
 ```
@@ -76,7 +77,17 @@ uv run dsbot export --channel <channel> --out backfill-out/reports.csv
 `backfill --to-db` writes to the database in the same pass. `--since` accepts an
 ISO date or a relative duration (`14d`, `36h`).
 
+`analyze` is the important one before going live: it runs the *same* parser over a
+real dump and reports match rate, which fields are missing, and sample messages the
+schema does not yet cover.
+
 ## Development
+
+```powershell
+uv run python scripts/check.py     # lint + format + types + tests
+```
+
+Or individually:
 
 ```powershell
 uv run pytest
