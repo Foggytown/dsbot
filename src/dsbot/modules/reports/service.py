@@ -183,19 +183,9 @@ class ReportService:
                 action="cleared" if cleared else "none",
             )
 
-        # Still inside the grace window: wait for the follow-up photos.
-        if phase != "retry" and self._awaiting_attachments(parsed, group, context):
-            report_id = await self._persist(context, candidate, parsed, status="deferred")
-            await self._schedule_retry(context, group, report_id)
-            return ProcessResult(
-                report_id=report_id,
-                matched=True,
-                valid=False,
-                issues=issue_codes,
-                field_count=len(parsed.fields),
-                action="deferred",
-            )
-
+        # No deferral. A warning that arrives two minutes late feels broken, and a
+        # deferred report that dies with the process is worse. Warn immediately; if the
+        # photos arrive later the warning is cleared automatically.
         report_id = await self._persist(context, candidate, parsed, status="invalid")
         await self._warn(context, report_id, parsed, author_id=group[0].author_id)
         return ProcessResult(
@@ -208,7 +198,11 @@ class ReportService:
         )
 
     async def retry_group(self, channel_id: int, message_id: int) -> ProcessResult | None:
-        """Re-examine a deferred report after its grace window expired."""
+        """Re-examine one report on demand.
+
+        Only used by `dsbot replay` and the startup sweep. Live traffic never defers, so
+        nothing schedules this automatically.
+        """
         context = await self.channel_context(channel_id)
         if context is None or not context.schemas:
             return None
@@ -278,66 +272,14 @@ class ReportService:
 
         return group
 
-    def _awaiting_attachments(
-        self,
-        parsed: ParseOutput,
-        group: list[GroupMessage],
-        context: ChannelContext,
-    ) -> bool:
-        """True while missing evidence could still arrive in a follow-up."""
-        missing_evidence = [
-            i for i in parsed.issues if i.code == "field_missing" and i.field_id is not None
-        ]
-        if not missing_evidence:
-            return False
-
-        specs = {b.spec.id: b.spec for b in parsed.fields}
-        needs_attachments = any(
-            specs[field_id].accepts_attachments
-            for field_id in (i.field_id for i in missing_evidence)
-            if field_id in specs
-        )
-        if not needs_attachments:
-            return False
-
-        # The deadline runs from the *report* message, not the newest follower, so a
-        # stream of chatter cannot postpone the warning indefinitely.
-        first_message_at = min(m.created_at for m in group)
-        return datetime.now(UTC) - first_message_at < context.group_window
-
-    async def _schedule_retry(
-        self,
-        context: ChannelContext,
-        group: list[GroupMessage],
-        report_id: int,
-    ) -> None:
-        """Fire a re-check when the grace window expires.
-
-        Without this, a deferred report is a dead end: nothing else ever looks at it
-        again if the author simply stops posting.
-        """
-        if self._retry is None:
-            return
-        first_message_at = min(m.created_at for m in group)
-        due = first_message_at + context.group_window + timedelta(seconds=2)
-        await self._retry.schedule(
-            when=due,
-            channel_id=context.channel_id,
-            message_id=group[0].message_id,
-            key=f"{context.channel_id}:{group[0].message_id}",
-        )
-
     async def pending_for_author(
         self, channel_id: int, author_id: int, after_message_id: int
     ) -> list[int]:
-        """Find reports by this author still awaiting evidence.
+        """Find reports by this author that a new attachment-only message may complete.
 
-        This is the fix for "photo posted, report never re-checked": a follow-up
-        message cannot know which earlier report it belongs to, so the reports that
-        are still waiting for it have to be found and re-examined.
-
-        The database already knows which ones are waiting, so ask it rather than
-        guessing from message text. Chat is stored as `ignored` and cannot match.
+        A follow-up photo cannot know which earlier report it belongs to, so the reports
+        that are still waiting for evidence must be found and re-examined. Without this a
+        photo posted moments after its report never counted.
         """
         async with self._db.session() as session:
             message = await repos.get_message(session, channel_id, after_message_id)
@@ -413,7 +355,6 @@ class ReportService:
             return
 
         body = self._compose_warning(context.locale, parsed, author_id)
-        existing = None
         async with self._db.session() as session:
             existing = await repos.get_validation_message(session, report_id)
 

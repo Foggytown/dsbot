@@ -15,8 +15,12 @@ log = structlog.get_logger(__name__)
 
 
 class ReplySink(Protocol):
-    async def send(self, channel_id: int, content: str) -> int | None: ...
-    async def edit(self, channel_id: int, message_id: int, content: str) -> bool: ...
+    async def send(
+        self, channel_id: int, content: str, *, ephemeral: bool = False
+    ) -> int | None: ...
+    async def edit(
+        self, channel_id: int, message_id: int, content: str, *, ephemeral: bool = False
+    ) -> bool: ...
     async def clear(self, channel_id: int, message_id: int) -> bool: ...
 
 
@@ -52,12 +56,15 @@ class DiscordReplySink:
         log.info("reply_channel_fetched", channel_id=channel_id)
         return channel
 
-    async def send(self, channel_id: int, content: str) -> int | None:
+    async def send(self, channel_id: int, content: str, *, ephemeral: bool = False) -> int | None:
         channel = await self._resolve(channel_id)
         if not isinstance(channel, discord.abc.Messageable):
             log.error("reply_channel_not_messageable", channel_id=channel_id)
             return None
         try:
+            # `ephemeral` cannot be honoured outside an interaction. Warning a report in
+            # a channel must be visible to the reporter openly, so this flag is accepted
+            # for interface compatibility and ignored here.
             message = await channel.send(
                 content, allowed_mentions=discord.AllowedMentions(users=True)
             )
@@ -69,7 +76,9 @@ class DiscordReplySink:
             return None
         return message.id
 
-    async def edit(self, channel_id: int, message_id: int, content: str) -> bool:
+    async def edit(
+        self, channel_id: int, message_id: int, content: str, *, ephemeral: bool = False
+    ) -> bool:
         channel = await self._resolve(channel_id)
         partial = _partial_message(channel, message_id)
         if partial is None:
@@ -121,12 +130,14 @@ class RecordingReplySink:
         self.cleared: list[tuple[int, int]] = []
         self._next_id = 1000
 
-    async def send(self, channel_id: int, content: str) -> int | None:
+    async def send(self, channel_id: int, content: str, *, ephemeral: bool = False) -> int | None:
         self.sent.append((channel_id, content))
         self._next_id += 1
         return self._next_id
 
-    async def edit(self, channel_id: int, message_id: int, content: str) -> bool:
+    async def edit(
+        self, channel_id: int, message_id: int, content: str, *, ephemeral: bool = False
+    ) -> bool:
         self.edited.append((channel_id, message_id, content))
         return True
 

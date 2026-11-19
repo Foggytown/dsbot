@@ -117,8 +117,8 @@ def test_two_photos_satisfy_both_evidence_fields() -> None:
 
 
 def test_single_evidence_block_resolves_both_subfields() -> None:
-    """ "3. Доказательства:" as one item must feed 3.1 and 3.2, not neither."""
-    content = "1. SOB | 0016\n2. INF\n3. Доказательства:"
+    """ "3. Р”РѕРєР°Р·Р°С‚РµР»СЊСЃС‚РІР°:" as one item must feed 3.1 and 3.2, not neither."""
+    content = "1. SOB | 0016\n2. INF\n3. Р”РѕРєР°Р·Р°С‚РµР»СЊСЃС‚РІР°:"
     result = parse_report(list(DEFAULT_SCHEMAS), group(content, 2), attachment_count=2)
     missing = {i.field_id for i in result.issues if i.code == "field_missing"}
     assert "evidence_1" not in missing
@@ -127,8 +127,8 @@ def test_single_evidence_block_resolves_both_subfields() -> None:
 
 def test_nested_subfield_still_preferred_when_present() -> None:
     content = (
-        "1. SOB | 0016\n2. INF\n3. Доказательства:\n"
-        "     - 3.1. Фото в инж. блоке.\n     - 3.2. Фото практики."
+        "1. SOB | 0016\n2. INF\n3. Р”РѕРєР°Р·Р°С‚РµР»СЊСЃС‚РІР°:\n"
+        "     - 3.1. Р¤РѕС‚Рѕ РІ РёРЅР¶. Р±Р»РѕРєРµ.\n     - 3.2. Р¤РѕС‚Рѕ РїСЂР°РєС‚РёРєРё."
     )
     result = parse_report(list(DEFAULT_SCHEMAS), group(content, 2), attachment_count=2)
     bindings = {b.spec.id: b for b in result.fields}
@@ -157,56 +157,7 @@ def test_partial_idn_is_still_parsed_but_flagged() -> None:
     assert any(i.code == "idn_bad_length" for i in result.issues)
 
 
-# --- bug 4: a deferral that never resolves --------------------------------
-
-
-async def test_deferred_report_is_rescheduled(db: Database) -> None:
-    retry = ImmediateRetryScheduler()
-    service = ReportService(db, RecordingReplySink(), retry)
-    await post(db, message_id=1, content=REAL_REPORT)
-
-    result = await service.process_message(CHANNEL, AUTHOR, 1)
-    assert result is not None
-    assert result.action == "deferred"
-    assert len(retry.scheduled) == 1
-    assert retry.scheduled[0]["message_id"] == 1
-
-
-async def test_retry_warns_when_photos_never_arrive(db: Database) -> None:
-    """The exact live failure: report deferred, author never posts the photo."""
-    sink = RecordingReplySink()
-    service = ReportService(db, sink, ImmediateRetryScheduler())
-    await post(db, message_id=1, content=REAL_REPORT, minutes=-30)
-
-    result = await service.retry_group(CHANNEL, 1)
-    assert result is not None
-    assert result.action == "warned"
-    assert len(sink.sent) == 1
-
-
-async def test_retry_clears_nothing_and_stays_silent_when_complete(db: Database) -> None:
-    sink = RecordingReplySink()
-    service = ReportService(db, sink, ImmediateRetryScheduler())
-    await post(db, message_id=1, content=REAL_REPORT, attachments=2, minutes=-30)
-
-    result = await service.retry_group(CHANNEL, 1)
-    assert result is not None
-    assert result.valid
-    assert sink.sent == []
-
-
-async def test_grace_window_runs_from_the_report_not_the_latest_message(
-    db: Database,
-) -> None:
-    """Chatter must not postpone the warning forever."""
-    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
-    await post(db, message_id=1, content=REAL_REPORT, minutes=-30)
-    await post(db, message_id=2, content="", attachments=0, minutes=-1)
-
-    result = await service.retry_group(CHANNEL, 1)
-    assert result is not None
-    assert result.action == "warned"
-
+# --- deferral was removed: warnings are immediate --------------------------
 
 # --- bug: follow-up text was spliced into the report ------------------------
 
@@ -281,7 +232,7 @@ async def test_pending_lookup_finds_the_waiting_report(db: Database) -> None:
     await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
     # The report must have been processed (deferred) before a photo can complete it.
     first = await service.process_message(CHANNEL, AUTHOR, 1)
-    assert first is not None and first.action == "deferred"
+    assert first is not None and first.action == "warned"
 
     await post(db, message_id=2, content="", attachments=2, minutes=-1)
     pending = await service.pending_for_author(CHANNEL, AUTHOR, 2)
@@ -293,10 +244,10 @@ async def test_photo_completes_the_report_through_pending_path(db: Database) -> 
     sink = RecordingReplySink()
     service = ReportService(db, sink, ImmediateRetryScheduler())
 
-    # 1. report arrives alone and is deferred
+    # 1. report arrives alone and is warned immediately
     await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
     first = await service.process_message(CHANNEL, AUTHOR, 1)
-    assert first is not None and first.action == "deferred"
+    assert first is not None and first.action == "warned"
 
     # 2. photo arrives afterwards
     await post(db, message_id=2, content="", attachments=2, minutes=-1)

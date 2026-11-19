@@ -115,8 +115,8 @@ async def test_valid_report_persists_and_stores_fields(bound_db: Database) -> No
     assert sink.sent == []
 
 
-async def test_missing_evidence_is_deferred_then_warned(bound_db: Database) -> None:
-    """A fresh report is not nagged immediately: the photo may still be coming."""
+async def test_missing_evidence_is_warned_immediately(bound_db: Database) -> None:
+    """Deferral was removed: a late warning feels broken, and it died on restart."""
     sink = RecordingReplySink()
     service = ReportService(bound_db, sink)
     await store_message(bound_db, message_id=1, content="1. SOB | 0016\n2. INF\n3.")
@@ -125,8 +125,24 @@ async def test_missing_evidence_is_deferred_then_warned(bound_db: Database) -> N
     assert result is not None
     assert result.matched
     assert not result.valid
-    assert result.action == "deferred"
-    assert sink.sent == []
+    assert result.action == "warned"
+    assert len(sink.sent) == 1
+
+
+async def test_warning_is_cleared_when_photos_arrive_later(bound_db: Database) -> None:
+    """The immediate warning must still disappear once the report is completed."""
+    sink = RecordingReplySink()
+    service = ReportService(bound_db, sink)
+    await store_message(bound_db, message_id=1, content="1. SOB | 0016\n2. INF\n3.")
+    first = await service.process_message(CHANNEL, AUTHOR, 1)
+    assert first is not None and first.action == "warned"
+
+    # Photo follows in a separate message, then the report is re-examined.
+    await store_message(bound_db, message_id=2, content="", attachments=2)
+    result = await service.process_message(CHANNEL, AUTHOR, 1)
+    assert result is not None
+    assert result.valid
+    assert result.action == "cleared"
 
 
 async def test_old_incomplete_report_is_warned(bound_db: Database) -> None:
