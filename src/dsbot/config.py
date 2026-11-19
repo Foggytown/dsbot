@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # admin knob, so it lives in .env rather than in the database.
     report_group_window_seconds: float = Field(default=120.0)
 
+    # DEV ONLY. Accept messages authored by bots, so the live gateway path can be
+    # exercised by posting a test message as the bot itself. Never enable in production.
+    dev_accept_bot_messages: bool = Field(default=False)
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")

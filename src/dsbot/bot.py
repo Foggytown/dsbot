@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import discord
+import discord.ext.commands
 import structlog
 
 from dsbot.config import Settings
@@ -43,9 +44,14 @@ log = structlog.get_logger(__name__)
 # Message Content is always on (reports are text). Members is opt-in until ranks exist.
 
 
-class Bot(discord.Client):
+class Bot(discord.ext.commands.Bot):
     def __init__(self, settings: Settings, *, reply: ReplySink | None = None) -> None:
-        super().__init__(intents=settings.intents())
+        super().__init__(
+            command_prefix="!",
+            intents=settings.intents(),
+            # Slash commands are the admin surface; prefix commands are unused.
+            help_command=None,
+        )
         self.settings = settings
         self.bus = EventBus()
         self.db = Database(settings)
@@ -55,6 +61,7 @@ class Bot(discord.Client):
             self.db,
             self.reply,
             group_window=timedelta(seconds=settings.report_group_window_seconds),
+            allow_bot_authors=settings.dev_accept_bot_messages,
         )
         self.retry = RetryScheduler(self.reports)
         self.reports.attach_retry(self.retry)
@@ -62,10 +69,29 @@ class Bot(discord.Client):
 
     # --- lifecycle ---------------------------------------------------------
 
+    @property
+    def user_id_if_ready(self) -> int | None:
+        return self.user.id if self.user is not None else None
+
     async def setup_hook(self) -> None:
         await self.db.create_all()
         self.bus.subscribe("message_created", self._on_message_created)
         self.bus.subscribe("message_edited", self._on_message_edited)
+
+        from dsbot.discord.commands import register_commands
+
+        await register_commands(self, self.db)
+
+        # A restart between "deferred" and its deadline loses the in-memory timer, and
+        # the report would then never resolve. Sweep them at startup.
+        from dsbot.jobs.replay import expire_deferred
+
+        try:
+            resolved = await expire_deferred(self.db, self.reports)
+            if resolved:
+                log.info("deferred_recovered_at_startup", count=resolved)
+        except Exception:
+            log.exception("deferred_recovery_failed")
 
         bindings = await self._load_bindings()
         if not bindings:
@@ -86,6 +112,7 @@ class Bot(discord.Client):
                     guild_id=binding.guild_id,
                     module=binding.module_key,
                 )
+            await self._sync_commands(bindings)
 
         log.info(
             "bot_ready",
@@ -98,6 +125,22 @@ class Bot(discord.Client):
     async def _load_bindings(self) -> list[Any]:
         async with self.db.session() as session:
             return list(await repos.list_enabled_bindings(session))
+
+    async def _sync_commands(self, bindings: list[Any]) -> None:
+        """Push slash commands to each guild that has a binding.
+
+        Guild-scoped sync is instant, unlike global sync which can take an hour. That
+        matters: an admin should not be told "wait up to an hour" after a fix.
+        """
+        guild_ids = {b.guild_id for b in bindings if b.guild_id}
+        for guild_id in guild_ids:
+            guild = discord.Object(id=guild_id)
+            try:
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                log.info("slash_commands_synced", guild_id=guild_id, count=len(synced))
+            except discord.HTTPException:
+                log.exception("slash_command_sync_failed", guild_id=guild_id)
 
     async def close(self) -> None:
         await self.retry.aclose()
@@ -113,7 +156,9 @@ class Bot(discord.Client):
     # --- gateway events ----------------------------------------------------
 
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot:
+        if message.author.bot and not (
+            self.settings.dev_accept_bot_messages and message.author.id == self.user_id_if_ready
+        ):
             return
         if message.guild is None:
             log.debug("dm_ignored", user_id=message.author.id)
@@ -121,6 +166,7 @@ class Bot(discord.Client):
         if not await self._is_bound(message.channel.id):
             log.debug("unbound_channel_ignored", channel_id=message.channel.id)
             return
+        log.debug("message_ingesting", message_id=message.id, channel_id=message.channel.id)
         await self.ingestor.handle(sink.message_created(message))
 
     async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:

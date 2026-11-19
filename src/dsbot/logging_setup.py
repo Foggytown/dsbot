@@ -50,6 +50,7 @@ def configure_logging(level: str = "INFO", fmt: str = "console") -> None:
 
     # discord.py is chatty at INFO during backfill.
     logging.getLogger("discord").setLevel(logging.WARNING)
-    logging.getLogger("sqlalchemy.engine").setLevel(
-        logging.INFO if level == "DEBUG" else logging.WARNING
-    )
+    # SQL logging is controlled solely by DSBOT_SQL_ECHO. Tying it to the log level made
+    # every DEBUG run unreadable, which hid the very events being debugged.
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)

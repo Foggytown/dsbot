@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -344,6 +346,113 @@ def doctor(
     asyncio.run(run_doctor())
 
 
+@app.command("say")
+def say(
+    channel: Annotated[int, typer.Option(help="Channel id")],
+    message: Annotated[str, typer.Option("--message", "-m", help="Text to send")] = (
+        "dsbot connectivity check"
+    ),
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Post one message to a channel. Proves send permission works end to end."""
+    settings = _settings(verbose)
+
+    async def run_say() -> None:
+        import discord as _discord
+
+        client = _discord.Client(intents=_discord.Intents.none())
+        runner: asyncio.Task[None] | None = None
+        try:
+            runner = asyncio.create_task(client.start(settings.discord_token))
+            await _wait_until_ready(client, deadline_seconds=60.0, runner=runner)
+
+            ch = client.get_channel(channel)
+            if ch is None:
+                ch = await client.fetch_channel(channel)
+            if not isinstance(ch, _discord.abc.Messageable):
+                raise typer.BadParameter(f"channel {channel} is not messageable")
+
+            sent = await ch.send(message)
+            typer.echo(f"sent message_id={sent.id} to #{getattr(ch, 'name', channel)}")
+        except _discord.Forbidden as exc:
+            typer.echo(f"FAILED: missing permission to send in {channel}: {exc}")
+            raise typer.Exit(code=1) from None
+        finally:
+            if not client.is_closed():
+                await client.close()
+            if runner is not None:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+
+    asyncio.run(run_say())
+
+
+@app.command("replay")
+def replay(
+    channel: Annotated[int, typer.Option(help="Channel id")],
+    hours: Annotated[int, typer.Option(help="Look back this many hours")] = 24,
+    post: Annotated[
+        bool, typer.Option("--post", help="Actually send/clear warnings in Discord")
+    ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Re-run stored messages through the reports module and show every decision."""
+    settings = _settings(verbose)
+
+    from dsbot.discord.reply import DiscordReplySink, RecordingReplySink
+    from dsbot.jobs.replay import default_since, replay_channel
+    from dsbot.modules.reports.service import ReportService
+
+    async def run_replay() -> None:
+        db = Database(settings)
+        client = None
+        runner = None
+        try:
+            if post:
+                import discord as _discord
+
+                client = _discord.Client(intents=settings.intents())
+                runner = asyncio.create_task(client.start(settings.discord_token))
+                await _wait_until_ready(client, deadline_seconds=60.0, runner=runner)
+                sink = DiscordReplySink(client)
+                typer.echo("mode: POSTING to Discord")
+            else:
+                sink = RecordingReplySink()
+                typer.echo("mode: dry (no messages sent; use --post to send)")
+
+            service = ReportService(
+                db,
+                sink,
+                group_window=timedelta(seconds=settings.report_group_window_seconds),
+            )
+            result = await replay_channel(
+                db,
+                service,
+                channel_id=channel,
+                since=default_since(hours),
+            )
+
+            for line in result.lines:
+                typer.echo(line)
+            typer.echo("")
+            typer.echo(json.dumps(result.summary(), indent=2))
+            if isinstance(sink, RecordingReplySink):
+                typer.echo(f"would_send={len(sink.sent)} would_clear={len(sink.cleared)}")
+                for _, body in sink.sent:
+                    typer.echo(f"  -> {body.splitlines()[0][:120]}")
+        finally:
+            if client is not None and not client.is_closed():
+                await client.close()
+            if runner is not None:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+            await db.dispose()
+
+    asyncio.run(run_replay())
+
+
 @app.command("run")
 def run(
     dry_run: Annotated[
@@ -370,6 +479,124 @@ def run(
             await bot.close()
 
     asyncio.run(main())
+
+
+@app.command("form-set")
+def form_set(
+    channel: Annotated[int, typer.Option(help="Channel id")],
+    field: Annotated[str, typer.Option(help="Field id, e.g. qualification")],
+    add: Annotated[
+        list[str] | None,
+        typer.Option("--add", help="Allowed value to add (repeatable, or comma-separated)"),
+    ] = None,
+    remove: Annotated[
+        list[str] | None,
+        typer.Option("--remove", help="Allowed value to remove (repeatable, or comma-separated)"),
+    ] = None,
+    set_values: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--set",
+            help="Replace the list. Repeat the flag, or pass comma/space separated values",
+        ),
+    ] = None,
+    required: Annotated[
+        bool | None, typer.Option("--required/--optional", help="Set required-ness")
+    ] = None,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Edit a field's allowed values (options or formations) for a channel.
+
+    This is the day-to-day admin path. Examples:
+
+        dsbot form-set --channel <id> --field qualification --add MED --add ENG
+        dsbot form-set --channel <id> --field formation_idn --set SOB ARC RC
+        dsbot form-set --channel <id> --field qualification --remove SNP
+        dsbot form-set --channel <id> --field qualification --required
+    """
+    settings = _settings(verbose)
+
+    from dsbot.modules.reports.authoring import edit_field_values
+    from dsbot.modules.reports.schema import FormSchemaDef
+
+    def split_values(values: list[str] | None) -> list[str]:
+        """Accept repeated flags and comma/space separated lists alike."""
+        import re as _re
+
+        out: list[str] = []
+        for chunk in values or []:
+            out.extend(v for v in _re.split(r"[,\s]+", chunk) if v)
+        return out
+
+    async def run_set() -> None:
+        db = Database(settings)
+        try:
+            async with db.write_session() as session:
+                definition = await edit_field_values(
+                    session,
+                    channel_id=channel,
+                    field_id=field,
+                    add=split_values(add),
+                    remove=split_values(remove),
+                    replace=split_values(set_values) if set_values is not None else None,
+                    required=required,
+                )
+        finally:
+            await db.dispose()
+
+        parsed = FormSchemaDef.model_validate(definition)
+        spec = parsed.field_by_id(field)
+        typer.echo(f"updated {parsed.key}.{field}")
+        if spec is not None:
+            if spec.type == "enum":
+                typer.echo(f"  options   = {spec.options}")
+            elif spec.type == "formation_idn":
+                typer.echo(f"  formations= {spec.formations}")
+            typer.echo(f"  required  = {spec.required}")
+
+    try:
+        asyncio.run(run_set())
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+@app.command("form-show")
+def form_show(
+    channel: Annotated[int, typer.Option(help="Channel id")],
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Show a channel's form in a compact, readable summary."""
+    settings = _settings(verbose)
+
+    from dsbot.modules.reports.authoring import export_forms
+    from dsbot.modules.reports.schema import FormSchemaDef
+
+    async def run_show() -> None:
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                bundle = await export_forms(session, channel)
+        finally:
+            await db.dispose()
+
+        if not bundle.schemas:
+            typer.echo(f"channel {channel} has no form bound")
+            return
+        for raw in bundle.schemas:
+            schema = FormSchemaDef.model_validate(raw)
+            typer.echo(f"\n[{schema.key}] {schema.title}")
+            for spec in schema.fields:
+                flag = "required" if spec.required else "optional"
+                values = ""
+                if spec.type == "enum":
+                    values = f"  options={spec.options}"
+                elif spec.type == "formation_idn":
+                    values = f"  formations={spec.formations}"
+                typer.echo(
+                    f"  {spec.path or '-':<5} {spec.id:<18} {spec.type:<12} {flag:<8}{values}"
+                )
+
+    asyncio.run(run_show())
 
 
 @app.command("form-export")

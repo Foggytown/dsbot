@@ -88,12 +88,17 @@ class ReportService:
         retry: RetryScheduler | None = None,
         *,
         group_window: timedelta | None = None,
+        allow_bot_authors: bool = False,
     ) -> None:
         self._db = db
         self._reply = reply
         self._retry = retry
         # Operator-level override; per-channel config can still differ.
         self._group_window = group_window
+        # Dev only: lets a test message authored by the bot itself flow through the
+        # same pipeline, which is the only way to exercise the live gateway path
+        # without a second Discord account.
+        self._allow_bot_authors = allow_bot_authors
 
     def attach_retry(self, retry: RetryScheduler) -> None:
         """Late binding, because the scheduler needs the service to exist first."""
@@ -233,7 +238,11 @@ class ReportService:
                 return None
             if message.author_id != author_id:
                 return None
-            if message.author_is_bot:
+            if message.author_is_bot and not self._allow_bot_authors:
+                log.debug(
+                    "bot_authored_message_ignored",
+                    message_id=message_id,
+                )
                 return None
 
             cutoff = message.created_at + context.group_window
@@ -400,6 +409,7 @@ class ReportService:
         author_id: int,
     ) -> None:
         if self._reply is None:
+            log.warning("no_reply_sink_configured", report_id=report_id)
             return
 
         body = self._compose_warning(context.locale, parsed, author_id)
@@ -411,6 +421,14 @@ class ReportService:
             context, existing.message_id if existing else None, body
         )
         if post_message_id is None:
+            # Never silently swallow this: a report that should have been warned about
+            # and was not is indistinguishable from the bot being broken.
+            log.error(
+                "warning_not_posted",
+                report_id=report_id,
+                channel_id=context.channel_id,
+                issues=[i.code for i in parsed.issues],
+            )
             return
 
         async with self._db.write_session() as session:
@@ -421,6 +439,12 @@ class ReportService:
                 message_id=post_message_id,
                 issue_codes=[i.code for i in parsed.issues],
             )
+        log.info(
+            "warning_posted",
+            report_id=report_id,
+            channel_id=context.channel_id,
+            message_id=post_message_id,
+        )
 
     async def _clear_warning(self, context: ChannelContext, report_id: int) -> bool:
         if self._reply is None:

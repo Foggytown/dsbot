@@ -212,3 +212,84 @@ def validate_definition(payload: dict[str, Any]) -> list[FormSchemaDef]:
     raw = payload.get("schemas")
     items = raw if isinstance(raw, list) else [payload]
     return [from_definition(item) for item in items]
+
+
+async def edit_field_values(
+    session: AsyncSession,
+    *,
+    channel_id: int,
+    field_id: str,
+    add: list[str] | None = None,
+    remove: list[str] | None = None,
+    replace: list[str] | None = None,
+    required: bool | None = None,
+) -> dict[str, Any]:
+    """Edit one field's allowed values in place, without touching the JSON by hand.
+
+    This is the admin-facing operation: it rewrites the stored definition and validates
+    the result before committing, so a typo cannot leave a channel unparseable.
+    """
+    binding = await session.scalar(
+        select(ChannelBinding).where(ChannelBinding.channel_id == channel_id)
+    )
+    if binding is None:
+        raise ValueError(f"channel {channel_id} is not bound to any form")
+
+    row = await session.scalar(
+        select(FormSchema)
+        .join(BindingSchema, BindingSchema.schema_id == FormSchema.id)
+        .where(BindingSchema.binding_id == binding.id)
+        .order_by(BindingSchema.priority)
+        .limit(1)
+    )
+    if row is None:
+        raise ValueError(f"channel {channel_id} has no form schema bound")
+
+    definition = dict(row.definition)
+    fields = [dict(f) for f in definition.get("fields", [])]
+    target = next((f for f in fields if f.get("id") == field_id), None)
+    if target is None:
+        available = ", ".join(str(f.get("id")) for f in fields)
+        raise ValueError(f"unknown field {field_id!r}; available: {available}")
+
+    if target.get("type") not in ("enum", "formation_idn"):
+        raise ValueError(
+            f"field {field_id!r} is type {target.get('type')!r}; "
+            "only enum and formation_idn fields have value lists"
+        )
+
+    key = "options" if target.get("type") == "enum" else "formations"
+
+    if replace is not None:
+        values = [_clean(v) for v in replace]
+    else:
+        current = [_clean(str(v)) for v in target.get(key, [])]
+        values = current
+        for item in add or []:
+            cleaned = _clean(item)
+            if cleaned and cleaned not in values:
+                values.append(cleaned)
+        for item in remove or []:
+            cleaned = _clean(item)
+            values = [v for v in values if v.upper() != cleaned.upper()]
+
+    if not values:
+        raise ValueError(f"field {field_id!r} would end up with an empty {key} list")
+
+    target[key] = values
+    if required is not None:
+        target["required"] = required
+    definition["fields"] = fields
+
+    # Validate before persisting: never store a definition the parser cannot load.
+    FormSchemaDef.model_validate(definition)
+
+    row.definition = definition
+    row.version += 1
+    await session.flush()
+    return definition
+
+
+def _clean(value: str) -> str:
+    """Normalise a configured value: upper-case, strip surrounding whitespace."""
+    return value.strip().upper()

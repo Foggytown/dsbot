@@ -155,17 +155,10 @@ def training_report_schema() -> FormSchemaDef:
                 path="2",
                 type="enum",
                 required=True,
-                # Qualifications a soldier is trained FOR. Admin-editable: add or
-                # remove entries in forms/ch-<id>.json and re-import.
-                options=[
-                    "INF",
-                    "INF+",
-                    "ENG",
-                    "ENG+",
-                    "MED",
-                    "SNP",
-                    "SOB",
-                ],
+                # Qualifications a soldier is trained FOR. Only INF is confirmed so far;
+                # add others by editing forms/ch-<id>.json and re-importing. SOB is a
+                # formation, not a qualification.
+                options=["INF"],
                 hint={
                     "ru": "Укажите название квалификации (например, INF).",
                     "en": "Provide the qualification name (for example, INF).",

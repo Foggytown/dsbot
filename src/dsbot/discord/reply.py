@@ -6,7 +6,7 @@ testable without a gateway connection and lets the same code run in a dry-run mo
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 import discord
 import structlog
@@ -25,31 +25,56 @@ class DiscordReplySink:
 
     A reply to the report would be threaded under it and harder to notice. A plain
     message that mentions the author is the behaviour the channel expects.
+
+    Channel lookup falls back to a REST fetch. `get_channel` only works for channels
+    present in the local cache, and it returned `None` here even though the channel was
+    fully reachable, which made every send a silent no-op while callers believed it
+    succeeded.
     """
 
     def __init__(self, client: discord.Client) -> None:
         self._client = client
+        self._cache: dict[int, Any] = {}
+
+    async def _resolve(self, channel_id: int) -> Any:
+        channel = self._client.get_channel(channel_id)
+        if channel is not None:
+            return channel
+        cached = self._cache.get(channel_id)
+        if cached is not None:
+            return cached
+        try:
+            channel = await self._client.fetch_channel(channel_id)
+        except discord.HTTPException:
+            log.error("reply_channel_fetch_failed", channel_id=channel_id)
+            return None
+        self._cache[channel_id] = channel
+        log.info("reply_channel_fetched", channel_id=channel_id)
+        return channel
 
     async def send(self, channel_id: int, content: str) -> int | None:
-        channel = self._client.get_channel(channel_id)
+        channel = await self._resolve(channel_id)
         if not isinstance(channel, discord.abc.Messageable):
-            log.warning("reply_channel_missing", channel_id=channel_id)
+            log.error("reply_channel_not_messageable", channel_id=channel_id)
             return None
         try:
             message = await channel.send(
                 content, allowed_mentions=discord.AllowedMentions(users=True)
             )
+        except discord.Forbidden:
+            log.error("reply_forbidden", channel_id=channel_id)
+            return None
         except discord.HTTPException:
             log.exception("reply_send_failed", channel_id=channel_id)
             return None
         return message.id
 
     async def edit(self, channel_id: int, message_id: int, content: str) -> bool:
-        channel = self._client.get_channel(channel_id)
-        if not isinstance(channel, discord.abc.Messageable):
+        channel = await self._resolve(channel_id)
+        partial = _partial_message(channel, message_id)
+        if partial is None:
             return False
         try:
-            partial = channel.get_partial_message(message_id)
             await partial.edit(content=content)
             return True
         except discord.NotFound:
@@ -61,18 +86,30 @@ class DiscordReplySink:
 
     async def clear(self, channel_id: int, message_id: int) -> bool:
         """Delete our own warning once the report is fixed."""
-        channel = self._client.get_channel(channel_id)
-        if not isinstance(channel, discord.abc.Messageable):
+        channel = await self._resolve(channel_id)
+        partial = _partial_message(channel, message_id)
+        if partial is None:
             return False
         try:
-            partial = channel.get_partial_message(message_id)
             await partial.delete()
             return True
         except discord.NotFound:
             return True  # already gone: the desired end state
+        except discord.Forbidden:
+            log.error("reply_clear_forbidden", channel_id=channel_id)
+            return False
         except discord.HTTPException:
             log.exception("reply_clear_failed", channel_id=channel_id, message_id=message_id)
             return False
+
+
+def _partial_message(channel: Any, message_id: int) -> Any | None:
+    """Get a partial message handle; only channels that hold messages support this."""
+    getter = getattr(channel, "get_partial_message", None)
+    if getter is None:
+        log.error("channel_cannot_edit_messages", channel_id=getattr(channel, "id", None))
+        return None
+    return getter(message_id)
 
 
 class RecordingReplySink:
