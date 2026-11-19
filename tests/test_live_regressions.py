@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from dsbot.config import Settings
 from dsbot.core.bus import EventBus
@@ -24,6 +25,7 @@ from dsbot.modules.reports.schema import DEFAULT_SCHEMAS
 from dsbot.modules.reports.service import ReportService
 from dsbot.storage import admin, repos
 from dsbot.storage.db import Database
+from dsbot.storage.models import ReportField
 
 CHANNEL = 700
 GUILD = 901
@@ -59,7 +61,7 @@ async def post(
     message_id: int,
     content: str = "",
     attachments: int = 0,
-    minutes: int = 0,
+    minutes: float = 0,
     author: int = AUTHOR,
 ) -> None:
     snapshot = MessageSnapshot(
@@ -204,6 +206,35 @@ async def test_grace_window_runs_from_the_report_not_the_latest_message(
     result = await service.retry_group(CHANNEL, 1)
     assert result is not None
     assert result.action == "warned"
+
+
+# --- bug: follow-up text was spliced into the report ------------------------
+
+
+async def test_followup_text_is_never_spliced_into_the_report(db: Database) -> None:
+    """Real bug: a stray "123" in the next message was absorbed into empty field 4."""
+    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
+    await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
+    await post(db, message_id=2, content="123", attachments=0, minutes=-0.5)
+
+    result = await service.process_message(CHANNEL, AUTHOR, 1)
+    assert result is not None
+    async with db.session() as session:
+        report = await repos.get_report_by_message(session, CHANNEL, 1)
+        assert report is not None
+        field = await session.scalar(
+            select(ReportField).where(
+                ReportField.report_id == report.id,
+                ReportField.field_id == "promotion_link",
+            )
+        )
+    assert field is not None
+    assert not field.present
+
+
+def test_empty_link_field_is_absent_not_an_error() -> None:
+    result = parse_report(list(DEFAULT_SCHEMAS), group(REAL_REPORT, 0))
+    assert "link_not_a_url" not in {i.code for i in result.issues}
 
 
 # --- bug 5: the photo formed its own orphan group -------------------------

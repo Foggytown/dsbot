@@ -29,14 +29,23 @@ def record(
     }
 
 
-def test_grouping_by_author_and_time() -> None:
+def test_text_does_not_continue_a_group() -> None:
+    """Text means the author moved on, so it starts a new group."""
     records = [
-        record("a", author=1, minutes=0, message_id=1),
-        record("b", author=1, minutes=1, message_id=2),
-        record("c", author=2, minutes=2, message_id=3),
+        record("1. SOB | 0016", author=1, minutes=0, message_id=1),
+        record("2. INF", author=1, minutes=1, message_id=2),
     ]
     groups = group_by_author(records, window_minutes=30)
     assert len(groups) == 2
+
+
+def test_attachment_followup_joins_the_group() -> None:
+    records = [
+        record("1. SOB | 0016", author=1, minutes=0, message_id=1),
+        record("", author=1, minutes=1, message_id=2, attachments=1),
+    ]
+    groups = group_by_author(records, window_minutes=30)
+    assert len(groups) == 1
     assert len(groups[0]) == 2
 
 

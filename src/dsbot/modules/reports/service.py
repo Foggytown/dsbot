@@ -259,19 +259,12 @@ class ReportService:
             if follower.message_id == message.message_id:
                 continue
             has_attachments = bool(follower.attachments)
-            is_empty = not (follower.content or "").strip()
-            # Only attachment-carrying or empty follow-ups continue a report. A new
-            # numbered message is a separate report.
-            if has_attachments or is_empty:
-                group.append(
-                    GroupMessage(
-                        message_id=follower.message_id,
-                        author_id=follower.author_id,
-                        created_at=_aware(follower.created_at),
-                        content=follower.content,
-                        attachment_count=len(follower.attachments or []),
-                    )
-                )
+            content = (follower.content or "").strip()
+            # A follower continues the report only if it carries attachments, or is
+            # empty. Any actual text means the author moved on: either to a new report
+            # or to chat. Absorbing that text corrupted real data once already.
+            if has_attachments or not content:
+                group.append(_group_message(follower))
             else:
                 break
 
@@ -469,6 +462,16 @@ class ReportService:
             if issue.severity == "error"
         ]
         return template.format(mention=f"<@{author_id}>", lines="\n".join(lines))
+
+
+def _group_message(message: Any) -> GroupMessage:
+    return GroupMessage(
+        message_id=message.message_id,
+        author_id=message.author_id,
+        created_at=_aware(message.created_at),
+        content=message.content,
+        attachment_count=len(message.attachments or []),
+    )
 
 
 def _detail_context(detail: dict[str, Any] | None) -> dict[str, str]:

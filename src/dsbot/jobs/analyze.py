@@ -68,10 +68,11 @@ def read_records(path: Path) -> list[dict[str, Any]]:
 def group_by_author(
     records: list[dict[str, Any]], *, window_minutes: int = 30
 ) -> list[list[dict[str, Any]]]:
-    """Group consecutive messages by one author into candidate report groups.
+    """Group messages the way the live service does.
 
-    A report and its photo follow-up are separate messages by the same author. Grouping
-    by author within a short window approximates that without guessing at reply chains.
+    Same author, inside the window, and a follower only continues a group when it
+    carries attachments or is empty. Any text starts a new group: absorbing it would
+    splice unrelated messages into one report, which is a bug that actually occurred.
     """
     ordered = sorted(records, key=lambda r: r.get("created_at") or "")
     groups: list[list[dict[str, Any]]] = []
@@ -88,7 +89,11 @@ def group_by_author(
             and created is not None
             and abs((created - last_time).total_seconds()) <= window_minutes * 60
         )
-        if current and same_author and close_in_time:
+        has_attachments = bool(record.get("attachments"))
+        is_empty = not str(record.get("content") or "").strip()
+        continues = has_attachments or is_empty
+
+        if current and same_author and close_in_time and continues:
             current.append(record)
         else:
             if current:

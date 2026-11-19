@@ -175,7 +175,7 @@ def parse_enum(raw: str, field_id: str, options: list[str], *, strict: bool = Tr
 
 def parse_discord_link(raw: str, field_id: str) -> FieldResult:
     text = normalize(raw)
-    if is_blank_value(text):
+    if is_blank_value(text) or not text.strip():
         return FieldResult(value=None, present=False)
 
     urls = extract_urls(text)

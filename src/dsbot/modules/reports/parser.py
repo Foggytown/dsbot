@@ -408,10 +408,15 @@ def parse_report(
     *,
     attachment_count: int | None = None,
 ) -> ParseOutput:
-    """Parse a message group into one report, or report why nothing matched."""
-    content = group.combined_content
-    tokenized = tokenize(content)
-    schema, score, scores = select_schema(schemas, content)
+    """Parse a message group into one report, or report why nothing matched.
+
+    Only the *first* message contributes structure. Follow-up messages exist to carry
+    attachments, and their text must never be spliced into the report: joining message
+    contents lets a stray "123" get absorbed into an empty numbered field, which
+    actually happened with real data. Attachment counts are summed across the group.
+    """
+    tokenized = tokenize(group.primary.content)
+    schema, score, scores = select_schema(schemas, group.primary.content)
 
     if schema is None:
         return ParseOutput(
