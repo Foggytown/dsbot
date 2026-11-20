@@ -113,7 +113,7 @@ fields:
 # Leave `when` out to make a rule apply always.
 # =============================================================================
 rules:
-  # Photos: exactly 1 minimum when the qualification is T.
+  # T requires EXACTLY one photo: two is also wrong.
   - id: photos_for_t
     field: photos
     when:
@@ -121,11 +121,12 @@ rules:
         op: eq
         value: T
     min_attachments: 1
+    max_attachments: 1
     message:
-      ru: "Для квалификации T достаточно 1 фото."
-      en: "For qualification T, 1 photo is enough."
+      ru: "Для квалификации T нужно ровно 1 фото."
+      en: "Qualification T requires exactly 1 photo."
 
-  # Photos: 2 or more for every other qualification.
+  # Every other qualification requires AT LEAST two, more is fine.
   - id: photos_for_others
     field: photos
     when:

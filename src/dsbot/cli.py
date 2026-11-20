@@ -676,8 +676,14 @@ def form_check(
     for rule in schema.rules:
         when = " and ".join(f"{c.field} {c.op} {c.value!r}" for c in rule.when) or "always"
         effect = []
-        if rule.min_attachments is not None:
-            effect.append(f"min {rule.min_attachments} attachments")
+        exact = rule.exactly_attachments
+        if exact is not None:
+            effect.append(f"exactly {exact} attachments")
+        else:
+            if rule.min_attachments is not None:
+                effect.append(f"min {rule.min_attachments} attachments")
+            if rule.max_attachments is not None:
+                effect.append(f"max {rule.max_attachments} attachments")
         if rule.allowed:
             effect.append(f"allowed {rule.allowed}")
         if rule.type:

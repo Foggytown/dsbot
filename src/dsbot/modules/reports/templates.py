@@ -73,6 +73,30 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
         "ru": "- Неизвестное формирование: «{detail_raw}».",
         "en": "- Unknown formation: '{detail_raw}'.",
     },
+    "rule_min_attachments": {
+        "ru": "- Фото: нужно не меньше {detail_required}, найдено {detail_found}.",
+        "en": "- Photos: need at least {detail_required}, found {detail_found}.",
+    },
+    "rule_max_attachments": {
+        "ru": "- Фото: нужно не больше {detail_required}, найдено {detail_found}.",
+        "en": "- Photos: need at most {detail_required}, found {detail_found}.",
+    },
+    "rule_exact_attachments": {
+        "ru": "- Фото: нужно ровно {detail_required}, найдено {detail_found}.",
+        "en": "- Photos: need exactly {detail_required}, found {detail_found}.",
+    },
+    "rule_required": {
+        "ru": "- {detail_message}",
+        "en": "- {detail_message}",
+    },
+    "rule_not_allowed": {
+        "ru": "- {detail_message}",
+        "en": "- {detail_message}",
+    },
+    "rule_wrong_type": {
+        "ru": "- {detail_message}",
+        "en": "- {detail_message}",
+    },
 }
 
 # Shown when a report validates after previously being warned.

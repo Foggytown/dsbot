@@ -127,16 +127,24 @@ REPORT_INF = """1. SOB | 0016
 4. https://discord.com/channels/1/2/3"""
 
 
-def test_t_qualification_needs_one_photo() -> None:
+def test_t_qualification_with_exactly_one_photo_is_valid() -> None:
     schema = load_training()
     result = parse_report([schema], group(REPORT_T, 1), attachment_count=1)
     assert result.is_valid, [i.to_payload() for i in result.issues]
 
 
-def test_t_qualification_with_two_photos_is_valid() -> None:
+def test_t_qualification_with_two_photos_is_invalid() -> None:
+    """T requires exactly one photo, so two is also wrong."""
     schema = load_training()
     result = parse_report([schema], group(REPORT_T, 2), attachment_count=2)
-    assert result.is_valid
+    assert not result.is_valid
+    assert "rule_exact_attachments" in {i.code for i in result.issues}
+
+
+def test_t_qualification_with_no_photo_is_invalid() -> None:
+    schema = load_training()
+    result = parse_report([schema], group(REPORT_T, 0), attachment_count=0)
+    assert not result.is_valid
 
 
 def test_t_qualification_needs_no_link() -> None:
@@ -153,10 +161,20 @@ def test_other_qualification_needs_two_photos() -> None:
     assert not result.is_valid
 
 
-def test_other_qualification_with_two_photos_and_link_is_valid() -> None:
+def test_other_qualification_with_three_photos_is_valid() -> None:
+    """Non-T needs at least two, so three is fine."""
     schema = load_training()
-    result = parse_report([schema], group(REPORT_INF, 2), attachment_count=2)
+    result = parse_report([schema], group(REPORT_INF, 3), attachment_count=3)
     assert result.is_valid, [i.to_payload() for i in result.issues]
+
+
+def test_rule_bounds_are_validated() -> None:
+    """min > max is a configuration mistake and must be rejected at load time."""
+    data = load_yaml(FORM_PATH)
+    data["rules"][0]["min_attachments"] = 3
+    data["rules"][0]["max_attachments"] = 1
+    with pytest.raises(ValueError, match="greater than max_attachments"):
+        FormSchemaDef.model_validate(data)
 
 
 def test_other_qualification_without_link_is_invalid() -> None:

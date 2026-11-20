@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 FieldType = Literal[
     "text",
@@ -88,10 +88,33 @@ class Rule(BaseModel):
     when: list[Condition] = Field(default_factory=list)
     # Requirement to apply when the rule is active.
     min_count: int | None = None
+    # At least this many attachments.
     min_attachments: int | None = None
+    # At most this many attachments. Use with min_attachments for "exactly N".
+    max_attachments: int | None = None
     # Value must be one of these.
     allowed: list[str] = Field(default_factory=list)
     type: str | None = None
+
+    @model_validator(mode="after")
+    def _check_bounds(self) -> Rule:
+        if (
+            self.min_attachments is not None
+            and self.max_attachments is not None
+            and self.min_attachments > self.max_attachments
+        ):
+            raise ValueError(
+                f"rule '{self.id}': min_attachments ({self.min_attachments}) is greater "
+                f"than max_attachments ({self.max_attachments})"
+            )
+        return self
+
+    @property
+    def exactly_attachments(self) -> int | None:
+        """Convenience for the common 'exactly N' case."""
+        if self.min_attachments is not None and self.min_attachments == self.max_attachments:
+            return self.min_attachments
+        return None
 
     def applies(self, values: dict[str, Any]) -> bool:
         return all(c.matches(values.get(c.field)) for c in self.when)

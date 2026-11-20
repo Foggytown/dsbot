@@ -444,6 +444,26 @@ def validate(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue
                 )
                 continue
 
+        if rule.max_attachments is not None:
+            available = attachment_total()
+            if available > rule.max_attachments:
+                exact = rule.exactly_attachments
+                issues.append(
+                    FieldIssue(
+                        code="rule_exact_attachments"
+                        if exact is not None
+                        else "rule_max_attachments",
+                        field_id=rule.field,
+                        detail={
+                            "rule": rule.id,
+                            "required": exact if exact is not None else rule.max_attachments,
+                            "found": available,
+                            "message": _rule_message(rule, schema.locale),
+                        },
+                    )
+                )
+                continue
+
         if rule.allowed:
             current = value_code(rule.field)
             allowed = {a.upper() for a in rule.allowed}
