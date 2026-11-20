@@ -549,18 +549,26 @@ def scan(
 
 @app.command("stop")
 def stop(
+    all_instances: Annotated[
+        bool,
+        typer.Option("--all", help="Terminate every dsbot process, ignoring the instance name"),
+    ] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Stop the running bot, however it was started.
+    """Stop this instance of the bot.
 
-    Closing the terminal does not stop the bot: `uv run` leaves the child process alive,
+    Closing the terminal does not stop it: `uv run` leaves the child process alive,
     which is why messages keep arriving after Ctrl+C. Use this instead.
+
+    Only the instance named by DSBOT_INSTANCE_NAME is stopped, so a test bot running
+    next to the live one is left alone. `--all` is the escape hatch when the pid file
+    was lost.
     """
-    _settings(verbose)
+    settings = _settings(verbose)
 
-    from dsbot.core.lock import stop_all
+    from dsbot.core.lock import stop_all, stop_everything
 
-    outcome = stop_all()
+    outcome = stop_everything() if all_instances else stop_all(lock_path=settings.lock_file())
     typer.echo(outcome)
     if "STILL RUNNING" in outcome:
         typer.echo("Terminate manually with: Stop-Process -Id <pid> -Force")
@@ -571,12 +579,15 @@ def stop(
 def status(
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Show whether the bot is running, and which process."""
-    _settings(verbose)
+    """Show whether this instance is running, and which process."""
+    settings = _settings(verbose)
 
-    from dsbot.core.lock import DEFAULT_PID_PATH, is_running, read_pid
+    from dsbot.core.lock import clear_pid, is_running, read_pid
 
-    pid = read_pid(DEFAULT_PID_PATH)
+    pid_path = settings.pid_file()
+    pid = read_pid(pid_path)
+    typer.echo(f"instance: {settings.instance_name}")
+    typer.echo(f"database: {settings.database_url}")
     if pid is None:
         typer.echo("stopped (no pid file)")
         return
@@ -586,9 +597,7 @@ def status(
         typer.echo(f"stopped (stale pid file, pid {pid} is gone)")
         # A pid file left behind by a crash or a force kill would make the next
         # `dsbot stop` act on a recycled pid, so clear it here.
-        from dsbot.core.lock import clear_pid
-
-        clear_pid(DEFAULT_PID_PATH)
+        clear_pid(pid_path)
 
 
 @app.command("run")

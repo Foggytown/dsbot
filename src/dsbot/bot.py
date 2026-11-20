@@ -14,7 +14,7 @@ import contextlib
 import signal
 import sys
 from datetime import timedelta
-from pathlib import Path
+from pathlib import Path  # noqa: F401  (kept for downstream path helpers)
 from typing import Any
 
 import discord
@@ -325,9 +325,10 @@ async def run_bot(settings: Settings) -> None:
     if not settings.discord_token:
         raise RuntimeError("DSBOT_DISCORD_TOKEN is empty; put your token in .env")
 
-    # One instance per database. Two bots handling the same events looks like random
-    # behaviour and corrupts state, so refuse to start rather than misbehave.
-    lock = InstanceLock(Path("var/dsbot.lock"))
+    # One instance per lock file. Two bots on one database look like random behaviour
+    # and corrupt state, so refuse to start rather than misbehave. The lock is named per
+    # instance, so a test bot can run next to the live one with its own database.
+    lock = InstanceLock(settings.lock_file())
     try:
         lock.acquire()
     except RuntimeError as exc:

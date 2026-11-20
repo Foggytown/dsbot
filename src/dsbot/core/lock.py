@@ -129,38 +129,40 @@ def is_running(pid: int | None) -> bool:
     return True
 
 
-def find_dsbot_processes() -> list[int]:
-    """Find every python process running `dsbot run`, not just the recorded pid.
+def find_dsbot_processes(marker: str | None = None) -> list[int]:
+    """Find python processes running `dsbot run`, optionally filtered to one instance.
 
     `uv run` spawns a child, so the recorded pid can die while the real bot keeps
     running. Stopping must therefore look for the processes themselves, otherwise
     `stop` reports success and the bot continues answering messages.
 
-    Works on Windows (PowerShell/CIM) and Linux (ps), because the bot runs on both.
+    `marker` narrows the search to one deployment, so a test bot and a live bot on the
+    same machine cannot kill each other. Both platforms return pid + command line, so
+    filtering works everywhere.
     """
-    pids: list[int] = []
+    entries: list[tuple[int, str]] = []
     try:
         import subprocess
 
         if sys.platform == "win32":
+            # Include the command line in the CIM output: filtering by marker needs it.
+            command = (
+                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                "Where-Object { $_.CommandLine -like '*dsbot*run*' } | "
+                'ForEach-Object { "$($_.ProcessId)`t$($_.CommandLine)" }'
+            )
             output = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-Command",
-                    "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-                    "Where-Object { $_.CommandLine -like '*dsbot*run*' } | "
-                    "Select-Object -ExpandProperty ProcessId",
-                ],
+                ["powershell", "-NoProfile", "-Command", command],
                 capture_output=True,
                 text=True,
                 timeout=20,
                 check=False,
             )
-            lines = output.stdout.splitlines()
+            for line in output.stdout.splitlines():
+                pid_token, _, args = line.strip().partition("\t")
+                if pid_token.strip().isdigit():
+                    entries.append((int(pid_token.strip()), args))
         else:
-            # ps is universally available on Linux images. Include `uv run dsbot run`,
-            # which shows up as a python process with the console-script path.
             output = subprocess.run(
                 ["ps", "-eo", "pid=,args="],
                 capture_output=True,
@@ -168,39 +170,72 @@ def find_dsbot_processes() -> list[int]:
                 timeout=20,
                 check=False,
             )
-            lines = [
-                line.split(None, 1)[0]
-                for line in output.stdout.splitlines()
-                if "dsbot" in line and "run" in line and "grep" not in line
-            ]
+            for line in output.stdout.splitlines():
+                parts = line.strip().split(None, 1)
+                if len(parts) != 2 or not parts[0].isdigit():
+                    continue
+                args = parts[1]
+                if "grep" in args:
+                    continue
+                if "dsbot" in args and "run" in args:
+                    entries.append((int(parts[0]), args))
     except Exception:
-        return pids
+        return []
 
     own = os.getpid()
-    for line in lines:
-        token = line.strip().split()[0] if line.strip() else ""
-        if token.isdigit() and int(token) != own:
-            pids.append(int(token))
+    pids: list[int] = []
+    for pid, args in entries:
+        if pid == own:
+            continue
+        if marker and marker not in args:
+            continue
+        pids.append(pid)
     return pids
 
 
-def stop_all(*, wait_seconds: float = 10.0) -> str:
-    """Stop the bot by pid file AND by process scan. Returns what happened."""
-    messages: list[str] = []
+def stop_all(*, lock_path: Path = DEFAULT_LOCK_PATH, wait_seconds: float = 10.0) -> str:
+    """Stop one instance, identified by its lock file.
 
-    pid = read_pid(DEFAULT_PID_PATH)
+    The pid file is per-instance and exact, so it is the primary mechanism. The process
+    scan is a safety net for a lost pid file, and it is opt-in (`scan=True`) because a
+    scan cannot tell two deployments apart: their command lines are identical.
+    """
+    messages: list[str] = []
+    pid_path = lock_path.with_suffix(".pid")
+
+    pid = read_pid(pid_path)
     if pid is not None:
         if is_running(pid):
-            messages.append(stop_running())
+            messages.append(stop_running(lock_path))
         else:
             messages.append(f"pid {pid} was stale")
-        clear_pid(DEFAULT_PID_PATH)
+        clear_pid(pid_path)
+    else:
+        messages.append("no pid file")
 
+    if not messages or messages[-1].startswith("no pid file"):
+        # Nothing was recorded. Say what can be done rather than silently doing nothing.
+        running = find_dsbot_processes()
+        if running:
+            messages.append(
+                f"a dsbot process is running ({running}) but has no pid file; "
+                "use `dsbot stop --all` to terminate every dsbot process on this machine"
+            )
+    return "; ".join(messages)
+
+
+def stop_everything(*, wait_seconds: float = 10.0) -> str:
+    """Terminate every `dsbot run` process on this machine.
+
+    Only for the case where the pid file was lost. It cannot distinguish deployments,
+    so it will also stop a test bot running next to the live one.
+    """
+    messages: list[str] = []
     leftovers = find_dsbot_processes()
     for leftover in leftovers:
         with contextlib.suppress(OSError):
             _signal_force(leftover)
-            messages.append(f"terminated lingering process {leftover}")
+            messages.append(f"terminated process {leftover}")
 
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
@@ -211,7 +246,7 @@ def stop_all(*, wait_seconds: float = 10.0) -> str:
     remaining = find_dsbot_processes()
     if remaining:
         messages.append(f"STILL RUNNING: {remaining}")
-    return "; ".join(messages) if messages else "not running"
+    return "; ".join(messages) if messages else "no dsbot process found"
 
 
 def stop_running(path: Path = DEFAULT_LOCK_PATH, *, wait_seconds: float = 15.0) -> str:

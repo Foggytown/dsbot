@@ -7,6 +7,7 @@ it without a redeploy.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field
@@ -36,6 +37,14 @@ class Settings(BaseSettings):
     # this to stay inside the global bucket without triggering 429s.
     rest_requests_per_second: float = Field(default=4.0)
 
+    # Instance identity. Two bots may run side by side (e.g. a test bot next to the
+    # live one) as long as each uses its own name, database and token. The name selects
+    # the lock and pid files, so `stop` in one deployment cannot kill the other.
+    instance_name: str = Field(default="dsbot")
+
+    # Optional explicit lock location. Defaults to var/<instance_name>.lock.
+    lock_path: str = Field(default="")
+
     # Privileged intents, gated on what is actually implemented.
     # Message Content is required to read reports. Members is only needed once rank
     # resolution exists, so it stays off until then and avoids a needless portal step.
@@ -56,6 +65,19 @@ class Settings(BaseSettings):
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    def lock_file(self) -> Path:
+        """Lock file for this instance.
+
+        Distinct per `instance_name`, so a test bot and a live bot never block each
+        other and `stop` only ever targets its own deployment.
+        """
+        if self.lock_path:
+            return Path(self.lock_path)
+        return Path("var") / f"{self.instance_name}.lock"
+
+    def pid_file(self) -> Path:
+        return self.lock_file().with_suffix(".pid")
 
     def intents(self) -> Any:
         import discord
