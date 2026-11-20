@@ -21,7 +21,101 @@ FieldType = Literal[
     "count_fraction",
     "name_ref",
     "any",
+    "identity",
 ]
+
+# A condition on a *rule*, e.g. "2+ photos when qualification is not T".
+# Kept deliberately simple so it can be written by hand in YAML.
+CompareOp = Literal["eq", "ne", "in", "not_in", "gt", "gte", "lt", "lte"]
+
+
+class Condition(BaseModel):
+    """One comparison against another field's parsed value."""
+
+    field: str
+    op: CompareOp = "eq"
+    value: Any = None
+
+    def matches(self, actual: Any) -> bool:
+        if self.op == "eq":
+            return _cmp(actual) == _cmp(self.value)
+        if self.op == "ne":
+            return _cmp(actual) != _cmp(self.value)
+        if self.op == "in":
+            allowed = self.value if isinstance(self.value, list) else [self.value]
+            return _cmp(actual) in {_cmp(v) for v in allowed}
+        if self.op == "not_in":
+            allowed = self.value if isinstance(self.value, list) else [self.value]
+            return _cmp(actual) not in {_cmp(v) for v in allowed}
+        if self.op in ("gt", "gte", "lt", "lte"):
+            left = _num(actual)
+            right = _num(self.value)
+            if left is None or right is None:
+                return False
+            if self.op == "gt":
+                return left > right
+            if self.op == "gte":
+                return left >= right
+            if self.op == "lt":
+                return left < right
+            return left <= right
+        return False
+
+
+def _cmp(value: Any) -> str:
+    return str(value).strip().upper() if value is not None else ""
+
+
+def _num(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+class Rule(BaseModel):
+    """A validation requirement that can depend on other fields.
+
+    Rules are what make hard forms expressible: "number 4 must be a link when the
+    qualification is not T" is a rule, not a field property.
+    """
+
+    id: str
+    field: str
+    # Human sentence explaining the rule, shown to the reporter and to admins.
+    message: dict[str, str] = Field(default_factory=dict)
+    # All conditions must hold for this rule to apply. Empty means "always".
+    when: list[Condition] = Field(default_factory=list)
+    # Requirement to apply when the rule is active.
+    min_count: int | None = None
+    min_attachments: int | None = None
+    # Value must be one of these.
+    allowed: list[str] = Field(default_factory=list)
+    type: str | None = None
+
+    def applies(self, values: dict[str, Any]) -> bool:
+        return all(c.matches(values.get(c.field)) for c in self.when)
+
+
+class Squad(BaseModel):
+    """A squad inside a formation.
+
+    ALPHA and NULL are squads of SOB. A soldier reporting as ALPHA is still a SOB
+    soldier for quota and statistics purposes; the squad only decides the IDN prefix.
+    """
+
+    formation: str
+    prefix: str = ""
+
+    @field_validator("prefix", mode="before")
+    @classmethod
+    def _prefix_digits(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if text and not text.isdigit():
+            raise ValueError(f"squad prefix must be digits, got {text!r}")
+        return text.zfill(2) if text else ""
 
 
 class FieldSpec(BaseModel):
@@ -46,10 +140,36 @@ class FieldSpec(BaseModel):
     # known (SOB, ARC, RC, Reaper, 666th, ...). The IDN that follows is NOT finite and
     # is never checked against a list.
     formations: list[str] = Field(default_factory=list)
+    # Number of attachments this field consumes. 0 means it is text-only.
+    attachment_slots: int = 0
+    # Sub-units that accept a lore IDN form like 01/0016, with the required prefix.
+    # e.g. {"ALPHA": "01", "NULL": "00"} means an Alpha soldier writes 01/xxxx.
+    # Deprecated in favour of `squads`, kept so old stored forms still load.
+    lore_prefixes: dict[str, str] = Field(default_factory=dict)
+    # Squads belong to a formation. ALPHA and NULL are squads of SOB, not formations:
+    # a soldier in ALPHA is still a SOB soldier, and writes 01/xxxx.
+    squads: dict[str, Squad] = Field(default_factory=dict)
     # Value may legitimately be an attachment rather than text.
     accepts_attachments: bool = False
     # Free-text note shown to a reporter in the warning message.
     hint: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _normalise_type(cls, value: Any) -> Any:
+        """Accept friendlier aliases so hand-written YAML stays readable."""
+        if not isinstance(value, str):
+            return value
+        aliases = {
+            "attachment": "attachment_required",
+            "photo": "attachment_required",
+            "photos": "attachment_required",
+            "link": "discord_message_ref",
+            "url": "discord_message_ref",
+            "choice": "enum",
+            "list": "enum",
+        }
+        return aliases.get(value.strip().lower(), value.strip().lower())
 
     @field_validator("path")
     @classmethod
@@ -87,6 +207,8 @@ class FormSchemaDef(BaseModel):
     # when one channel hosts several forms.
     anchors: list[str] = Field(default_factory=list)
     fields: list[FieldSpec]
+    # Cross-field requirements that a single field cannot express.
+    rules: list[Rule] = Field(default_factory=list)
     # Which field names the person this report counts for. Unset means "the author".
     attribution_field: str | None = None
     # When true, a report credited to someone other than its author needs a staff

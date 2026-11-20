@@ -167,6 +167,50 @@ A pid file in `var/dsbot.pid` makes this work no matter how the bot was started.
 If `stop` ever fails, the pid is printed; terminate directly with
 `Stop-Process -Id <pid> -Force`.
 
+## Editing a channel's form (no code, no deploy)
+
+Forms are YAML. This is the admin workflow:
+
+```powershell
+uv run dsbot form-pull  --channel <id>          # current form -> forms/ch-<id>.yaml
+#   edit the YAML
+uv run dsbot form-check --file forms/training.yaml    # validate, shows what will apply
+uv run dsbot form-apply --channel <id> --file forms/training.yaml
+```
+
+`form-check` never touches anything; `form-apply` validates before writing, so a typo
+cannot leave a channel unparseable. Changes take effect on the next message.
+
+Where the form has rules, write them as `WHEN ... THEN ...`:
+
+```yaml
+rules:
+  - id: photos_for_others
+    field: photos
+    when:
+      - field: qualification
+        op: ne          # eq / ne / in / not_in / gt / gte / lt / lte
+        value: T
+    min_attachments: 2
+    message:
+      ru: "Для этой квалификации нужно 2 и больше фото."
+```
+
+Rules exist because some requirements depend on *another* field: "1 photo if T,
+otherwise 2+" cannot be expressed on the photos field alone.
+
+## Formations vs squads
+
+```yaml
+formations: [SOB, ARC, CT, ...]   # what a soldier belongs to
+squads:                            # squads belong to a formation
+  ALPHA: {formation: SOB, prefix: "01"}
+  "NULL": {formation: SOB, prefix: "00"}
+```
+
+A soldier writing `ALPHA | 01/0016` is still a **SOB** soldier; the squad only decides
+the IDN prefix. An ordinary SOB soldier has no squad and writes `SOB | 0016`.
+
 ## Development
 
 ```powershell

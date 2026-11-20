@@ -1,0 +1,160 @@
+# =============================================================================
+# Report form: training report
+#
+# Apply with:   uv run dsbot form-apply --channel 1573045809774067812 --file forms/training.yaml
+# Check first:  uv run dsbot form-check --file forms/training.yaml
+# =============================================================================
+#
+# How to read this file:
+#
+#   fields:  what the reporter writes, one entry per numbered item
+#   rules:   requirements that depend on ANOTHER field's value
+#
+# That second one is the important idea. "Photos: 1 if T, otherwise 2+" cannot be
+# said about the photos field alone, so it is a rule: WHEN qualification is T we
+# require 1 photo, otherwise we require 2.
+# =============================================================================
+
+key: training_report
+title: Формуляр рапорта на обучение
+locale: ru
+
+# A message containing any of these is the pinned template, not a report.
+# Add phrases here if the template is ever posted and the bot tries to judge it.
+template_markers:
+  - формуляр рапорта на обучение
+  - используйте подобный формат
+
+# Phrases a real report is likely to contain. Used to tell several forms apart
+# when one channel has more than one.
+anchors:
+  - формирование
+  - квалификаци
+  - доказательства
+
+fields:
+  # ---------------------------------------------------------------------------
+  # 1) Formation, lore IDN, optional NRP IDN
+  # ---------------------------------------------------------------------------
+  - id: identity
+    labels: [формирование, рп-idn, rp-idn]
+    path: "1"
+    type: identity
+    required: true
+
+    # The finite list of formations. Add or remove freely.
+    formations:
+      - SOB
+      - ARC
+      - CT
+      - "501ST"
+      - "212TH"
+      - GUARD
+      - GHOST
+      - JEDI
+      - "104TH"
+      - MERC
+
+    # Squads belong to a formation. ALPHA and NULL are squads of SOB, so a soldier
+    # reporting as ALPHA is still a SOB soldier and writes 01/xxxx.
+    # An ordinary SOB soldier has no squad and just writes a plain 4-digit IDN.
+    # Add more squads here as they appear.
+    squads:
+      ALPHA:
+        formation: SOB
+        prefix: "01"
+      "NULL":
+        formation: SOB
+        prefix: "00"
+
+    hint:
+      ru: "Например: SOB | 0016  или  ALPHA | 01/0016"
+      en: "For example: SOB | 0016  or  ALPHA | 01/0016"
+
+  # ---------------------------------------------------------------------------
+  # 2) Qualification, finite list
+  # ---------------------------------------------------------------------------
+  - id: qualification
+    labels: [название квалификации, квалификация]
+    path: "2"
+    type: enum
+    required: true
+    options:
+      - T
+      - INF
+      - M-A-C
+      - M-L-C
+      - M-U-C
+      - D-E-C
+      - D-S-C
+      - D-U-C
+    hint:
+      ru: "Одна из: T, INF, M-A-C, M-L-C, M-U-C, D-E-C, D-S-C, D-U-C"
+      en: "One of: T, INF, M-A-C, M-L-C, M-U-C, D-E-C, D-S-C, D-U-C"
+
+  # ---------------------------------------------------------------------------
+  # 3) Photos. Number 3 must be present, the text may be blank.
+  # ---------------------------------------------------------------------------
+  - id: photos
+    labels: [доказательства, фото]
+    path: "3"
+    type: attachment
+    required: true
+    hint:
+      ru: "Приложите фото. Для T — 1 фото, для остальных — 2 и больше."
+      en: "Attach photos. 1 for T, 2 or more otherwise."
+
+  # ---------------------------------------------------------------------------
+  # 4) Link to the previous approved report. Not needed for T.
+  # ---------------------------------------------------------------------------
+  - id: previous_report
+    labels: [ссылка, повышение, предыдущий рапорт]
+    path: "4"
+    type: discord_message_ref
+    required: false
+    hint:
+      ru: "Ссылка на предыдущий одобренный рапорт в этом канале."
+      en: "Link to the previous approved report in this channel."
+
+# =============================================================================
+# RULES
+#
+# Each rule says: WHEN <conditions> THEN <requirement>.
+# `when` is a list of conditions; all of them must be true for the rule to apply.
+# Leave `when` out to make a rule apply always.
+# =============================================================================
+rules:
+  # Photos: exactly 1 minimum when the qualification is T.
+  - id: photos_for_t
+    field: photos
+    when:
+      - field: qualification
+        op: eq
+        value: T
+    min_attachments: 1
+    message:
+      ru: "Для квалификации T достаточно 1 фото."
+      en: "For qualification T, 1 photo is enough."
+
+  # Photos: 2 or more for every other qualification.
+  - id: photos_for_others
+    field: photos
+    when:
+      - field: qualification
+        op: ne
+        value: T
+    min_attachments: 2
+    message:
+      ru: "Для этой квалификации нужно 2 и больше фото."
+      en: "This qualification needs 2 or more photos."
+
+  # Previous report link is required unless the qualification is T.
+  - id: link_required_unless_t
+    field: previous_report
+    when:
+      - field: qualification
+        op: ne
+        value: T
+    message:
+      ru: "Нужна ссылка на предыдущий одобренный рапорт (кроме квалификации T)."
+      en: "A link to the previous approved report is required (except for T)."

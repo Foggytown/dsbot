@@ -172,13 +172,25 @@ class Bot(discord.ext.commands.Bot):
     async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
         if not await self._is_bound(payload.channel_id):
             return
+        # get_channel only sees cached channels; fetch is the reliable path and this
+        # used to fail intermittently for exactly that reason.
         channel = self.get_channel(payload.channel_id)
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(payload.channel_id)
+            except discord.HTTPException:
+                log.warning("edit_channel_fetch_failed", channel_id=payload.channel_id)
+                return
         if not isinstance(channel, discord.abc.Messageable):
             return
         try:
             message = await channel.fetch_message(payload.message_id)  # type: ignore[attr-defined]
-        except discord.HTTPException:
-            log.warning("edit_fetch_failed", message_id=payload.message_id)
+        except discord.NotFound:
+            # Deleted between the edit and this fetch; nothing to store.
+            log.debug("edit_message_gone", message_id=payload.message_id)
+            return
+        except discord.HTTPException as exc:
+            log.warning("edit_fetch_failed", message_id=payload.message_id, error=str(exc))
             return
         if message.author.bot:
             return

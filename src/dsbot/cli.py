@@ -648,6 +648,137 @@ def form_show(
     asyncio.run(run_show())
 
 
+@app.command("form-check")
+def form_check(
+    file: Annotated[Path, typer.Option("--file", "-f", help="YAML form to check")],
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Validate a YAML form without applying it. Safe to run as often as you like."""
+    _settings(verbose)
+
+    from dsbot.modules.reports.yaml_form import compile_problems, parse_form_file
+
+    try:
+        schema = parse_form_file(file)
+    except Exception as exc:
+        typer.echo(f"INVALID: {exc}")
+        raise typer.Exit(code=1) from None
+
+    problems = compile_problems(schema)
+    typer.echo(f"ok: {schema.key} ({len(schema.fields)} fields, {len(schema.rules)} rules)")
+    for field in schema.fields:
+        values = ""
+        if field.type == "enum":
+            values = f"  options={field.options}"
+        elif field.type == "identity":
+            values = f"  formations={field.formations}"
+            if field.lore_prefixes:
+                values += f"  prefixes={field.lore_prefixes}"
+        typer.echo(f"  {field.path or '-':<4} {field.id:<18} {field.type:<20}{values}")
+    for rule in schema.rules:
+        when = " and ".join(f"{c.field} {c.op} {c.value!r}" for c in rule.when) or "always"
+        effect = []
+        if rule.min_attachments is not None:
+            effect.append(f"min {rule.min_attachments} attachments")
+        if rule.allowed:
+            effect.append(f"allowed {rule.allowed}")
+        if rule.type:
+            effect.append(f"must be {rule.type}")
+        if not effect:
+            effect.append("required")
+        typer.echo(f"  rule {rule.id}: WHEN {when} -> {', '.join(effect)}")
+
+    if problems:
+        typer.echo("")
+        for problem in problems:
+            typer.echo(f"PROBLEM: {problem}")
+        raise typer.Exit(code=1)
+
+
+@app.command("form-apply")
+def form_apply(
+    channel: Annotated[int, typer.Option(help="Channel id")],
+    file: Annotated[Path, typer.Option("--file", "-f", help="YAML form to apply")],
+    force: Annotated[
+        bool, typer.Option("--force", help="Apply even if checks report problems")
+    ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Compile a YAML form and make it the channel's form. No code changes."""
+    settings = _settings(verbose)
+
+    from dsbot.modules.reports.authoring import import_forms
+    from dsbot.modules.reports.yaml_form import compile_problems, parse_form_file
+
+    async def run_apply() -> None:
+        try:
+            schema = parse_form_file(file)
+        except Exception as exc:
+            typer.echo(f"INVALID: {exc}")
+            raise typer.Exit(code=1) from None
+
+        problems = compile_problems(schema)
+        if problems and not force:
+            for problem in problems:
+                typer.echo(f"PROBLEM: {problem}")
+            typer.echo("not applied. Fix these, or re-run with --force")
+            raise typer.Exit(code=1)
+
+        db = Database(settings)
+        try:
+            async with db.write_session() as session:
+                result = await import_forms(
+                    session,
+                    channel_id=channel,
+                    payload={"schemas": [schema.model_dump(mode="json")]},
+                )
+        finally:
+            await db.dispose()
+
+        typer.echo(
+            f"applied {schema.key} to channel {channel} "
+            f"(created={result.created}, updated={result.updated})"
+        )
+
+    asyncio.run(run_apply())
+
+
+@app.command("form-pull")
+def form_pull(
+    channel: Annotated[int, typer.Option(help="Channel id")],
+    out: Annotated[
+        Path | None, typer.Option(help="Where to write (default forms/ch-<id>.yaml)")
+    ] = None,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Write the channel's current form out as an editable YAML file."""
+    settings = _settings(verbose)
+    target = out or Path("forms") / f"ch-{channel}.yaml"
+
+    from dsbot.modules.reports.authoring import export_forms
+    from dsbot.modules.reports.schema import FormSchemaDef
+    from dsbot.modules.reports.yaml_form import form_to_yaml
+
+    async def run_pull() -> None:
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                bundle = await export_forms(session, channel)
+        finally:
+            await db.dispose()
+
+        if not bundle.schemas:
+            typer.echo(f"channel {channel} has no form bound")
+            raise typer.Exit(code=1)
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        blocks = [form_to_yaml(FormSchemaDef.model_validate(raw)) for raw in bundle.schemas]
+        target.write_text("\n---\n".join(blocks), encoding="utf-8")
+        typer.echo(f"wrote {target}")
+
+    asyncio.run(run_pull())
+
+
 @app.command("form-export")
 def form_export(
     channel: Annotated[int, typer.Option(help="Channel id")],

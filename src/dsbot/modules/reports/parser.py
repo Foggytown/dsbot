@@ -26,10 +26,11 @@ from dsbot.modules.reports.fields import (
     parse_discord_link,
     parse_enum,
     parse_formation_idn,
+    parse_identity,
     parse_name_ref,
     parse_text,
 )
-from dsbot.modules.reports.schema import FieldSpec, FormSchemaDef
+from dsbot.modules.reports.schema import FieldSpec, FormSchemaDef, Rule
 from dsbot.modules.reports.text import (
     Item,
     Tokenized,
@@ -335,6 +336,8 @@ def _attachment_slot(schema: FormSchemaDef, spec: FieldSpec) -> int:
 
 def _parse_by_type(spec: FieldSpec, raw: str, attachment_count: int, slot: int = 0) -> FieldResult:
     match spec.type:
+        case "identity":
+            return parse_identity(raw, spec.id, spec.formations, spec.squads, spec.lore_prefixes)
         case "formation_idn":
             return parse_formation_idn(raw, spec.id, spec.formations)
         case "enum":
@@ -355,16 +358,34 @@ def _parse_by_type(spec: FieldSpec, raw: str, attachment_count: int, slot: int =
 
 
 def validate(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue]:
-    """Check required-ness, conditional requirements, and empty-but-required values."""
+    """Check required-ness, conditional requirements, and cross-field rules."""
     issues: list[FieldIssue] = []
     values = {b.spec.id: b for b in fields}
 
-    def value_code(field_id: str) -> str | None:
+    def field_value(field_id: str) -> Any:
+        """A single scalar for comparisons: the enum code, else the raw value."""
         bound = values.get(field_id)
         if bound is None or bound.result.value is None:
             return None
-        raw = bound.result.value.get("code")
+        value = bound.result.value
+        if not isinstance(value, dict):
+            return value
+        for key in ("code", "formation", "idn_number", "got", "raw"):
+            if value.get(key) is not None:
+                return value[key]
+        return None
+
+    def value_code(field_id: str) -> str | None:
+        raw = field_value(field_id)
         return str(raw) if raw is not None else None
+
+    def attachment_total() -> int:
+        total = 0
+        for bound in fields:
+            value = bound.result.value
+            if isinstance(value, dict):
+                total = max(total, int(value.get("attachment_count") or 0))
+        return total
 
     for bound in fields:
         spec = bound.spec
@@ -389,7 +410,93 @@ def validate(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue
                 )
             )
 
+    # --- cross-field rules -------------------------------------------------
+    # These are what make hard forms expressible: requirements that depend on another
+    # field's value cannot live on a single field.
+    scalar_values = {b.spec.id: field_value(b.spec.id) for b in fields}
+
+    for rule in schema.rules:
+        if not rule.applies(scalar_values):
+            continue
+
+        bound = values.get(rule.field)
+        if bound is None:
+            continue
+
+        present = bound.result.present and (
+            bound.result.value is not None or _has_attachment_evidence(bound)
+        )
+
+        if rule.min_attachments is not None:
+            available = attachment_total()
+            if available < rule.min_attachments:
+                issues.append(
+                    FieldIssue(
+                        code="rule_min_attachments",
+                        field_id=rule.field,
+                        detail={
+                            "rule": rule.id,
+                            "required": rule.min_attachments,
+                            "found": available,
+                            "message": _rule_message(rule, schema.locale),
+                        },
+                    )
+                )
+                continue
+
+        if rule.allowed:
+            current = value_code(rule.field)
+            allowed = {a.upper() for a in rule.allowed}
+            if current is not None and current.upper() not in allowed:
+                issues.append(
+                    FieldIssue(
+                        code="rule_not_allowed",
+                        field_id=rule.field,
+                        detail={
+                            "rule": rule.id,
+                            "found": current,
+                            "allowed": rule.allowed,
+                            "message": _rule_message(rule, schema.locale),
+                        },
+                    )
+                )
+                continue
+
+        if rule.type is not None and present:
+            value = bound.result.value
+            actual_type = value.get("type") if isinstance(value, dict) else None
+            if actual_type is not None and actual_type != rule.type:
+                issues.append(
+                    FieldIssue(
+                        code="rule_wrong_type",
+                        field_id=rule.field,
+                        detail={
+                            "rule": rule.id,
+                            "expected": rule.type,
+                            "found": actual_type,
+                            "message": _rule_message(rule, schema.locale),
+                        },
+                    )
+                )
+                continue
+
+        # Required only while the rule applies; absence is a violation.
+        if rule.min_attachments is None and not present:
+            issues.append(
+                FieldIssue(
+                    code="rule_required",
+                    field_id=rule.field,
+                    detail={"rule": rule.id, "message": _rule_message(rule, schema.locale)},
+                )
+            )
+
     return issues
+
+
+def _rule_message(rule: Rule, locale: str) -> str:
+    if not rule.message:
+        return rule.id
+    return rule.message.get(locale) or next(iter(rule.message.values()))
 
 
 def _has_attachment_evidence(bound: BoundField) -> bool:
