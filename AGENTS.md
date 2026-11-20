@@ -68,6 +68,12 @@ Squads (ALPHA, NULL) are **not** part of the form. They are internal structure o
 formation, and a reporter always writes the formation. `ALPHA | 01/0016` is rejected as
 an unknown formation; the correct input is `SOB | 01/0016`.
 
+JEDI are an exception that is **not yet implemented**: they identify soldiers by name
+(Name + Surname) rather than by IDN. No Jedi reports reach this channel today, so the
+current IDN-only identity field is correct for now. When Jedi reports do appear, JEDI
+will need its own identity rule - do not force a name into an IDN field, and do not
+assume the IDN shape applies to JEDI.
+
 A Discord user may have several characters. Which one an instructor was acting as is
 not inferable from a report and is not the bot's problem.
 
