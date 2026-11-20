@@ -209,22 +209,31 @@ Reporters always write a formation. Squads (ALPHA, NULL, ...) are internal struc
 and are **not** part of the form: `ALPHA | 01/0016` is rejected as an unknown formation,
 and a soldier writes `SOB | 0016` or `SOB | 01/0016`.
 
-The IDN that follows the formation is open-ended: a **lore IDN** may be 4 digits or 6+,
-and an optional **system (NRP) IDN** after it must be **exactly 4 digits**.
+Exactly **two** IDN shapes exist, and nothing else is accepted:
 
-| Input | Meaning |
+| Shape | Example | Notes |
+|---|---|---|
+| plain, 4 digits | `SOB \| 0016`, `ARC \| 0042` | any formation |
+| prefixed, 6 digits `PP/00NN` | `SOB \| 01/0016`, `SOB \| 00/0087` | **SOB only** |
+| prefixed + system IDN | `SOB \| 01/0016 \| 0017` | system IDN is exactly 4 digits |
+
+- The prefix is always `01` or `00`, and the two digits after the slash are always `00`.
+- `01/` and `00/` describe SOB squads, so any other formation using them is rejected.
+- The optional NRP/system IDN may only follow a **prefixed** IDN, never a plain one.
+
+Rejected:
+
+| Input | Reason |
 |---|---|
-| `SOB \| 0016` | lore IDN `0016` |
-| `SOB \| 01/0016` | prefixed lore IDN (prefix `01`) |
-| `SOB \| 00/0016` | prefixed lore IDN (prefix `00`) |
-| `SOB \| 000016` | 6-digit lore IDN, no prefix |
-| `SOB \| 01/0016 \| 0017` | lore `0016` + system `0017` |
-| `SOB \| 02/0016` | ✗ `lore_prefix_invalid` — only `01/` and `00/` exist |
-| `SOB \| 0016 \| 000017` | ✗ `nrp_bad_length` — the system IDN must be 4 digits |
+| `SOB \| 000016` | `idn_bad_shape` — no plain 6-digit form |
+| `SOB \| 01/0116` | `idn_bad_shape` — after the slash must start with `00` |
+| `ARC \| 01/0016` | `lore_prefix_not_allowed_for_formation` |
+| `SOB \| 0016 \| 0017` | `idn_nrp_not_allowed` — plain IDN carries no NRP |
+| `SOB \| 02/0016` | `lore_prefix_invalid` |
+| `SOB \| 016` | `idn_bad_shape` |
 
-A prefixed lore IDN may only start with `01/` or `00/`; there are no other valid
-combinations. The allowed prefixes are `lore_prefixes` on the field, so they stay
-editable in the form file.
+Prefixes and which formations may use them are both configurable per field
+(`lore_prefixes`, `lore_prefix_formations`), defaulting to `["01","00"]` and `["SOB"]`.
 
 The two positions have different rules on purpose, and their warnings say so:
 `idn_bad_length` means a lore IDN is the wrong length (4 or 6+), while

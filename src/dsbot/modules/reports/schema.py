@@ -147,6 +147,9 @@ class FieldSpec(BaseModel):
     # Allowed prefixes for a lore IDN such as 01/0016. Only these combinations are
     # valid in this community, so anything else is rejected rather than stored.
     lore_prefixes: list[str] = Field(default_factory=lambda: ["01", "00"])
+    # Only these formations may use a prefixed IDN at all. Every other formation must
+    # use a plain 4-digit IDN, because 01/ and 00/ describe SOB squads specifically.
+    lore_prefix_formations: list[str] = Field(default_factory=lambda: ["SOB"])
     # Value may legitimately be an attachment rather than text.
     accepts_attachments: bool = False
     # Free-text note shown to a reporter in the warning message.

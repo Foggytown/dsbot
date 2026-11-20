@@ -42,6 +42,16 @@ def _system_idn_length_ok(value: str) -> bool:
     return len(value) == SYSTEM_IDN_LENGTH
 
 
+def _plain_idn_ok(value: str | None) -> bool:
+    """Shape 1: exactly 4 digits, nothing else."""
+    return value is not None and len(value) == 4 and value.isdigit()
+
+
+def _prefixed_idn_ok(value: str | None) -> bool:
+    """Shape 2: the IDN after the slash is 00 followed by two digits."""
+    return value is not None and len(value) == 4 and value.isdigit() and value.startswith("00")
+
+
 @dataclass(slots=True)
 class FieldIssue:
     code: str
@@ -309,22 +319,30 @@ def parse_identity(
     field_id: str,
     formations: list[str] | None = None,
     lore_prefixes: list[str] | None = None,
+    lore_prefix_formations: list[str] | None = None,
 ) -> FieldResult:
-    """Parse the identity field: formation plus lore IDN and/or system (NRP) IDN.
+    """Parse the identity field: formation plus a lore IDN, optionally with an NRP IDN.
 
-    Accepted shapes:
-        SOB | 0016               plain 4-digit lore IDN
-        SOB | 000016             6-digit lore IDN, no prefix
-        SOB | 01/0016            prefixed lore IDN
-        SOB | 01/0016 | 0017     prefixed lore IDN plus system IDN
+    Exactly two IDN shapes exist, and nothing else is accepted:
 
-    Prefix rules are strict. A prefixed lore IDN is only valid with an allowed prefix
-    (by default exactly `01` or `00`); anything else is rejected. Those two prefixes
-    are the only combinations that exist in this community, so accepting `02/...` would
-    silently create identity values that cannot be matched later.
+        1) plain, 4 digits                      SOB | 0016   ARC | 0042
+        2) prefixed, 6 digits: PP/00NN          SOB | 01/0016   SOB | 00/0087
+           where PP is an allowed prefix (01 or 00) and the two digits after the
+           slash are always 00.
 
-    Squads are deliberately NOT modelled: reporters write their formation, and the
-    prefix is just part of the IDN.
+    Prefixes are formation-specific: `01/` and `00/` describe SOB squads, so they are
+    only valid when the formation is SOB. `ARC | 01/0016` is rejected.
+
+    An optional system (NRP) IDN may follow the *prefixed* form only, and is always
+    exactly 4 digits:
+
+        SOB | 01/0016 | 0017
+
+    Rejected shapes: `SOB | 000016` (bare 6-digit), `SOB | 0016 | 0017` (plain plus
+    NRP), `ARC | 01/0016` (prefix on a non-prefix formation).
+
+    Squads are deliberately not modelled: reporters write their formation, and the
+    prefix is part of the IDN.
     """
     text = strip_emphasis(normalize(raw)).strip()
     if is_blank_value(text):
@@ -332,6 +350,7 @@ def parse_identity(
 
     known = {f.upper() for f in (formations or [])}
     allowed_prefixes = [p.zfill(2) for p in (lore_prefixes or ["01", "00"])]
+    prefix_formations = {f.upper() for f in (lore_prefix_formations or ["SOB"])}
     issues: list[FieldIssue] = []
 
     parts = [p.strip() for p in re.split(r"[|/\\]", text) if p.strip()]
@@ -370,67 +389,119 @@ def parse_identity(
             )
         )
 
+    if not numbers:
+        issues.append(
+            FieldIssue(
+                code="idn_missing",
+                field_id=field_id,
+                detail={"raw": text},
+            )
+        )
+        return FieldResult(
+            value={
+                "formation": formation,
+                "raw": text,
+                "lore_idn": None,
+                "nrp_idn": None,
+                "prefix": None,
+                "idn_kind": "missing",
+                "idn_number": None,
+                "idn_text": None,
+            },
+            issues=issues,
+            present=bool(formation),
+        )
+
+    prefix: str | None = None
     lore_idn: str | None = None
     nrp_idn: str | None = None
-    prefix: str | None = None
 
-    # A short numeric group before another number is a prefix, e.g. 01/0016.
+    # Shape 2: a short group before the slash, e.g. the "01" in 01/0016.
     if len(numbers) >= 2 and len(numbers[0]) <= 2:
         prefix = numbers[0].zfill(2)
         lore_idn = numbers[1]
         nrp_idn = numbers[2] if len(numbers) > 2 else None
-    elif numbers:
+    else:
         lore_idn = numbers[0]
-        nrp_idn = numbers[1] if len(numbers) > 1 else None
+        if len(numbers) > 1:
+            # A second number after a plain IDN is not a valid combination.
+            nrp_idn = numbers[1]
 
-    if prefix is not None and prefix not in allowed_prefixes:
-        issues.append(
-            FieldIssue(
-                code="lore_prefix_invalid",
-                field_id=field_id,
-                detail={
-                    "raw": prefix,
-                    "allowed": allowed_prefixes,
-                },
+    if prefix is None:
+        # Shape 1: plain. Exactly 4 digits, and no extra number.
+        if not _plain_idn_ok(lore_idn):
+            issues.append(
+                FieldIssue(
+                    code="idn_bad_shape",
+                    field_id=field_id,
+                    detail={"raw": lore_idn, "expected": "4 digits (plain IDN)"},
+                )
             )
-        )
-
-    if lore_idn is not None and not _lore_idn_length_ok(lore_idn):
-        issues.append(
-            FieldIssue(
-                code="idn_bad_length",
-                field_id=field_id,
-                detail={
-                    "raw": lore_idn,
-                    "kind": "lore IDN",
-                    "expected": "4 digits, or 6+",
-                },
+        if nrp_idn is not None:
+            issues.append(
+                FieldIssue(
+                    code="idn_nrp_not_allowed",
+                    field_id=field_id,
+                    detail={"raw": nrp_idn},
+                )
             )
-        )
-
-    # The system IDN is the server's own counter: always exactly 4 digits.
-    if nrp_idn is not None and not _system_idn_length_ok(nrp_idn):
-        issues.append(
-            FieldIssue(
-                code="nrp_bad_length",
-                field_id=field_id,
-                detail={
-                    "raw": nrp_idn,
-                    "kind": "NRP IDN",
-                    "expected": "exactly 4 digits (system IDN)",
-                },
+    else:
+        # Shape 2: PP/00NN. The formation must allow prefixes, the prefix must be
+        # allowed, and the body starts with 00.
+        if formation is not None and formation not in prefix_formations:
+            issues.append(
+                FieldIssue(
+                    code="lore_prefix_not_allowed_for_formation",
+                    field_id=field_id,
+                    detail={
+                        "formation": formation,
+                        "allowed_formations": sorted(prefix_formations),
+                    },
+                )
             )
-        )
+        if prefix not in allowed_prefixes:
+            issues.append(
+                FieldIssue(
+                    code="lore_prefix_invalid",
+                    field_id=field_id,
+                    detail={"raw": prefix, "allowed": allowed_prefixes},
+                )
+            )
+        if not _prefixed_idn_ok(lore_idn):
+            issues.append(
+                FieldIssue(
+                    code="idn_bad_shape",
+                    field_id=field_id,
+                    detail={
+                        "raw": f"{prefix}/{lore_idn}",
+                        "expected": "6 digits as PP/00NN (e.g. 01/0016)",
+                    },
+                )
+            )
+        if nrp_idn is not None and not _system_idn_length_ok(nrp_idn):
+            issues.append(
+                FieldIssue(
+                    code="nrp_bad_length",
+                    field_id=field_id,
+                    detail={
+                        "raw": nrp_idn,
+                        "kind": "NRP IDN",
+                        "expected": "exactly 4 digits (system IDN)",
+                    },
+                )
+            )
 
     value: dict[str, Any] = {
         "formation": formation,
         "raw": text,
-        "idn_text": "/".join(numbers) if numbers else None,
+        "idn_text": "/".join(numbers),
         "lore_idn": lore_idn,
         "nrp_idn": nrp_idn,
         "prefix": prefix,
-        "idn_kind": "rp_lore" if prefix is not None else "nrp",
+        "idn_kind": "plain" if prefix is None else "prefixed",
         "idn_number": lore_idn,
+        # The full identity in canonical form, for later matching.
+        "canonical": (f"{formation}|{prefix}/{lore_idn}" if prefix else f"{formation}|{lore_idn}"),
     }
     return FieldResult(value=value, issues=issues, present=True)
 

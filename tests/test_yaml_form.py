@@ -119,11 +119,11 @@ BY_ID = None
 
 REPORT_T = """1. SOB | 0016
 2. T
-3. фото
+3. С„РѕС‚Рѕ
 4."""
 REPORT_INF = """1. SOB | 0016
 2. INF
-3. фото
+3. С„РѕС‚Рѕ
 4. https://discord.com/channels/1/2/3"""
 
 
@@ -180,7 +180,7 @@ def test_rule_bounds_are_validated() -> None:
 def test_other_qualification_without_link_is_invalid() -> None:
     """Real requirement: link required unless the qualification is T."""
     schema = load_training()
-    content = "1. SOB | 0016\n2. INF\n3. фото\n4."
+    content = "1. SOB | 0016\n2. INF\n3. С„РѕС‚Рѕ\n4."
     result = parse_report([schema], group(content, 2), attachment_count=2)
     assert "rule_required" in {i.code for i in result.issues}
     assert not result.is_valid
@@ -192,7 +192,7 @@ def test_rule_message_is_human_readable() -> None:
     result = parse_report([schema], group(content, 2), attachment_count=2)
     issues = [i for i in result.issues if i.code == "rule_required"]
     assert issues
-    assert "ссылк" in issues[0].detail["message"].lower()
+    assert "ссылка" in issues[0].detail["message"].lower()
 
 
 # --- identity field -------------------------------------------------------
@@ -201,125 +201,130 @@ IDENTITY_FIELD = load_training().field_by_id("identity")
 FORMATIONS = IDENTITY_FIELD.formations  # type: ignore[union-attr]
 
 
-def identity(text: str) -> dict:
+def identity(text: str, formations: list[str] | None = None) -> dict:
     from dsbot.modules.reports.fields import parse_identity
 
-    result = parse_identity(text, "identity", FORMATIONS, ["01", "00"])
+    result = parse_identity(
+        text,
+        "identity",
+        formations if formations is not None else FORMATIONS,
+        ["01", "00"],
+        ["SOB"],
+    )
     return {
         "value": result.value,
         "codes": [i.code for i in result.issues],
     }
 
 
-def test_identity_plain_idn() -> None:
-    """The normal case: formation plus a 4-digit IDN."""
+# --- identity: exactly two IDN shapes --------------------------------------
+#
+# 1) plain, 4 digits               SOB | 0016
+# 2) prefixed, 6 digits PP/00NN    SOB | 01/0016      (SOB only)
+#    plus optional 4-digit NRP     SOB | 01/0016 | 0017
+
+
+def test_plain_four_digit_idn_is_valid() -> None:
     parsed = identity("SOB | 0016")
     assert parsed["value"]["formation"] == "SOB"
     assert parsed["value"]["lore_idn"] == "0016"
+    assert parsed["value"]["prefix"] is None
     assert parsed["codes"] == []
 
 
-def test_identity_with_numeric_prefix() -> None:
-    """`01/0016` and `00/0016` are the only valid prefixed forms."""
+def test_plain_idn_is_valid_for_any_formation() -> None:
+    for formation in ("SOB", "ARC", "CT", "JEDI"):
+        parsed = identity(f"{formation} | 0016")
+        assert parsed["codes"] == [], formation
+
+
+def test_prefixed_idn_is_valid_for_sob() -> None:
     for prefix in ("01", "00"):
         parsed = identity(f"SOB | {prefix}/0016")
         assert parsed["value"]["prefix"] == prefix
         assert parsed["value"]["lore_idn"] == "0016"
-        assert parsed["codes"] == []
+        assert parsed["codes"] == [], prefix
 
 
-def test_other_lore_prefixes_are_rejected() -> None:
-    """Only 01 and 00 exist; anything else must not be accepted."""
+def test_prefixed_idn_requires_00_after_the_slash() -> None:
+    parsed = identity("SOB | 01/0116")
+    assert "idn_bad_shape" in parsed["codes"]
+
+
+def test_bare_six_digit_idn_is_invalid() -> None:
+    """There is no plain 6-digit form; 6 digits only exist as PP/00NN."""
+    parsed = identity("SOB | 000016")
+    assert "idn_bad_shape" in parsed["codes"]
+
+
+def test_prefixed_idn_rejects_other_prefixes() -> None:
     for prefix in ("02", "03", "10", "99"):
         parsed = identity(f"SOB | {prefix}/0016")
         assert "lore_prefix_invalid" in parsed["codes"], prefix
 
 
-def test_prefixed_lore_idn_still_checks_length() -> None:
-    parsed = identity("SOB | 01/016")
-    assert "idn_bad_length" in parsed["codes"]
-    assert "lore_prefix_invalid" not in parsed["codes"]
+def test_prefix_is_sob_only() -> None:
+    """01/ and 00/ describe SOB squads, so another formation may not use them."""
+    for formation in ("ARC", "CT", "JEDI", "MERC"):
+        parsed = identity(f"{formation} | 01/0016")
+        assert "lore_prefix_not_allowed_for_formation" in parsed["codes"], formation
 
 
-def test_prefix_warning_names_the_allowed_values() -> None:
-    from dsbot.modules.reports.templates import issue_line
-
-    text = issue_line("lore_prefix_invalid", "ru", detail_raw="02")
-    assert "01/" in text
-    assert "00/" in text
-
-
-def test_identity_with_optional_nrp() -> None:
+def test_prefixed_idn_plus_system_idn_is_valid() -> None:
     parsed = identity("SOB | 01/0016 | 0017")
     assert parsed["value"]["lore_idn"] == "0016"
     assert parsed["value"]["nrp_idn"] == "0017"
     assert parsed["codes"] == []
 
 
-def test_identity_plain_can_also_carry_nrp() -> None:
+def test_plain_idn_with_system_idn_is_invalid() -> None:
+    """NRP only exists to disambiguate the prefixed form."""
     parsed = identity("SOB | 0016 | 0017")
-    assert parsed["value"]["lore_idn"] == "0016"
-    assert parsed["value"]["nrp_idn"] == "0017"
+    assert "idn_nrp_not_allowed" in parsed["codes"]
 
 
-def test_squad_names_are_not_accepted_as_formations() -> None:
-    """ALPHA is a squad, not a formation; reporters must write SOB."""
+def test_system_idn_must_be_exactly_four_digits() -> None:
+    parsed = identity("SOB | 01/0016 | 017")
+    assert "nrp_bad_length" in parsed["codes"]
+
+
+def test_squad_names_are_not_formations() -> None:
     parsed = identity("ALPHA | 01/0016")
     assert "formation_unknown" in parsed["codes"]
 
 
-def test_identity_unknown_formation() -> None:
+def test_unknown_formation_is_rejected() -> None:
     parsed = identity("ZZZ | 0016")
     assert "formation_unknown" in parsed["codes"]
 
 
-def test_identity_bad_length() -> None:
-    parsed = identity("SOB | 016")
-    assert "idn_bad_length" in parsed["codes"]
-
-
-def test_six_digit_idn_allowed_as_lore() -> None:
-    parsed = identity("SOB | 000016")
-    assert parsed["value"]["lore_idn"] == "000016"
-    assert parsed["codes"] == []
-
-
-def test_six_digit_lore_plus_four_digit_nrp_is_valid() -> None:
-    """A lore IDN may be 6 digits; the system IDN after it must still be 4."""
-    parsed = identity("SOB | 000016 | 0017")
-    assert parsed["value"]["lore_idn"] == "000016"
-    assert parsed["value"]["nrp_idn"] == "0017"
-    assert parsed["codes"] == []
-
-
-def test_system_idn_must_be_exactly_four_digits() -> None:
-    """A 6-digit value in the system slot is a lore IDN written in the wrong place."""
-    parsed = identity("SOB | 0016 | 000017")
-    assert parsed["value"]["nrp_idn"] == "000017"
-    assert "nrp_bad_length" in parsed["codes"]
-    assert "idn_bad_length" not in parsed["codes"]
-
-
-def test_system_idn_of_three_digits_is_rejected() -> None:
-    parsed = identity("SOB | 0016 | 017")
-    assert "nrp_bad_length" in parsed["codes"]
-
-
-def test_lore_and_system_lengths_report_different_rules() -> None:
-    """The two positions have different rules, so they must give different messages."""
-    from dsbot.modules.reports.templates import issue_line
-
-    lore = identity("SOB | 016")
-    nrp = identity("SOB | 0016 | 017")
-    assert lore["codes"] == ["idn_bad_length"]
-    assert nrp["codes"] == ["nrp_bad_length"]
-
-    lore_text = issue_line("idn_bad_length", "ru", detail_raw="016")
-    nrp_text = issue_line("nrp_bad_length", "ru", detail_raw="017")
-    assert "4 цифры или 6" in lore_text
-    assert "ровно 4 цифры" in nrp_text
-
-
-def test_identity_missing_formation_warns() -> None:
+def test_missing_formation_warns() -> None:
     parsed = identity("0016")
     assert "idn_no_formation" in parsed["codes"]
+
+
+def test_short_plain_idn_is_invalid() -> None:
+    parsed = identity("SOB | 016")
+    assert "idn_bad_shape" in parsed["codes"]
+
+
+def test_missing_idn_is_reported() -> None:
+    parsed = identity("SOB")
+    assert "idn_missing" in parsed["codes"]
+
+
+def test_warning_text_explains_the_two_shapes() -> None:
+    from dsbot.modules.reports.templates import issue_line
+
+    text = issue_line("idn_bad_shape", "ru", detail_raw="000016")
+    assert "4 цифры" in text
+    assert "01/00NN" in text
+    assert "00/00NN" in text
+
+
+def test_prefix_formation_warning_names_sob() -> None:
+    from dsbot.modules.reports.templates import issue_line
+
+    text = issue_line("lore_prefix_not_allowed_for_formation", "ru", detail_formation="ARC")
+    assert "SOB" in text
+    assert "ARC" in text

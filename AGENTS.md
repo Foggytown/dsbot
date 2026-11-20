@@ -44,17 +44,20 @@ More than 10,000 characters share a 4-digit IDN space. Collisions are **expected
 data**. Never add `UNIQUE` on an IDN column, and never reject a report because two
 characters share a number. `idn_text` is preserved verbatim alongside the parsed parts.
 
-An IDN is **exactly 4 digits, or 6+**. Never zero-pad: `001` is a typo and must be
-rejected with `idn_bad_length`, not silently turned into `0001`.
+An IDN has exactly **two** valid shapes. Never invent a third:
 
-The two IDN positions have different rules:
+1. **plain**: exactly 4 digits - `SOB | 0016`
+2. **prefixed**: 6 digits written `PP/00NN`, where `PP` is `01` or `00` and the two
+   digits after the slash are always `00` - `SOB | 01/0016`
 
-- **lore IDN** - 4 digits, or 6 or more (`idn_bad_length`)
-- **system / NRP IDN** - always exactly 4 digits (`nrp_bad_length`); it is the server's
-  own counter and never grows, so a 6-digit value there is a lore IDN in the wrong slot
+The optional system (NRP) IDN is exactly 4 digits and may follow the **prefixed** form
+only. `SOB | 0016 | 0017` is invalid, and so is a bare 6-digit `SOB | 000016`.
 
-- `idn_kind = nrp` -> plain server code, e.g. `0016`
-- `idn_kind = rp_lore` -> lore IDN, possibly `01/0016` (sub-unit + number)
+Prefixes belong to SOB squads, so a prefixed IDN is rejected for any other formation
+(`ARC | 01/0016` is invalid). `lore_prefixes` and `lore_prefix_formations` on the field
+control both.
+
+- `idn_kind` -> `plain` (4-digit) or `prefixed` (`PP/00NN`)
 
 Squads (ALPHA, NULL) are **not** part of the form. They are internal structure of a
 formation, and a reporter always writes the formation. `ALPHA | 01/0016` is rejected as

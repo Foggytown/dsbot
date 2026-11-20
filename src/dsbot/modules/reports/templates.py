@@ -86,6 +86,33 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
         "ru": ("- Лорный IDN может начинаться только с 01/ или 00/, а указано «{detail_raw}»."),
         "en": "- A lore IDN may only start with 01/ or 00/, but '{detail_raw}' was given.",
     },
+    "lore_prefix_not_allowed_for_formation": {
+        "ru": (
+            "- IDN с 01/ или 00/ бывает только у SOB, а указано формирование «{detail_formation}»."
+        ),
+        "en": (
+            "- Only SOB can use a 01/ or 00/ IDN, but formation '{detail_formation}' was given."
+        ),
+    },
+    "idn_bad_shape": {
+        "ru": (
+            "- IDN «{detail_raw}» неверного формата: нужно либо 4 цифры, либо 01/00NN или 00/00NN."
+        ),
+        "en": ("- IDN '{detail_raw}' has the wrong shape: either 4 digits, or 01/00NN or 00/00NN."),
+    },
+    "idn_nrp_not_allowed": {
+        "ru": (
+            "- NRP-IDN «{detail_raw}» можно указывать только вместе с 01/ или 00/ IDN, "
+            "а не с обычным 4-значным."
+        ),
+        "en": (
+            "- NRP-IDN '{detail_raw}' may only follow a 01/ or 00/ IDN, not a plain 4-digit one."
+        ),
+    },
+    "idn_missing": {
+        "ru": "- Не указан IDN после формирования.",
+        "en": "- No IDN given after the formation.",
+    },
     "rule_min_attachments": {
         "ru": "- Фото: нужно не меньше {detail_required}, найдено {detail_found}.",
         "en": "- Photos: need at least {detail_required}, found {detail_found}.",

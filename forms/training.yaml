@@ -57,8 +57,12 @@ fields:
       - MERC
 
     # A prefixed lore IDN may only start with one of these. There are no other
-    # valid combinations: 01/xxxx and 00/xxxx only.
+    # valid combinations: 01/00NN and 00/00NN only.
     lore_prefixes: ["01", "00"]
+
+    # 01/ and 00/ describe SOB squads, so only SOB may use a prefixed IDN.
+    # Every other formation writes a plain 4-digit IDN.
+    lore_prefix_formations: [SOB]
 
     hint:
       ru: "Например: SOB | 0016  или  ALPHA | 01/0016"
