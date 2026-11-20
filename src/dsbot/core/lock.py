@@ -135,33 +135,52 @@ def find_dsbot_processes() -> list[int]:
     `uv run` spawns a child, so the recorded pid can die while the real bot keeps
     running. Stopping must therefore look for the processes themselves, otherwise
     `stop` reports success and the bot continues answering messages.
+
+    Works on Windows (PowerShell/CIM) and Linux (ps), because the bot runs on both.
     """
     pids: list[int] = []
-    if sys.platform != "win32":
-        return pids
     try:
         import subprocess
 
-        output = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-                "Where-Object { $_.CommandLine -like '*dsbot*run*' } | "
-                "Select-Object -ExpandProperty ProcessId",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
+        if sys.platform == "win32":
+            output = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                    "Where-Object { $_.CommandLine -like '*dsbot*run*' } | "
+                    "Select-Object -ExpandProperty ProcessId",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            lines = output.stdout.splitlines()
+        else:
+            # ps is universally available on Linux images. Include `uv run dsbot run`,
+            # which shows up as a python process with the console-script path.
+            output = subprocess.run(
+                ["ps", "-eo", "pid=,args="],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            lines = [
+                line.split(None, 1)[0]
+                for line in output.stdout.splitlines()
+                if "dsbot" in line and "run" in line and "grep" not in line
+            ]
     except Exception:
         return pids
-    for line in output.stdout.splitlines():
-        line = line.strip()
-        if line.isdigit():
-            pids.append(int(line))
+
+    own = os.getpid()
+    for line in lines:
+        token = line.strip().split()[0] if line.strip() else ""
+        if token.isdigit() and int(token) != own:
+            pids.append(int(token))
     return pids
 
 
