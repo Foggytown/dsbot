@@ -67,8 +67,8 @@ fields:
     lore_prefix_formations: [SOB]
 
     hint:
-      ru: "Например: SOB | 0016  или  ALPHA | 01/0016"
-      en: "For example: SOB | 0016  or  ALPHA | 01/0016"
+      ru: "Например: ARC | 0042  или  SOB | 01/0016 | 0017"
+      en: "For example: ARC | 0042  or  SOB | 01/0016 | 0017"
 
   # ---------------------------------------------------------------------------
   # 2) Qualification, finite list

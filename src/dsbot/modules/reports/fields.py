@@ -403,7 +403,10 @@ def parse_identity(
     if is_blank_value(text):
         return FieldResult(value=None, present=False)
 
-    known = {f.upper() for f in (formations or [])}
+    # Keep the configured spelling alongside the lookup key, so a reporter's `501ST`
+    # is stored as the canonical `501st` from the form.
+    canonical = {f.upper(): f for f in (formations or [])}
+    known = set(canonical)
     prefix_formations = {f.upper() for f in (lore_prefix_formations or ["SOB"])}
     allowed_prefixes = [p.zfill(2) for p in (lore_prefixes or ["01", "00"])]
 
@@ -430,6 +433,7 @@ def parse_identity(
         soldier_value, soldier_issues = _parse_one_soldier(
             soldier,
             known=known,
+            canonical=canonical,
             allowed_prefixes=allowed_prefixes,
             prefix_formations=prefix_formations,
             field_id=field_id,
@@ -468,6 +472,7 @@ def _parse_one_soldier(
     soldier: str,
     *,
     known: set[str],
+    canonical: dict[str, str],
     allowed_prefixes: list[str],
     prefix_formations: set[str],
     field_id: str,
@@ -512,10 +517,9 @@ def _parse_one_soldier(
         )
         return value, issues
 
-    for candidate in known:
-        if candidate.upper() == formation.upper():
-            formation = candidate
-            break
+    # Store the spelling from the configured list, not the reporter's capitalisation,
+    # so `501ST` and `501St` are both recorded as `501st`.
+    formation = canonical.get(formation.upper(), formation)
     if known and formation.upper() not in {k.upper() for k in known}:
         issues.append(
             FieldIssue(

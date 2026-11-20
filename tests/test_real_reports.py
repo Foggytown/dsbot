@@ -182,8 +182,19 @@ def test_unknown_formation_lists_allowed_values() -> None:
 
 
 def test_501th_is_not_501st() -> None:
+    """English ordinals: 501st, never 501th."""
     _value, codes = ident("501th | 2641")
     assert "formation_unknown" in codes
+    _value, codes = ident("501TH | 2641")
+    assert "formation_unknown" in codes
+
+
+def test_501st_is_stored_in_canonical_spelling() -> None:
+    """However the reporter capitalises it, the stored value matches the form."""
+    for text in ("501st | 2641", "501ST | 2641", "501St | 2641"):
+        value, codes = ident(text)
+        assert codes == [], text
+        assert value["formation"] == "501st", text
 
 
 def test_99th_is_valid() -> None:
