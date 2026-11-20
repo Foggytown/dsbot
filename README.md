@@ -233,12 +233,16 @@ Exactly **two** IDN shapes exist, and nothing else is accepted:
 | Shape | Example | Notes |
 |---|---|---|
 | plain, 4 digits | `SOB \| 0016`, `ARC \| 0042` | any formation |
+| plain + second IDN | `ARC \| 0042 \| 0043` | any formation; both exactly 4 digits |
 | prefixed, 6 digits `PP/00NN` | `SOB \| 01/0016`, `SOB \| 00/0087` | **SOB only** |
 | prefixed + system IDN | `SOB \| 01/0016 \| 0017` | system IDN is exactly 4 digits |
+| several soldiers | `ARC \| 7784, ARC \| 8440` | comma-separated, each checked |
 
 - The prefix is always `01` or `00`, and the two digits after the slash are always `00`.
 - `01/` and `00/` describe SOB squads, so any other formation using them is rejected.
-- The optional NRP/system IDN may only follow a **prefixed** IDN, never a plain one.
+- A second 4-digit IDN is fine for **any** formation; only the `01/` `00/` prefixes are
+  SOB-specific.
+- A prefixed IDN always needs its system IDN.
 
 Rejected:
 
@@ -247,9 +251,10 @@ Rejected:
 | `SOB \| 000016` | `idn_bad_shape` — no plain 6-digit form |
 | `SOB \| 01/0116` | `idn_bad_shape` — after the slash must start with `00` |
 | `ARC \| 01/0016` | `lore_prefix_not_allowed_for_formation` |
-| `SOB \| 0016 \| 0017` | `idn_nrp_not_allowed` — plain IDN carries no NRP |
+| `SOB \| 01/0038` | `nrp_missing` — prefixed IDN needs its system IDN |
 | `SOB \| 02/0016` | `lore_prefix_invalid` |
 | `SOB \| 016` | `idn_bad_shape` |
+| `ARC \| 0042 \| 043` | `nrp_bad_length` — second IDN must be 4 digits |
 
 Prefixes and which formations may use them are both configurable per field
 (`lore_prefixes`, `lore_prefix_formations`), defaulting to `["01","00"]` and `["SOB"]`.
@@ -387,8 +392,7 @@ ARC | 7784, ARC | 8440
 |---|---|
 | `ARC \| 01/0016` | префикс только у SOB |
 | `SOB \| 01/0038` | к лорному IDN нужен системный IDN |
-| `SOB \| 0016 \| 0017` | у обычного IDN не бывает второго номера |
-| `SOB \| 01\0016` | обратный слеш вместо `/` |
+| `ARC \| 01/0016` | префикс `01/` и `00/` только у SOB |
 | `SOB \| 01/0038 [8289]` | скобки не нужны |
 | `ARC Alpha \| 01/0016` | лишнее слово в формировании |
 | `212th \| Revers` | имя вместо номера |

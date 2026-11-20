@@ -79,9 +79,25 @@ def test_prefixed_idn_requires_system_idn() -> None:
     assert "nrp_missing" in codes
 
 
-def test_plain_idn_rejects_second_number() -> None:
-    _value, codes = ident("SOB | 0016 | 0017")
-    assert "idn_nrp_not_allowed" in codes
+def test_plain_idn_with_second_idn_is_valid() -> None:
+    """Some soldiers have both a lore IDN and a system IDN; both are 4 digits."""
+    value, codes = ident("SOB | 0016 | 0017")
+    assert codes == []
+    assert value["lore_idn"] == "0016"
+    assert value["nrp_idn"] == "0017"
+
+
+def test_two_plain_idns_work_for_every_formation() -> None:
+    """`FORMATION | IDN | IDN` is general; only 01/ and 00/ are SOB-specific."""
+    for formation in ("SOB", "ARC", "CT", "JEDI", "212th", "501st"):
+        value, codes = ident(f"{formation} | 0042 | 0043")
+        assert codes == [], formation
+        assert value["nrp_idn"] == "0043"
+
+
+def test_second_idn_must_still_be_four_digits() -> None:
+    _value, codes = ident("ARC | 0042 | 043")
+    assert "nrp_bad_length" in codes
 
 
 def test_prefix_is_sob_only() -> None:

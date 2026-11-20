@@ -622,13 +622,19 @@ def _parse_one_soldier(
                 )
             )
         if system_part is not None:
-            issues.append(
-                FieldIssue(
-                    code="idn_nrp_not_allowed",
-                    field_id=field_id,
-                    detail={"raw": system_part},
+            # A second number after a plain IDN is legitimate: some soldiers have both
+            # a lore IDN and a system (NRP) IDN, and both are 4 digits. Accept it and
+            # keep it, so nothing is lost.
+            if not _system_idn_length_ok(system_part):
+                issues.append(
+                    FieldIssue(
+                        code="nrp_bad_length",
+                        field_id=field_id,
+                        detail={"raw": system_part, "expected": "exactly 4 digits"},
+                    )
                 )
-            )
+            else:
+                value["nrp_idn"] = system_part
 
     value.update(
         {
