@@ -409,7 +409,9 @@ def validate(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue
             and (bound.result.value is not None or bound.spec.accepts_attachments)
         ) or _has_attachment_evidence(bound)
 
-        if needed and not present:
+        # A field the reporter wrote but that failed validation is NOT missing: it has
+        # its own, more specific error. Reporting both is noise and hides the real fix.
+        if needed and not present and not bound.result.present:
             issues.append(
                 FieldIssue(
                     code="field_missing",

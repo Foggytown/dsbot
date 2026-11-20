@@ -90,13 +90,66 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
         "ru": "- Неизвестное формирование: «{detail_raw}».",
         "en": "- Unknown formation: '{detail_raw}'.",
     },
+    "nrp_missing": {
+        "ru": (
+            "- К лорному IDN «{detail_prefix}/{detail_lore_idn}» нужен системный "
+            "(NRP) IDN из 4 цифр через |, например "
+            "ФОРМИРОВАНИЕ | {detail_prefix}/{detail_lore_idn} | 0000."
+        ),
+        "en": (
+            "- The lore IDN '{detail_prefix}/{detail_lore_idn}' needs its 4-digit "
+            "system (NRP) IDN after a |, for example "
+            "FORMATION | {detail_prefix}/{detail_lore_idn} | 0000."
+        ),
+    },
     "list_allowed_formations": {
         "ru": "- Допустимые формирования: {detail_formations}.",
         "en": "- Allowed formations: {detail_formations}.",
     },
+    "identity_bad_format": {
+        "ru": (
+            "- Поле 1 должно быть строго «ФОРМИРОВАНИЕ | IDN», "
+            "например: ARC | 0042 или SOB | 01/0016 | 0017."
+        ),
+        "en": (
+            "- Field 1 must be exactly 'FORMATION | IDN', "
+            "for example: ARC | 0042 or SOB | 01/0016 | 0017."
+        ),
+    },
+    "formation_not_single_word": {
+        "ru": "- В поле 1 должно быть только название формирования, без лишних слов.",
+        "en": "- Field 1 must contain only the formation name, no extra words.",
+    },
+    "one_soldier_per_report": {
+        "ru": "- В одном рапорте указывается только один боец.",
+        "en": "- One report describes exactly one soldier.",
+    },
+    "idn_labelled_not_allowed": {
+        "ru": (
+            "- Не нужно писать NRP/RP/RC перед номером: только сам IDN из 4 цифр. "
+            "Например: SOB | 01/0016 | 0017."
+        ),
+        "en": (
+            "- Do not prefix the number with NRP/RP/RC: just the 4-digit IDN. "
+            "For example: SOB | 01/0016 | 0017."
+        ),
+    },
+    "idn_nrp_not_allowed": {
+        "ru": (
+            "- У обычного IDN не может быть второго номера. "
+            "Второй IDN нужен только для 01/ или 00/."
+        ),
+        "en": (
+            "- A plain IDN takes no second number. A second IDN is only needed after 01/ or 00/."
+        ),
+    },
     "brackets_not_allowed": {
         "ru": "- Скобки [ ] не нужны. Формат: «ФОРМИРОВАНИЕ | IDN», например SOB | 01/0038.",
         "en": "- No [ ] brackets. Format: 'FORMATION | IDN', for example SOB | 01/0038.",
+    },
+    "backslash_not_allowed": {
+        "ru": "- Нужен обычный слеш «/», а не обратный «\\». Например: SOB | 01/0038.",
+        "en": "- Use a normal slash '/', not a backslash '\\'. For example: SOB | 01/0038.",
     },
     "list_allowed_qualifications": {
         "ru": "- Допустимые квалификации: {detail_options}.",
@@ -119,15 +172,6 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
             "- IDN «{detail_raw}» неверного формата: нужно либо 4 цифры, либо 01/00NN или 00/00NN."
         ),
         "en": ("- IDN '{detail_raw}' has the wrong shape: either 4 digits, or 01/00NN or 00/00NN."),
-    },
-    "idn_nrp_not_allowed": {
-        "ru": (
-            "- NRP-IDN «{detail_raw}» можно указывать только вместе с 01/ или 00/ IDN, "
-            "а не с обычным 4-значным."
-        ),
-        "en": (
-            "- NRP-IDN '{detail_raw}' may only follow a 01/ or 00/ IDN, not a plain 4-digit one."
-        ),
     },
     "idn_missing": {
         "ru": "- Не указан IDN после формирования.",
