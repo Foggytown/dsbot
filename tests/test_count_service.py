@@ -17,7 +17,7 @@ from dsbot.config import Settings
 from dsbot.modules.quotas.period import Period
 from dsbot.modules.quotas.service import CountingService, CountRequest
 from dsbot.modules.ranks.ladder import LadderSpec, TierSpec
-from dsbot.modules.ranks.resolver import LadderIndex
+from dsbot.modules.ranks.resolver import GuildLadders, LadderIndex
 from dsbot.modules.ranks.roster import RosterService, StaticRosterSource
 from dsbot.modules.verdict.service import VerdictService
 from dsbot.storage import admin, ranks_repo, repos
@@ -60,6 +60,21 @@ def ladder_spec() -> LadderSpec:
             TierSpec(key="instructor", label="Instructor", ordinal=10, roles=[30]),
         ],
     )
+
+
+def guild_ladders(ladder_id: int) -> GuildLadders:
+    """The guild's ladder set. One ladder is enough for these tests, but the service
+    takes the whole set because a real guild has a review ladder and quota ladders."""
+    group = GuildLadders(guild_id=REPORT_GUILD)
+    group.add(
+        LadderIndex(
+            ladder_id=ladder_id,
+            guild_id=REPORT_GUILD,
+            key="instructors",
+            by_role={},
+        )
+    )
+    return group
 
 
 async def setup_binding(db: Database) -> tuple[int, int]:
@@ -160,13 +175,8 @@ async def test_approved_report_counts_for_its_author(db: Database) -> None:
     service = CountingService(db)
     outcome = await service.count(
         CountRequest(binding_id=binding_id, channel_id=CHANNEL, period=PERIOD),
-        ladder_id=ladder_id,
-        ladder=LadderIndex(
-            ladder_id=ladder_id,
-            guild_id=REPORT_GUILD,
-            key="instructors",
-            by_role={},
-        ),
+        quota_ladder_id=ladder_id,
+        ladders=guild_ladders(ladder_id),
     )
     assert outcome.summary.tallies[0].approved_count == 1
     assert outcome.summary.tallies[0].display_name == "Ann"
@@ -186,7 +196,7 @@ async def test_report_outside_the_period_is_not_counted(db: Database) -> None:
     service = CountingService(db)
     outcome = await service.count(
         CountRequest(binding_id=binding_id, channel_id=CHANNEL, period=PERIOD),
-        ladder_id=ladder_id,
+        quota_ladder_id=ladder_id,
     )
     assert outcome.summary.credited_total() == 0
 
@@ -268,14 +278,13 @@ async def test_roster_scrape_keeps_only_people_on_the_ladder(db: Database) -> No
             ]
         }
     )
-    ladder = LadderIndex(
-        ladder_id=ladder_id,
-        guild_id=REPORT_GUILD,
-        key="instructors",
-        by_role={
+    ladder = guild_ladders(ladder_id)
+    # This test needs real roles, so the set carries the review tier as well.
+    ladder.indexes[0].by_role.update(
+        {
             SENIOR_ROLE: ("senior", "Senior Instructor", 30, frozenset({"review"})),
             30: ("instructor", "Instructor", 10, frozenset()),
-        },
+        }
     )
     service = RosterService(db, source)
     result = await service.refresh(REPORT_GUILD, ladder, ladder_id=ladder_id)
@@ -289,7 +298,7 @@ async def test_roster_scrape_keeps_only_people_on_the_ladder(db: Database) -> No
 
 async def test_roster_scrape_without_intent_reports_why(db: Database) -> None:
     _, ladder_id = await setup_binding(db)
-    ladder = LadderIndex(ladder_id=ladder_id, guild_id=REPORT_GUILD, key="instructors", by_role={})
+    ladder = guild_ladders(ladder_id)
     service = RosterService(db, StaticRosterSource(available=False))
     result = await service.refresh(REPORT_GUILD, ladder, ladder_id=ladder_id)
     assert not result.ok
@@ -301,7 +310,7 @@ async def test_count_without_a_roster_is_reported_not_silently_empty(db: Databas
     binding_id, ladder_id = await setup_binding(db)
     outcome = await CountingService(db).count(
         CountRequest(binding_id=binding_id, channel_id=CHANNEL, period=PERIOD),
-        ladder_id=ladder_id,
+        quota_ladder_id=ladder_id,
     )
     assert outcome.degraded
     assert any("roster" in problem for problem in outcome.problems)
@@ -325,8 +334,8 @@ async def test_re_running_a_period_replaces_results(db: Database) -> None:
 
     service = CountingService(db)
     request = CountRequest(binding_id=binding_id, channel_id=CHANNEL, period=PERIOD)
-    first = await service.count(request, ladder_id=ladder_id, persist=True)
-    second = await service.count(request, ladder_id=ladder_id, persist=True)
+    first = await service.count(request, quota_ladder_id=ladder_id, persist=True)
+    second = await service.count(request, quota_ladder_id=ladder_id, persist=True)
 
     assert first.run_id is not None
     assert second.run_id == first.run_id
@@ -352,7 +361,7 @@ async def test_republishing_edits_the_same_messages(db: Database) -> None:
     reply = RecordingReplySink()
     service = CountingService(db, reply)
     request = CountRequest(binding_id=binding_id, channel_id=CHANNEL, period=PERIOD)
-    outcome = await service.count(request, ladder_id=ladder_id, persist=True)
+    outcome = await service.count(request, quota_ladder_id=ladder_id, persist=True)
 
     first = await service.publish(request, outcome, target_channel_id=CHANNEL)
     second = await service.publish(request, outcome, target_channel_id=CHANNEL)

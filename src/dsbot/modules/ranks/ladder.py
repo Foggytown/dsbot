@@ -62,7 +62,20 @@ class LadderSpec(BaseModel):
     key: str
     guild_id: int
     name: str = ""
+    # What this ladder is for. `review` orders who may approve (and needs a review
+    # capability), `quota` lists who owes reports (and deliberately has none). The
+    # distinction has to be explicit: inferring it from capabilities would make an
+    # unfinished review ladder look like a quota ladder and silently disable approvals.
+    purpose: str = "review"
     tiers: list[TierSpec]
+
+    @field_validator("purpose")
+    @classmethod
+    def _known_purpose(cls, value: str) -> str:
+        allowed = {"review", "quota"}
+        if value not in allowed:
+            raise ValueError(f"purpose must be one of {sorted(allowed)}, got {value!r}")
+        return value
 
     @model_validator(mode="after")
     def _ordinals_are_unique(self) -> LadderSpec:
@@ -116,10 +129,15 @@ def load_ladders(directory: Path = DEFAULT_LADDER_DIR) -> list[LadderSpec]:
 def ladder_problems(spec: LadderSpec) -> list[str]:
     """Catch the mistakes an admin actually makes when writing a ladder."""
     problems: list[str] = []
-    if not any("review" in t.capabilities for t in spec.tiers):
+    if spec.purpose == "review" and not any("review" in t.capabilities for t in spec.tiers):
         problems.append(
             f"ladder '{spec.key}': no tier has the 'review' capability, "
             "so nobody could approve a report"
+        )
+    if spec.purpose == "quota" and any("review" in t.capabilities for t in spec.tiers):
+        problems.append(
+            f"ladder '{spec.key}': a quota ladder must not grant 'review', "
+            "or everyone who owes a report could also approve one"
         )
     if not any("admin" in t.capabilities for t in spec.tiers):
         problems.append(f"ladder '{spec.key}': no tier has the 'admin' capability")

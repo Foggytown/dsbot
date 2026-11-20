@@ -8,7 +8,7 @@ guild. These tests pin that behaviour without a live gateway.
 from __future__ import annotations
 
 from dsbot.modules.ranks.ladder import LadderSpec, TierSpec
-from dsbot.modules.ranks.resolver import LadderIndex, RankResolver
+from dsbot.modules.ranks.resolver import GuildLadders, LadderIndex, RankResolver
 from dsbot.modules.ranks.source import StaticRankSource
 
 SPEC = LadderSpec(
@@ -31,9 +31,10 @@ SPEC = LadderSpec(
 )
 
 
-def index_from(spec: LadderSpec) -> dict[int, LadderIndex]:
-    return {
-        spec.guild_id: LadderIndex(
+def index_from(spec: LadderSpec) -> dict[int, GuildLadders]:
+    group = GuildLadders(guild_id=spec.guild_id)
+    group.add(
+        LadderIndex(
             ladder_id=1,
             guild_id=spec.guild_id,
             key=spec.key,
@@ -43,7 +44,8 @@ def index_from(spec: LadderSpec) -> dict[int, LadderIndex]:
                 for role in t.roles
             },
         )
-    }
+    )
+    return {spec.guild_id: group}
 
 
 def resolver(
@@ -75,6 +77,112 @@ async def test_tier_without_review_cannot_review() -> None:
     rank = await res.resolve(900, 1)
     assert rank is not None
     assert rank.can_review is False
+
+
+async def test_review_lookup_ignores_a_quota_tier_even_when_it_is_senior() -> None:
+    """Roles that owe reports and roles that approve are different populations.
+
+    A quota tier may legitimately have a high ordinal; it still must not decide a
+    verdict. Asking for `review` is what separates the two, not the ordinal.
+    """
+    group = GuildLadders(guild_id=900)
+    group.add(
+        LadderIndex(
+            ladder_id=1,
+            guild_id=900,
+            key="instructors",
+            by_role={
+                # A reviewer at 30.
+                20: ("senior", "Senior Instructor", 30, frozenset({"review"})),
+                # A reporting tier with a higher ordinal and no capability.
+                30: ("squadlead", "Squad Lead", 90, frozenset()),
+            },
+        )
+    )
+    res = RankResolver(StaticRankSource({(900, 1): frozenset({20, 30})}), {900: group})
+
+    # For approval, the quota tier is invisible.
+    review = await res.resolve(900, 1, requires=frozenset({"review"}))
+    assert review is not None
+    assert review.tier_key == "senior"
+
+    # For counting, the highest ordinal still wins.
+    any_rank = await res.resolve(900, 1)
+    assert any_rank is not None
+    assert any_rank.tier_key == "squadlead"
+
+
+async def test_a_pure_quota_tier_cannot_approve_at_all() -> None:
+    group = GuildLadders(guild_id=900)
+    group.add(
+        LadderIndex(
+            ladder_id=2,
+            guild_id=900,
+            key="instructors",
+            by_role={40: ("instructor", "Instructor", 10, frozenset())},
+        )
+    )
+    res = RankResolver(StaticRankSource({(900, 1): frozenset({40})}), {900: group})
+    assert await res.resolve(900, 1, requires=frozenset({"review"})) is None
+    assert (await res.resolve(900, 1)) is not None
+
+
+async def test_two_ladders_in_one_guild_are_kept_apart() -> None:
+    """A review ladder and a quota ladder must coexist without sharing roles."""
+    group = GuildLadders(guild_id=900)
+    group.add(
+        LadderIndex(
+            ladder_id=1,
+            guild_id=900,
+            key="review",
+            by_role={10: ("head", "Head", 100, frozenset({"review"}))},
+        )
+    )
+    group.add(
+        LadderIndex(
+            ladder_id=2,
+            guild_id=900,
+            key="quota",
+            by_role={99: ("instructor", "Instructor", 10, frozenset())},
+        )
+    )
+    res = RankResolver(
+        StaticRankSource({(900, 1): frozenset({10}), (900, 2): frozenset({99})}),
+        {900: group},
+    )
+    assert (await res.resolve(900, 1, requires=frozenset({"review"}))).tier_key == "head"  # type: ignore[union-attr]
+    assert (await res.resolve(900, 2, requires=frozenset({"review"}))) is None
+    assert (await res.resolve(900, 2)).tier_key == "instructor"  # type: ignore[union-attr]
+
+
+async def test_pinning_a_channel_ladder_restricts_the_answer() -> None:
+    """Channel-level hierarchy: one channel may be ordered by its own ladder only."""
+    group = GuildLadders(guild_id=900)
+    group.add(
+        LadderIndex(
+            ladder_id=1,
+            guild_id=900,
+            key="alpha",
+            by_role={10: ("cmd_a", "Commander A", 50, frozenset({"review"}))},
+        )
+    )
+    group.add(
+        LadderIndex(
+            ladder_id=2,
+            guild_id=900,
+            key="bravo",
+            by_role={10: ("cmd_b", "Commander B", 10, frozenset({"review"}))},
+        )
+    )
+    res = RankResolver(StaticRankSource({(900, 1): frozenset({10})}), {900: group})
+
+    # Unpinned: the highest ordinal across the guild wins.
+    assert (await res.resolve(900, 1)).tier_key == "cmd_a"  # type: ignore[union-attr]
+    # Pinned to bravo: the same person is a lower tier in that channel's ordering.
+    pinned = await res.resolve(900, 1, ladder_id=2)
+    assert pinned is not None
+    assert pinned.tier_key == "cmd_b"
+    assert pinned.ordinal == 10
 
 
 async def test_user_with_no_configured_role_is_unresolved() -> None:

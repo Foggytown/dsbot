@@ -109,6 +109,7 @@ uv run dsbot export --channel <channel> --out backfill-out/reports.csv
 # counting: who filed how many approved reports
 uv run dsbot roster-refresh --channel <channel>   # scrape role membership once
 uv run dsbot roster --channel <channel>           # who is counted
+uv run dsbot channel-ladder --channel <channel> --ladder quota   # pin the hierarchy
 uv run dsbot quota-set --channel <channel> --tier instructor --count 3
 uv run dsbot quota-show --channel <channel>
 uv run dsbot count --channel <channel>            # current week
@@ -117,6 +118,10 @@ uv run dsbot count --channel <channel> --from 2026-11-01 --to 2026-11-17
 uv run dsbot count --channel <channel> --publish 123456789   # post it somewhere
 uv run dsbot report-format --channel <channel> --publish-to 123456789 --title "Недельные нормы"
 ```
+
+Two ladder files are shipped as a starting point: `forms/ladders/review.yaml.example`
+(who may approve) and `forms/ladders/quota.yaml.example` (who owes reports). Copy them,
+fill in real role ids, and apply each with `dsbot ladder-apply`.
 
 `backfill --to-db` writes to the database in the same pass. `--since` accepts an
 ISO date or a relative duration (`14d`, `36h`).
@@ -137,20 +142,27 @@ period. The rules that were agreed explicitly, and why:
 | rejected | no | staff decided against it |
 | `conflict` (two equal tiers disagree) | no | guessing a side would produce a wrong number |
 
-Approval authority comes from the rank ladder, never from Discord's role order: only a
-tier whose `capabilities` include `review` can approve or reject. A senior instructor may
-approve their own report; two reviewers of the *same* tier who disagree produce a
-conflict instead of an arbitrary winner.
+**Approving and reporting are different roles.** A guild has two ladders, told apart by
+`purpose:` in the YAML:
 
-**Who is counted** is everyone holding a role listed in the ladder, scraped into the
+- `purpose: review` — the tiers that may approve or reject, with `capabilities: [review]`
+- `purpose: quota`  — the roles that owe reports, with **no** capabilities
+
+A role that only owes reports can never approve one, whatever its ordinal is. Two
+reviewers of the *same* tier who disagree produce a conflict instead of an arbitrary
+winner.
+
+**Who is counted** is everyone holding a role in the quota ladder, scraped into the
 database by `roster-refresh`. That is why the **Members intent must be enabled** in the
 Discord developer portal and `DSBOT_ENABLE_MEMBERS_INTENT=true`: without it Discord
 refuses to list guild members, and someone with zero reports would silently vanish from
 the table instead of showing `0`. The scrape is stored, so a count itself needs no
 Discord connection and can be reproduced later.
 
-The list is scraped from the channel's **rank source guild**, not the report guild,
-because instructors are not members of the server where reports are read.
+The list is scraped from the channel's **rank source guild** — the server that holds the
+roles, not the one where reports are read. Which ordering applies is chosen per channel
+with `channel-ladder` / `/dsbot ladder-pin`, so two channels can treat the same people
+differently.
 
 ## How per-channel forms work
 

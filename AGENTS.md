@@ -25,7 +25,7 @@ soldier-to-instructor assignment, dashboards.
 |---|---|---|
 | Messages, reports, reactions, verdicts, weekly results | server database | change constantly, server only |
 | Forms | `forms/*.yaml` | configuration, reviewed in git |
-| Rank ladders | `forms/ladders/*.yaml` | configuration |
+| Rank ladders | `forms/ladders/*.yaml` | configuration, one file per ladder |
 | Served channels | `forms/channels.yaml` | configuration |
 | Token and deployment settings | `.env` on the server | secret, never committed |
 
@@ -122,14 +122,48 @@ highest surviving verdict automatically. Do not implement last-event-wins.
 
 ### Who may approve
 
-Only a tier whose `capabilities` include `review`. Senior instructor and above in the
-current ladder. A reviewer may approve **their own** report; that is expected, not an
-error to "fix". A reaction whose author's rank could not be resolved is stored but
-counts for nothing — a NULL `can_review` must never be treated as "allowed", or any
-stranger's check mark would approve a report.
+Only a tier whose `capabilities` include `review`. A reviewer may approve **their own**
+report; that is expected, not an error to "fix". A reaction whose author's rank could
+not be resolved is stored but counts for nothing — a NULL `can_review` must never be
+treated as "allowed", or any stranger's check mark would approve a report.
 
 Two reviewers of the **same** ordinal who disagree produce `conflict`. Different
 ordinals are resolved by the higher one. A conflict is never guessed at.
+
+### Review authority and quotas are separate ladders
+
+This is the correction that matters most:
+
+> Roles that approve are NOT the roles that owe reports. Different tiers, often
+> different roles entirely.
+
+So a guild has several ladders, distinguished by a declared `purpose`:
+
+| `purpose` | Contains | Used for | Capabilities |
+|---|---|---|---|
+| `review` | who may approve | verdicts, `/reports count` permission | `review`, `admin` |
+| `quota` | who owes reports | the weekly table, `quota-set` | none, on purpose |
+
+A quota ladder must never grant `review`; `ladder-check` rejects it. The reactor path
+asks the resolver for `requires={"review"}`, so a quota role physically cannot decide a
+verdict however high its ordinal is. Do not collapse these into one ladder: doing so
+either lets everyone who reports approve themselves, or drops non-purpose roles out of
+the count.
+
+### Hierarchy is per channel, roles are cross-server
+
+Two different servers, two different jobs:
+
+- **where the roles live**: `channel_bindings.rank_source_guild_id`. Normally a
+  specialization server, not the server where reports are read. This is what makes
+  cross-server approval work at all.
+- **which ordering applies**: `channel_bindings.rank_ladder_id`. When set, that channel
+  is ordered only by that ladder. When unset, every ladder in the roles' guild competes
+  and the highest ordinal wins.
+
+So two channels can read reports in one guild while ordering the same people
+differently, and the same person can be a reviewer in one channel and a reporter in
+another. Never infer the hierarchy from Discord's role position ordering.
 
 ### What counting counts
 
@@ -149,7 +183,7 @@ the alternative punishes an instructor for someone else's delay. It is still sur
 
 ### Who is counted
 
-Everyone holding a role listed in the ladder — including people with zero reports, who
+Everyone holding a role in the **quota** ladder — including people with zero reports, who
 must show as `0`. "Nobody reported" and "nobody is tracked" must never look the same.
 
 This requires the **Members intent**: Discord refuses to list guild members without it.
@@ -256,6 +290,14 @@ Each of these shipped and had to be found by a live run or a user report.
 10. **Republishing duplicated pages.** Editing only the first message of a multi-page
     report left the old later pages and added new ones. All published ids are stored and
     every page is edited, with orphans removed.
+11. **One ladder was made to answer two questions.** Approving and owing a report were
+    configured on the same tiers, so either everyone who reports could approve, or the
+    people who owe reports fell out of the count. They are now separate ladders with a
+    declared `purpose`, and the reactor path asks for `review` explicitly.
+12. **Reaction events were deduplicated by content.** `react.add:...` carried no
+    timestamp, so un-reacting and re-adding looked like a duplicate delivery and was
+    dropped: the verdict never came back. Clears had the same bug and left stale
+    reactions that counted as approvals. Both now carry the moment they happened.
 
 ## Verification
 

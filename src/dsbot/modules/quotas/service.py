@@ -30,7 +30,7 @@ from dsbot.modules.quotas.counting import (
 )
 from dsbot.modules.quotas.period import Period
 from dsbot.modules.quotas.render import RenderContext, render_csv, render_message
-from dsbot.modules.ranks.resolver import LadderIndex
+from dsbot.modules.ranks.resolver import GuildLadders
 from dsbot.storage import repos
 from dsbot.storage.db import Database
 
@@ -82,26 +82,30 @@ class CountingService:
         self,
         request: CountRequest,
         *,
-        ladder: LadderIndex | None = None,
-        ladder_id: int | None = None,
+        ladders: GuildLadders | None = None,
+        quota_ladder_id: int | None = None,
         title: str = "Отчёт по рапортам",
         scope: str = "",
         persist: bool = False,
     ) -> CountOutcome:
-        """Count one period for one binding."""
+        """Count one period for one binding.
+
+        `ladders` is the guild's whole ladder set, not one ladder: the population that
+        owes reports and the population that may approve are described by different
+        ladders, and counting must not confuse them.
+        """
         problems: list[str] = []
 
         binding = await self._load_binding(request.binding_id)
         if binding is None:
             raise ValueError(f"binding {request.binding_id} not found")
 
-        if ladder is None and binding.rank_source_guild_id:
-            ladder, ladder_id = await self._ladder_for(binding.rank_source_guild_id)
+        if ladders is None and binding.rank_source_guild_id:
+            ladders = await self._ladders_for(binding.rank_source_guild_id)
+        if quota_ladder_id is None and ladders is not None:
+            quota_ladder_id = ladders.quota_ladder_id
 
-        if ladder_id is None and ladder is not None:
-            ladder_id = ladder.ladder_id
-
-        roster, roster_problem = await self._roster_entries(ladder_id, ladder, binding.id)
+        roster, roster_problem = await self._roster_entries(quota_ladder_id, ladders, binding.id)
         if roster_problem:
             problems.append(roster_problem)
 
@@ -217,18 +221,15 @@ class CountingService:
         async with self._db.session() as session:
             return await repos.get_binding_by_id(session, binding_id)
 
-    async def _ladder_for(self, guild_id: int) -> tuple[LadderIndex | None, int | None]:
+    async def _ladders_for(self, guild_id: int) -> GuildLadders | None:
         from dsbot.storage import ranks_repo
 
         async with self._db.session() as session:
             ladders = await ranks_repo.load_all_ladders(session)
-        index = ladders.get(guild_id)
-        if index is None:
-            return None, None
-        return index, index.ladder_id
+        return ladders.get(guild_id)
 
     async def _roster_entries(
-        self, ladder_id: int | None, ladder: LadderIndex | None, binding_id: int
+        self, ladder_id: int | None, ladders: GuildLadders | None, binding_id: int
     ) -> tuple[list[RosterEntry], str | None]:
         """Stored roster plus quotas, or a problem explaining why it is empty."""
         if ladder_id is None:
@@ -248,7 +249,7 @@ class CountingService:
         if not stored:
             problem = (
                 "the roster is empty: nobody has been scraped yet, or no member holds a "
-                "configured role. Run `dsbot count --refresh` to scrape it."
+                "configured role. Run `dsbot roster-refresh --channel <id>` to scrape it."
             )
 
         required = _required_by_tier(policies, tier_ordinals)
@@ -262,8 +263,8 @@ class CountingService:
             )
             for row in stored
         ]
-        if ladder is not None and not entries:
-            problem = problem or f"nobody in guild {ladder.guild_id} holds a ladder role"
+        if ladders is not None and not entries:
+            problem = problem or f"nobody in guild {ladders.guild_id} holds a quota role"
         return entries, problem
 
     async def _load_reports(self, request: CountRequest) -> tuple[list[Any], list[Any]]:

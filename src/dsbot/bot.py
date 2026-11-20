@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import signal
 import sys
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +35,7 @@ from dsbot.core.lock import InstanceLock
 from dsbot.discord import sink
 from dsbot.discord.reply import DiscordReplySink, ReplySink
 from dsbot.ingest import Ingestor
-from dsbot.modules.ranks.resolver import LadderIndex, RankResolver
+from dsbot.modules.ranks.resolver import GuildLadders, RankResolver
 from dsbot.modules.ranks.roster import DiscordRosterSource, RosterService
 from dsbot.modules.ranks.source import DiscordRankSource
 from dsbot.modules.reports.service import ReportService
@@ -79,7 +79,7 @@ class Bot(discord.ext.commands.Bot):
         self.roster = RosterService(self.db, DiscordRosterSource(self))
         self.verdicts = VerdictService(self.db, self.resolver, self.reply)
         self._tasks: set[asyncio.Task[Any]] = set()
-        self._ladders: dict[int, LadderIndex] = {}
+        self._ladders: dict[int, GuildLadders] = {}
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -110,7 +110,7 @@ class Bot(discord.ext.commands.Bot):
 
         from dsbot.discord.count_commands import register_count_commands
 
-        await register_count_commands(self, self.db, self.resolver)
+        await register_count_commands(self, self.db, self.resolver, self.settings.default_timezone)
 
         # Reports are warned about immediately now, but older rows may still carry the
         # retired "deferred" status from before that change. Resolve them on start so a
@@ -305,6 +305,7 @@ class Bot(discord.ext.commands.Bot):
             return
         # One gateway event clears every emoji; expand it so the reaction table stays
         # truthful without requiring a re-fetch per emoji.
+        now = datetime.now(UTC)
         async with self.db.session() as session:
             existing = await repos.list_reactions(session, payload.message_id)
         for reaction in existing:
@@ -314,6 +315,7 @@ class Bot(discord.ext.commands.Bot):
                     guild_id=payload.guild_id,
                     message_id=payload.message_id,
                     emoji=_emoji_from_key(reaction.emoji_key, reaction.emoji_id),
+                    cleared_at=now,
                 )
             )
 
@@ -398,7 +400,7 @@ class Bot(discord.ext.commands.Bot):
             return
 
         rank_guild = binding.rank_source_guild_id or binding.guild_id
-        rank = await self._resolve_rank(rank_guild, event.user_id)
+        rank = await self._resolve_rank(rank_guild, event.user_id, ladder_id=binding.rank_ladder_id)
 
         await self._store_reaction(
             event,
@@ -464,15 +466,30 @@ class Bot(discord.ext.commands.Bot):
                 verdict=update.verdict,
             )
 
-    async def _resolve_rank(self, guild_id: int, user_id: int) -> Any:
-        """Resolve a reactor's tier, tolerating Discord being unreachable.
+    async def _resolve_rank(
+        self, guild_id: int, user_id: int, *, ladder_id: int | None = None
+    ) -> Any:
+        """Resolve a reactor's *review* authority, tolerating Discord being unreachable.
+
+        `requires={"review"}` is deliberate. Quota tiers (who must file reports) and
+        review tiers (who may approve) are different things, and a role that carries only
+        a quota must never be able to decide a verdict. Asking for the capability up front
+        makes the ladder decide that, not the order of roles in the file.
+
+        `ladder_id` pins the answer to the channel's own ladder when the binding names
+        one, so two channels in one guild can order the same people differently.
 
         A missing rank is not fatal: the reaction is still stored, it simply cannot
-        contribute to a verdict. Dropping the reaction would lose state and make a
-        later un-react behave wrongly.
+        contribute to a verdict. Dropping the reaction would lose state and make a later
+        un-react behave wrongly.
         """
         try:
-            return await self.resolver.resolve(guild_id, user_id)
+            return await self.resolver.resolve(
+                guild_id,
+                user_id,
+                requires=frozenset({"review"}),
+                ladder_id=ladder_id,
+            )
         except Exception:
             log.exception("rank_resolve_failed", guild_id=guild_id, user_id=user_id)
             return None
@@ -501,9 +518,16 @@ class Bot(discord.ext.commands.Bot):
                 "Run `dsbot ladder-apply --file forms/ladders/instructors.yaml`.",
             )
             return
-        for guild_id, index in ladders.items():
-            role_count = len(index.by_role)
-            log.info("ladder_loaded", guild_id=guild_id, key=index.key, roles=role_count)
+        for guild_id, group in ladders.items():
+            review_roles = sum(1 for caps in group.by_role.values() if caps and "review" in caps)
+            log.info(
+                "ladders_loaded",
+                guild_id=guild_id,
+                ladders=[index.key for index in group.indexes],
+                roles=len(group.by_role),
+                review_roles=review_roles,
+                quota_ladder=group.quota_ladder_id,
+            )
 
     # --- helpers -----------------------------------------------------------
 

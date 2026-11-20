@@ -195,9 +195,11 @@ def test_quota_met_uses_approved_plus_pending() -> None:
     assert row.met is True
 
 
-def test_no_quota_means_no_met_judgement() -> None:
+def test_no_quota_is_not_a_passed_quota() -> None:
+    """0 of 0 must never look like success; there is no requirement to meet."""
     row = MemberTally(user_id=1, approved_count=0, required_count=0)
-    assert row.met is True
+    assert row.met is False
+    assert MemberTally(user_id=1, approved_count=5, required_count=0).met is False
 
 
 def test_everyone_is_sorted_by_volume_then_name() -> None:

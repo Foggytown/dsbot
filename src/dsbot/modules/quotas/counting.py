@@ -81,7 +81,15 @@ class MemberTally:
 
     @property
     def met(self) -> bool:
-        return self.required_count <= (self.approved_count + self.pending_count)
+        """Whether the quota was reached.
+
+        With no quota configured this is False, not True: "0 of 0" must never render as
+        a satisfied requirement, or every untracked tier would look like a pass.
+        """
+        return (
+            self.required_count > 0
+            and (self.approved_count + self.pending_count) >= self.required_count
+        )
 
 
 @dataclass(slots=True)

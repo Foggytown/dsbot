@@ -1340,11 +1340,21 @@ def parse_text(
 # --- phase 3: counting, roster and quotas ---------------------------------
 
 
-def _period_window(week: str, weeks: int | None, date_from: str | None, date_to: str | None) -> Any:
+def _period_window(
+    week: str,
+    weeks: int | None,
+    date_from: str | None,
+    date_to: str | None,
+    timezone: str | None = None,
+) -> Any:
     """Resolve the period the operator asked for.
 
     Explicit dates win over a relative window: if someone typed both, they meant the
     dates. `--week last` is the common case and is spelled out rather than inferred.
+
+    `timezone` defaults to the deployment setting, but a channel may override it, so the
+    caller resolves the binding first: a week boundary must not depend on which way the
+    count was started.
     """
     from dsbot.modules.quotas.period import (
         current_week,
@@ -1353,17 +1363,19 @@ def _period_window(week: str, weeks: int | None, date_from: str | None, date_to:
         weeks_back,
     )
 
-    timezone = get_settings().default_timezone
+    zone = timezone or get_settings().default_timezone
 
     if date_from or date_to:
         if not (date_from and date_to):
             raise typer.BadParameter("--from and --to must be given together")
-        return explicit_period(date.fromisoformat(date_from), date.fromisoformat(date_to), timezone)
+        return explicit_period(date.fromisoformat(date_from), date.fromisoformat(date_to), zone)
     if weeks is not None:
-        return weeks_back(weeks, timezone=timezone)
+        if weeks < 1:
+            raise typer.BadParameter("--weeks must be at least 1")
+        return weeks_back(weeks, timezone=zone)
     if week.strip().lower() in {"last", "previous", "prev"}:
-        return previous_week(timezone=timezone)
-    return current_week(timezone=timezone)
+        return previous_week(timezone=zone)
+    return current_week(timezone=zone)
 
 
 def _require_scrape_settings(settings: Settings) -> None:
@@ -1463,7 +1475,7 @@ def roster_refresh(
 
             guild_id = binding.rank_source_guild_id or binding.guild_id
             ladder = ladders.get(guild_id)
-            if ladder is None or ladder.ladder_id is None:
+            if ladder is None or ladder.quota_ladder_id is None:
                 typer.echo(
                     f"no ladder for guild {guild_id}. Apply one first: "
                     "uv run dsbot ladder-apply --file forms/ladders/instructors.yaml"
@@ -1472,7 +1484,13 @@ def roster_refresh(
 
             async def work(client: Any) -> Any:
                 service = RosterService(db, DiscordRosterSource(client))
-                return await service.refresh(guild_id, ladder, ladder_id=ladder.ladder_id or 0)
+                # No `requires`: this is the population that owes reports. Review
+                # authority is asked for separately, when a reaction arrives.
+                return await service.refresh(
+                    guild_id,
+                    ladder,
+                    ladder_id=ladder.quota_ladder_id or 0,
+                )
 
             try:
                 result = await _with_lookup_client(settings, work)
@@ -1486,7 +1504,7 @@ def roster_refresh(
                 raise typer.Exit(code=1)
             typer.echo(
                 f"roster refreshed: {len(result.members)} of {result.total_members} "
-                f"member(s) on ladder {ladder.key} (guild {guild_id})"
+                f"member(s) in guild {guild_id}"
             )
         finally:
             await db.dispose()
@@ -1515,11 +1533,10 @@ def roster_show(
                 ladders = await ranks_repo.load_all_ladders(session)
                 guild_id = binding.rank_source_guild_id or binding.guild_id
                 ladder = ladders.get(guild_id)
-                if ladder is None or ladder.ladder_id is None:
+                if ladder is None or ladder.quota_ladder_id is None:
                     typer.echo(f"no ladder for guild {guild_id}")
                     raise typer.Exit(code=1)
-                rows = await repos.list_roster(session, ladder.ladder_id)
-                key = ladder.key
+                rows = await repos.list_roster(session, ladder.quota_ladder_id)
         finally:
             await db.dispose()
 
@@ -1529,7 +1546,7 @@ def roster_show(
                 f"  uv run dsbot roster-refresh --channel {channel}"
             )
             return
-        typer.echo(f"{len(rows)} person(s) on ladder {key} (guild {guild_id})")
+        typer.echo(f"{len(rows)} person(s) counted for (guild {guild_id})")
         for row in rows:
             ordinal = row.tier_ordinal if row.tier_ordinal is not None else "-"
             typer.echo(
@@ -1558,7 +1575,6 @@ def count_command(
 ) -> None:
     """Count approved reports per person for one period."""
     settings = _settings(verbose)
-    period = _period_window(week, weeks, date_from, date_to)
 
     async def run() -> None:
         from dsbot.discord.reply import DiscordReplySink
@@ -1575,12 +1591,19 @@ def count_command(
             # A CLI count may run against a database last upgraded by an older build.
             await db.prepare()
 
+            # The channel may override the deployment timezone, so the period is
+            # resolved after the binding is known. Otherwise a shell count and a slash
+            # count of the same week could disagree by hours.
+            config = binding.config or {}
+            timezone = config.get("timezone") or settings.default_timezone
+            period = _period_window(week, weeks, date_from, date_to, timezone)
+
             persist = save or publish is not None
             request = CountRequest(
                 binding_id=binding.id,
                 channel_id=channel,
                 period=period,
-                timezone=settings.default_timezone,
+                timezone=timezone,
             )
 
             if publish is None:
@@ -1640,17 +1663,25 @@ def report_format(
             help="Channel that receives the periodic report; 0 clears it",
         ),
     ] = None,
+    timezone: Annotated[
+        str | None,
+        typer.Option(help="Timezone for week boundaries on this channel, e.g. Europe/Moscow"),
+    ] = None,
     show: Annotated[bool, typer.Option("--show", help="Only show the current setting")] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Set where and under what title the counting report is published.
+    """Set where, under what title, and in which timezone the report is produced.
 
     The destination lives in the binding, not in code: an admin decides it per channel,
-    which is what "publish it to another channel set by them" means in practice.
+    which is what "publish it to another channel set by them" means in practice. The
+    timezone matters because it decides where a week ends, and a channel may legitimately
+    sit in a different timezone from the deployment default.
     """
     settings = _settings(verbose)
 
     async def run() -> None:
+        from dsbot.modules.quotas.period import load_timezone
+
         db = Database(settings)
         try:
             async with db.session() as session:
@@ -1660,16 +1691,26 @@ def report_format(
                 raise typer.Exit(code=1)
 
             config = dict(binding.config or {})
-            if show or (title is None and publish_to is None):
+            if show or (title is None and publish_to is None and timezone is None):
                 typer.echo(f"channel {channel}")
                 typer.echo(f"  title:      {config.get('report_title') or '(default)'}")
                 typer.echo(f"  publish_to: {config.get('report_channel_id') or '(ephemeral only)'}")
+                typer.echo(f"  timezone:   {config.get('timezone') or settings.default_timezone}")
                 return
 
             if title is not None:
                 config["report_title"] = title
             if publish_to is not None:
                 config["report_channel_id"] = None if publish_to == 0 else publish_to
+            if timezone is not None:
+                # Validate before storing: an unknown name would otherwise only surface
+                # at the next count, hours later, as a failed command.
+                try:
+                    load_timezone(timezone)
+                except ValueError as exc:
+                    typer.echo(f"INVALID: {exc}")
+                    raise typer.Exit(code=1) from None
+                config["timezone"] = timezone
 
             async with db.write_session() as session:
                 row = await repos.get_binding_by_channel(session, channel)
@@ -1678,6 +1719,77 @@ def report_format(
             typer.echo("updated. In effect on the next count.")
         finally:
             await db.dispose()
+
+    asyncio.run(run())
+
+
+@app.command("channel-ladder")
+def channel_ladder(
+    channel: Annotated[int, typer.Option(help="Report channel id")],
+    ladder: Annotated[
+        str | None,
+        typer.Option(help="Ladder key to pin this channel to; empty means 'any in the guild'"),
+    ] = None,
+    show: Annotated[bool, typer.Option("--show", help="Only show the current setting")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Pin a channel's hierarchy to one ladder in its rank-source guild.
+
+    This is the channel-level hierarchy: two channels can read reports in the same guild
+    while ordering the same people differently, because each binding points at its own
+    ladder. The *roles* still come from the other Discord server (`rank-source guild`),
+    which is what makes cross-server approval work.
+
+    Leave it unset to let every ladder in the guild compete, with the highest ordinal
+    winning. Pin it when a channel must not inherit a neighbouring ladder's ordering.
+    """
+    settings = _settings(verbose)
+
+    async def run() -> None:
+        from sqlalchemy import select
+
+        from dsbot.storage.models import RankLadder
+
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel)
+                if binding is None:
+                    typer.echo(f"channel {channel} is not bound to any form")
+                    raise typer.Exit(code=1)
+                guild_id = binding.rank_source_guild_id or binding.guild_id
+                candidates = (
+                    await session.scalars(select(RankLadder).where(RankLadder.guild_id == guild_id))
+                ).all()
+                current = binding.rank_ladder_id
+                target = None
+                if ladder is not None and ladder.strip():
+                    target = next((row for row in candidates if row.key == ladder.strip()), None)
+                    if target is None:
+                        known = ", ".join(sorted(row.key for row in candidates)) or "(none)"
+                        typer.echo(f"no ladder {ladder!r} in guild {guild_id}. Known: {known}")
+                        raise typer.Exit(code=1)
+
+                if show or ladder is None:
+                    pinned = next((r.key for r in candidates if r.id == current), None)
+                    typer.echo(f"channel {channel} (rank guild {guild_id})")
+                    typer.echo(f"  pinned ladder: {pinned or '(any ladder in the guild)'}")
+                    typer.echo(
+                        "  known ladders: " + (", ".join(sorted(r.key for r in candidates)) or "-")
+                    )
+                    return
+
+                async with db.write_session() as session:
+                    row = await repos.get_binding_by_channel(session, channel)
+                    assert row is not None
+                    row.rank_ladder_id = target.id if target is not None else None
+        finally:
+            await db.dispose()
+
+        if target is None:
+            typer.echo(f"channel {channel}: hierarchy unpinned, any guild ladder may apply")
+        else:
+            typer.echo(f"channel {channel}: hierarchy pinned to ladder {target.key!r}")
 
     asyncio.run(run())
 
@@ -1707,14 +1819,13 @@ def quota_set(
                     raise typer.Exit(code=1)
                 guild_id = binding.rank_source_guild_id or binding.guild_id
                 ladders = await ranks_repo.load_all_ladders(session)
-                ladder = ladders.get(guild_id)
-                if ladder is None or ladder.ladder_id is None:
+                group = ladders.get(guild_id)
+                if group is None or group.quota_ladder_id is None:
                     typer.echo(f"no ladder for guild {guild_id}")
                     raise typer.Exit(code=1)
+                ladder_id = group.quota_ladder_id
                 tiers = (
-                    await session.scalars(
-                        select(RankTier).where(RankTier.ladder_id == ladder.ladder_id)
-                    )
+                    await session.scalars(select(RankTier).where(RankTier.ladder_id == ladder_id))
                 ).all()
 
             match = next((t for t in tiers if t.key == tier), None)
@@ -1726,7 +1837,7 @@ def quota_set(
             async with db.write_session() as session:
                 await admin.set_quota(
                     session,
-                    ladder_id=ladder.ladder_id,
+                    ladder_id=ladder_id,
                     tier_id=match.id,
                     binding_id=binding.id,
                     required_count=count,
@@ -1758,17 +1869,17 @@ def quota_show(
                     raise typer.Exit(code=1)
                 guild_id = binding.rank_source_guild_id or binding.guild_id
                 ladders = await ranks_repo.load_all_ladders(session)
-                ladder = ladders.get(guild_id)
-                if ladder is None or ladder.ladder_id is None:
+                group = ladders.get(guild_id)
+                if group is None or group.quota_ladder_id is None:
                     typer.echo(f"no ladder for guild {guild_id}")
                     raise typer.Exit(code=1)
+                ladder_id = group.quota_ladder_id
                 policies = await repos.get_quota_policies(
-                    session, ladder_id=ladder.ladder_id, binding_id=binding.id
+                    session, ladder_id=ladder_id, binding_id=binding.id
                 )
-                ordinals = await repos.get_tier_ordinals(session, ladder.ladder_id)
+                ordinals = await repos.get_tier_ordinals(session, ladder_id)
                 tiers = {
-                    tier.id: tier
-                    for tier in (await session.scalars(_all_tiers(ladder.ladder_id))).all()
+                    tier.id: tier for tier in (await session.scalars(_all_tiers(ladder_id))).all()
                 }
         finally:
             await db.dispose()

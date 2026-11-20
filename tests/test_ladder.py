@@ -102,13 +102,29 @@ def test_clean_ladder_has_no_problems() -> None:
     assert ladder_problems(spec) == []
 
 
-def test_shipped_example_parses_but_needs_roles() -> None:
+def test_shipped_review_example_parses_but_needs_roles() -> None:
     """The example is a skeleton: valid to load, incomplete until roles are added."""
-    path = Path("forms/ladders/instructors.yaml.example")
+    path = Path("forms/ladders/review.yaml.example")
     spec = load_ladder(path)
-    assert spec.key == "instructors"
+    assert spec.key == "review"
     problems = ladder_problems(spec)
     assert any("no roles listed" in p for p in problems)
+
+
+def test_shipped_quota_example_grants_no_review() -> None:
+    """The quota ladder must never contain a review capability.
+
+    If it did, everyone who owes a report could also approve one, which is exactly the
+    confusion the two files exist to prevent.
+    """
+    path = Path("forms/ladders/quota.yaml.example")
+    spec = load_ladder(path)
+    assert spec.key == "quota"
+    assert not any("review" in tier.capabilities for tier in spec.tiers)
+    # It is still a usable quota ladder: the problems must be about roles and admin only.
+    problems = ladder_problems(spec)
+    assert any("no roles listed" in p for p in problems)
+    assert not any("no tier has the 'review'" in p for p in problems if "quota" in p)
 
 
 def test_missing_directory_returns_no_ladders(tmp_path: Path) -> None:

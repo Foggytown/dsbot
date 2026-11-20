@@ -161,7 +161,14 @@ class ReactionAdded:
 
     @property
     def external_id(self) -> str:
-        return f"react.add:{self.channel_id}:{self.message_id}:{self.emoji.key}:{self.user_id}"
+        # `reacted_at` is part of the key on purpose. Without it, a user who removes a
+        # reaction and adds it back produces the same id as the first time, the event is
+        # discarded as a duplicate, and the verdict never returns: the report stays
+        # undecided even though the check mark is visible in the channel.
+        stamp = self.reacted_at.isoformat() if self.reacted_at else "unknown"
+        return (
+            f"react.add:{self.channel_id}:{self.message_id}:{self.emoji.key}:{self.user_id}:{stamp}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,10 +199,16 @@ class ReactionCleared:
     guild_id: int | None = None
     message_id: int = 0
     emoji: EmojiRef = None  # type: ignore[assignment]
+    cleared_at: datetime | None = None
 
     @property
     def external_id(self) -> str:
-        return f"react.clear:{self.channel_id}:{self.message_id}:{self.emoji.key}"
+        # Timestamped for the same reason as ReactionAdded: a message can have its
+        # reactions cleared, receive new ones, and be cleared again. Without the stamp
+        # the second clear is dropped as a duplicate and stale reactions stay in the
+        # database, which turns into phantom approvals at count time.
+        stamp = self.cleared_at.isoformat() if self.cleared_at else "unknown"
+        return f"react.clear:{self.channel_id}:{self.message_id}:{self.emoji.key}:{stamp}"
 
 
 Event = (
@@ -243,6 +256,7 @@ def event_payload(event: Event) -> dict[str, Any]:
                 "guild_id": event.guild_id,
                 "message_id": event.message_id,
                 "emoji": event.emoji.to_payload(),
+                "cleared_at": event.cleared_at.isoformat() if event.cleared_at else None,
             }
     return payload
 

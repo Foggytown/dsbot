@@ -18,6 +18,7 @@ from discord import app_commands
 
 from dsbot.modules.reports.authoring import edit_field_values, export_forms
 from dsbot.modules.reports.schema import FormSchemaDef
+from dsbot.storage import ranks_repo, repos
 from dsbot.storage.db import Database
 
 log = structlog.get_logger(__name__)
@@ -206,11 +207,230 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
         unique = sorted({v for v in values if needle in v.lower()})
         return [app_commands.Choice(name=v, value=v) for v in unique][:MAX_CHOICES]
 
+    # --- quotas and reporting format --------------------------------------
+
+    @app_commands.command(
+        name="quota-set",
+        description="Set how many reports a tier must file per week",
+    )
+    @app_commands.describe(
+        tier="Tier key from the quota ladder, e.g. instructor",
+        count="Reports required per week (0 removes the requirement)",
+    )
+    async def quota_set(self, interaction: discord.Interaction, tier: str, count: int) -> None:
+        """Weekly requirement for one tier, editable without touching a file."""
+        if not await _require_admin(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        channel_id = interaction.channel_id
+        assert channel_id is not None
+
+        try:
+            detail = await set_quota_for_channel(self._db, channel_id, tier, count)
+        except ValueError as exc:
+            await interaction.followup.send(f"Rejected: {exc}", ephemeral=True)
+            return
+        await interaction.followup.send(detail, ephemeral=True)
+        log.info("admin_quota_set", channel_id=channel_id, tier=tier, count=count)
+
+    @app_commands.command(
+        name="report-target",
+        description="Choose where the weekly report is also published",
+    )
+    @app_commands.describe(
+        channel="Channel to publish into, or leave empty to only answer privately",
+        title="Heading shown in the report",
+    )
+    async def report_target(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel | None = None,
+        title: str | None = None,
+    ) -> None:
+        """Where the periodic report goes. Empty channel means ephemeral only."""
+        if not await _require_admin(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        channel_id = interaction.channel_id
+        assert channel_id is not None
+
+        await set_report_target(
+            self._db,
+            channel_id,
+            publish_to=channel.id if channel is not None else 0,
+            title=title,
+        )
+        if channel is None:
+            await interaction.followup.send(
+                "Отчёты больше не публикуются в канал — только в ответ на команду.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                f"Отчёты будут публиковаться в {channel.mention}.", ephemeral=True
+            )
+        log.info("admin_report_target", channel_id=channel_id, publish_to=channel)
+
+    @app_commands.command(
+        name="ladder-pin",
+        description="Pin this channel to one ladder in its role server",
+    )
+    @app_commands.describe(key="Ladder key, or empty to use any ladder in that guild")
+    async def ladder_pin(self, interaction: discord.Interaction, key: str | None = None) -> None:
+        """Channel-level hierarchy, set from Discord instead of a file."""
+        if not await _require_admin(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        channel_id = interaction.channel_id
+        assert channel_id is not None
+
+        try:
+            detail = await pin_channel_ladder(self._db, channel_id, key)
+        except ValueError as exc:
+            await interaction.followup.send(f"Rejected: {exc}", ephemeral=True)
+            return
+        await interaction.followup.send(detail, ephemeral=True)
+        log.info("admin_ladder_pinned", channel_id=channel_id, key=key)
+
+    @ladder_pin.autocomplete("key")
+    @quota_set.autocomplete("tier")
+    async def _ladder_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        channel_id = interaction.channel_id
+        if channel_id is None:
+            return []
+        try:
+            async with self._db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel_id)
+                if binding is None:
+                    return []
+                guild_id = binding.rank_source_guild_id or binding.guild_id
+                ladders = await ranks_repo.load_all_ladders(session)
+        except Exception:
+            return []
+        group = ladders.get(guild_id)
+        if group is None:
+            return []
+        needle = current.lower()
+        names: list[str] = []
+        for index in group.indexes:
+            if needle in index.key.lower():
+                names.append(index.key)
+            for tier_key in _tier_keys(index):
+                if needle in tier_key.lower() and tier_key not in names:
+                    names.append(tier_key)
+        return [app_commands.Choice(name=n, value=n) for n in names][:MAX_CHOICES]
+
+
+def _tier_keys(index: Any) -> list[str]:
+    """Tier keys of one ladder. Tiers are not indexed by key, so they are derived."""
+    keys: list[str] = []
+    for entry in index.by_role.values():
+        if entry[0] not in keys:
+            keys.append(entry[0])
+    return keys
+
 
 def _split(raw: str) -> list[str]:
     import re
 
     return [v for v in re.split(r"[,\s]+", raw) if v]
+
+
+async def set_quota_for_channel(db: Database, channel_id: int, tier: str, count: int) -> str:
+    """Set one tier's weekly requirement for a channel. Raises ValueError to refuse."""
+    from sqlalchemy import select
+
+    from dsbot.storage import admin, ranks_repo
+    from dsbot.storage.models import RankTier
+
+    async with db.session() as session:
+        binding = await repos.get_binding_by_channel(session, channel_id)
+        if binding is None:
+            raise ValueError("this channel is not bound to a report form")
+        guild_id = binding.rank_source_guild_id or binding.guild_id
+        ladders = await ranks_repo.load_all_ladders(session)
+        group = ladders.get(guild_id)
+        if group is None or group.quota_ladder_id is None:
+            raise ValueError(
+                "no quota ladder is configured for this channel's role server. "
+                "Ask an operator to apply a ladder with purpose: quota."
+            )
+        ladder_id = group.quota_ladder_id
+        tiers = (
+            await session.scalars(select(RankTier).where(RankTier.ladder_id == ladder_id))
+        ).all()
+
+    match = next((row for row in tiers if row.key == tier), None)
+    if match is None:
+        known = ", ".join(sorted(row.key for row in tiers)) or "(none)"
+        raise ValueError(f"unknown tier {tier!r}. Known: {known}")
+
+    async with db.write_session() as session:
+        await admin.set_quota(
+            session,
+            ladder_id=ladder_id,
+            tier_id=match.id,
+            binding_id=binding.id,
+            required_count=count,
+        )
+    label = match.label or match.key
+    if count <= 0:
+        return f"{label}: требование снято (0 в неделю)."
+    return f"{label}: {count} рапорт(ов) в неделю. В силе со следующего подсчёта."
+
+
+async def set_report_target(
+    db: Database,
+    channel_id: int,
+    *,
+    publish_to: int,
+    title: str | None,
+) -> None:
+    """Store where the report is published and what it is called."""
+    async with db.write_session() as session:
+        binding = await repos.get_binding_by_channel(session, channel_id)
+        if binding is None:
+            raise ValueError("this channel is not bound to a report form")
+        config = dict(binding.config or {})
+        config["report_channel_id"] = None if publish_to == 0 else publish_to
+        if title is not None:
+            config["report_title"] = title
+        binding.config = config
+
+
+async def pin_channel_ladder(db: Database, channel_id: int, key: str | None) -> str:
+    """Pin or unpin this channel's hierarchy to one ladder."""
+    from sqlalchemy import select
+
+    from dsbot.storage.models import RankLadder
+
+    async with db.session() as session:
+        binding = await repos.get_binding_by_channel(session, channel_id)
+        if binding is None:
+            raise ValueError("this channel is not bound to a report form")
+        guild_id = binding.rank_source_guild_id or binding.guild_id
+        candidates = (
+            await session.scalars(select(RankLadder).where(RankLadder.guild_id == guild_id))
+        ).all()
+        target = None
+        wanted = (key or "").strip()
+        if wanted:
+            target = next((row for row in candidates if row.key == wanted), None)
+            if target is None:
+                known = ", ".join(sorted(row.key for row in candidates)) or "(none)"
+                raise ValueError(f"no ladder {wanted!r} in that guild. Known: {known}")
+
+    async with db.write_session() as session:
+        binding = await repos.get_binding_by_channel(session, channel_id)
+        if binding is None:
+            raise ValueError("this channel is not bound to a report form")
+        binding.rank_ladder_id = target.id if target is not None else None
+
+    if target is None:
+        return "Иерархия не закреплена: действуют все лестницы этого сервера."
+    return f"Иерархия закреплена за лестницей «{target.key}»."
 
 
 async def register_commands(bot: Any, db: Database) -> None:
@@ -219,4 +439,10 @@ async def register_commands(bot: Any, db: Database) -> None:
     log.info("slash_commands_registered", count=len(bot.tree.get_commands()))
 
 
-__all__ = ["AdminCommands", "register_commands"]
+__all__ = [
+    "AdminCommands",
+    "pin_channel_ladder",
+    "register_commands",
+    "set_quota_for_channel",
+    "set_report_target",
+]

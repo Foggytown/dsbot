@@ -137,6 +137,13 @@ CSV_COLUMNS: tuple[str, ...] = (
 )
 
 
+def _met_cell(tally: MemberTally) -> str:
+    """Three states, not two: no quota is not the same as a missed quota."""
+    if tally.required_count <= 0:
+        return "no-quota"
+    return "yes" if tally.met else "no"
+
+
 def render_csv(summary: CountSummary) -> str:
     """A CSV with a BOM, so Excel opens Cyrillic names correctly on Windows."""
     buffer = io.StringIO()
@@ -154,7 +161,7 @@ def render_csv(summary: CountSummary) -> str:
                 "pending": row.pending_count,
                 "rejected": row.rejected_count,
                 "conflict": row.conflict_count,
-                "met": "yes" if row.met else "no",
+                "met": _met_cell(row),
             }
         )
     # csv writes "\r\n" per row; that is correct for the format and for Excel, so the

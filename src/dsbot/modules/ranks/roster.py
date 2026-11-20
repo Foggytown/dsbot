@@ -22,7 +22,6 @@ from typing import Any, Protocol
 
 import structlog
 
-from dsbot.modules.ranks.resolver import LadderIndex
 from dsbot.storage import repos
 from dsbot.storage.db import Database
 
@@ -115,11 +114,23 @@ class RosterService:
         self._source = source
 
     async def has_roster(self, ladder_id: int) -> bool:
+        """Whether a roster has ever been scraped. Used to explain an empty report."""
         async with self._db.session() as session:
             return bool(await repos.list_roster(session, ladder_id))
 
-    async def scrape(self, guild_id: int, ladder: LadderIndex) -> ScrapeResult:
-        """Fetch role membership and reduce it to people on the ladder."""
+    async def scrape(
+        self,
+        guild_id: int,
+        ladder: Any,
+        *,
+        requires: frozenset[str] = frozenset(),
+    ) -> ScrapeResult:
+        """Fetch role membership and reduce it to people on the ladder.
+
+        `requires` selects the population: empty means "everyone who owes a report",
+        `{"review"}` means "everyone who may approve". The two are deliberately
+        separate, so a quota never silently includes the people who review.
+        """
         members = await self._source.members_with_roles(guild_id)
         if members is None:
             return ScrapeResult(
@@ -132,7 +143,9 @@ class RosterService:
         rows: dict[int, dict[str, Any]] = {}
         for member in members:
             role_ids = frozenset(_role_ids(member))
-            resolved = ladder.resolve_roles(role_ids, _user_id(member), source="roster")
+            resolved = ladder.resolve(
+                role_ids, _user_id(member), source="roster", requires=requires
+            )
             if resolved is None:
                 continue
             rows[resolved.user_id] = {
@@ -146,15 +159,23 @@ class RosterService:
         log.info(
             "roster_scraped",
             guild_id=guild_id,
-            ladder=ladder.key,
+            ladders=[index.key for index in ladder.indexes],
             scanned=len(members),
             matched=len(rows),
+            requires=sorted(requires),
         )
         return ScrapeResult(members=list(rows.values()), total_members=len(members))
 
-    async def refresh(self, guild_id: int, ladder: LadderIndex, *, ladder_id: int) -> ScrapeResult:
+    async def refresh(
+        self,
+        guild_id: int,
+        ladder: Any,
+        *,
+        ladder_id: int,
+        requires: frozenset[str] = frozenset(),
+    ) -> ScrapeResult:
         """Scrape and store. Returns the result, including the reason on failure."""
-        result = await self.scrape(guild_id, ladder)
+        result = await self.scrape(guild_id, ladder, requires=requires)
         if not result.ok:
             return result
         async with self._db.write_session() as session:

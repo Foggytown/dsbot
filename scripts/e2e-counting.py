@@ -22,7 +22,7 @@ from dsbot.config import Settings
 from dsbot.modules.quotas.period import Period
 from dsbot.modules.quotas.service import CountingService, CountRequest
 from dsbot.modules.ranks.ladder import LadderSpec, TierSpec
-from dsbot.modules.ranks.resolver import LadderIndex
+from dsbot.modules.ranks.resolver import GuildLadders, LadderIndex
 from dsbot.modules.ranks.roster import RosterService, StaticRosterSource
 from dsbot.modules.reports.yaml_form import parse_form_file
 from dsbot.modules.verdict.service import VerdictService
@@ -106,17 +106,20 @@ async def main() -> None:
                 }
             ),
         )
-        index = LadderIndex(
-            ladder_id=ladder.id,
-            guild_id=GUILD,
-            key="instructors",
-            by_role={
-                HEAD_ROLE: ("head", "Head Instructor", 50, frozenset({"review"})),
-                SENIOR_ROLE: ("senior", "Senior Instructor", 30, frozenset({"review"})),
-                INSTRUCTOR_ROLE: ("instructor", "Instructor", 10, frozenset()),
-            },
+        group = GuildLadders(guild_id=GUILD)
+        group.add(
+            LadderIndex(
+                ladder_id=ladder.id,
+                guild_id=GUILD,
+                key="instructors",
+                by_role={
+                    HEAD_ROLE: ("head", "Head Instructor", 50, frozenset({"review"})),
+                    SENIOR_ROLE: ("senior", "Senior Instructor", 30, frozenset({"review"})),
+                    INSTRUCTOR_ROLE: ("instructor", "Instructor", 10, frozenset()),
+                },
+            )
         )
-        await roster.refresh(GUILD, index, ladder_id=ladder.id)
+        await roster.refresh(GUILD, group, ladder_id=ladder.id)
 
         period = Period(
             start=datetime(2026, 11, 16, tzinfo=UTC),
@@ -160,8 +163,8 @@ async def main() -> None:
 
         outcome = await CountingService(db).count(
             CountRequest(binding_id=binding.id, channel_id=CHANNEL, period=period),
-            ladder_id=ladder.id,
-            ladder=index,
+            quota_ladder_id=ladder.id,
+            ladders=group,
         )
         print()
         for page in outcome.messages():
@@ -177,6 +180,8 @@ async def main() -> None:
         assert outcome.ok, outcome.problems
         print("OK: counting, verdicts and roster agree")
 
+        # Dispose before the temp directory is removed: Windows keeps the file handle
+        # open otherwise, and the cleanup error hides the real result.
         await db.dispose()
 
 

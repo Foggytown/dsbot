@@ -168,6 +168,9 @@ class RankLadder(Base):
     guild_id: Mapped[int] = mapped_column(BigInteger, index=True)
     key: Mapped[str] = mapped_column(String(80))
     name: Mapped[str] = mapped_column(String(200), default="")
+    # "review" (who may approve) or "quota" (who owes reports). Declared, not inferred,
+    # so an unfinished review ladder is never mistaken for a quota one.
+    purpose: Mapped[str] = mapped_column(String(20), default="review")
     created_at: Mapped[datetime] = _ts()
 
     tiers: Mapped[list[RankTier]] = relationship(

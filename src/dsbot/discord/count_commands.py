@@ -34,10 +34,14 @@ DEFAULT_TITLE = "Отчёт по рапортам"
 class CountCommands(app_commands.Group, name="reports", description="Подсчёт рапортов"):
     """Counting, restricted to people who could already approve reports."""
 
-    def __init__(self, db: Database, resolver: Any = None) -> None:
+    def __init__(self, db: Database, resolver: Any = None, timezone: str = "Europe/Moscow") -> None:
         super().__init__()
         self._db = db
         self._resolver = resolver
+        # The deployment timezone, used when a channel does not override it. Taken from
+        # settings rather than hardcoded, so a slash count and a CLI count of the same
+        # period cannot land on different week boundaries.
+        self._timezone = timezone
 
     async def _is_reviewer(self, interaction: discord.Interaction) -> bool:
         """True when the caller holds a tier with the `review` capability.
@@ -54,12 +58,19 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         guild_id = await self._rank_guild_for(interaction.channel_id)
         if guild_id is None:
             return False
+        ladder_id = await self._ladder_for(interaction.channel_id)
         try:
-            rank = await self._resolver.resolve(guild_id, interaction.user.id)
+            rank = await self._resolver.resolve(
+                guild_id, interaction.user.id, requires=frozenset({"review"}), ladder_id=ladder_id
+            )
         except Exception:
             log.exception("count_permission_check_failed", user_id=interaction.user.id)
             return False
         return bool(rank is not None and rank.can_review)
+
+    async def _ladder_for(self, channel_id: int | None) -> int | None:
+        binding = await self._binding(channel_id)
+        return binding.rank_ladder_id if binding is not None else None
 
     async def _binding(self, channel_id: int | None) -> Any:
         if channel_id is None:
@@ -114,11 +125,20 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             )
             return
 
+        if weeks is not None and weeks < 1:
+            await interaction.followup.send("Число недель должно быть не меньше 1.", ephemeral=True)
+            return
+
         chosen = period.value if period is not None else "current"
+        timezone = self._timezone_for(binding)
         window = (
-            weeks_back(weeks)
+            weeks_back(weeks, timezone=timezone)
             if weeks
-            else (previous_week() if chosen == "last" else current_week())
+            else (
+                previous_week(timezone=timezone)
+                if chosen == "last"
+                else current_week(timezone=timezone)
+            )
         )
 
         config = binding.config or {}
@@ -128,7 +148,7 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             binding_id=binding.id,
             channel_id=channel_id,
             period=window,
-            timezone=config.get("timezone") or "Europe/Moscow",
+            timezone=timezone,
         )
 
         try:
@@ -191,14 +211,19 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             return
 
         chosen = period.value if period is not None else "current"
-        window = previous_week() if chosen == "last" else current_week()
+        timezone = self._timezone_for(binding)
+        window = (
+            previous_week(timezone=timezone)
+            if chosen == "last"
+            else current_week(timezone=timezone)
+        )
         config = binding.config or {}
         service = CountingService(self._db)
         request = CountRequest(
             binding_id=binding.id,
             channel_id=channel_id,
             period=window,
-            timezone=config.get("timezone") or "Europe/Moscow",
+            timezone=timezone,
         )
         outcome = await service.count(request, title=config.get("report_title") or DEFAULT_TITLE)
 
@@ -211,9 +236,16 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         )
         await interaction.followup.send(file=file, ephemeral=True)
 
+    def _timezone_for(self, binding: Any) -> str:
+        """Channel override first, then the deployment setting."""
+        config = binding.config or {}
+        return config.get("timezone") or self._timezone
 
-async def register_count_commands(bot: Any, db: Database, resolver: Any = None) -> None:
-    bot.tree.add_command(CountCommands(db, resolver))
+
+async def register_count_commands(
+    bot: Any, db: Database, resolver: Any = None, timezone: str = "Europe/Moscow"
+) -> None:
+    bot.tree.add_command(CountCommands(db, resolver, timezone))
     log.info("count_commands_registered")
 
 

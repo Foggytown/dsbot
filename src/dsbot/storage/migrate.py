@@ -53,6 +53,8 @@ ADDITIONS: tuple[_Addition, ...] = (
     _Addition("weekly_runs", "report_channel_id", "BIGINT"),
     _Addition("weekly_runs", "report_message_id", "BIGINT"),
     _Addition("weekly_runs", "published_ids", "JSON"),
+    # A ladder declares whether it orders reviewers or lists who owes reports.
+    _Addition("rank_ladders", "purpose", "VARCHAR(20) NOT NULL DEFAULT 'review'"),
 )
 
 

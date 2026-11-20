@@ -9,15 +9,17 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dsbot.modules.ranks.ladder import LadderSpec
+from dsbot.modules.ranks.resolver import GuildLadders, LadderIndex
 from dsbot.storage.models import RankLadder, RankTier, RankTierRole, TierCapability
 
 
 async def replace_ladder(session: AsyncSession, spec: LadderSpec) -> RankLadder:
-    """Replace a guild's ladder with `spec`.
+    """Replace one ladder with `spec`.
 
     Replacement, not merge: a ladder is a single authority ordering, and a partial
-    update would leave stale tiers that still match roles. The old ladder for the same
-    guild and key is removed first.
+    update would leave stale tiers that still match roles. Only the ladder with the
+    same key in the same guild is removed; other ladders in that guild are untouched,
+    because a guild may need both a review ladder and quota ladders.
     """
     existing = await session.scalar(
         select(RankLadder).where(RankLadder.guild_id == spec.guild_id, RankLadder.key == spec.key)
@@ -26,7 +28,7 @@ async def replace_ladder(session: AsyncSession, spec: LadderSpec) -> RankLadder:
         await session.execute(delete(RankLadder).where(RankLadder.id == existing.id))
         await session.flush()
 
-    ladder = RankLadder(guild_id=spec.guild_id, key=spec.key, name=spec.name)
+    ladder = RankLadder(guild_id=spec.guild_id, key=spec.key, name=spec.name, purpose=spec.purpose)
     session.add(ladder)
     await session.flush()
 
@@ -87,17 +89,19 @@ async def list_ladders(
     return result
 
 
-async def ladder_for_guild(session: AsyncSession, guild_id: int) -> RankLadder | None:
-    """The ladder governing one guild. Used when building the live resolver."""
-    return await session.scalar(select(RankLadder).where(RankLadder.guild_id == guild_id).limit(1))
+async def load_all_ladders(session: AsyncSession) -> dict[int, GuildLadders]:
+    """Build the guild -> ladder-set map the resolver needs.
 
+    A guild may hold several ladders: one that orders reviewers, and one or more that
+    describe who owes reports. Both are indexed the same way, and lookups are filtered
+    by capability, so the caller asks "who may review" or "who is on a quota" rather
+    than picking a ladder by hand.
 
-async def load_all_ladders(session: AsyncSession) -> dict[int, Any]:
-    """Build the guild -> LadderIndex map the resolver needs."""
-    from dsbot.modules.ranks.resolver import LadderIndex
-
+    Within one capability lookup, the highest ordinal across all of the guild's ladders
+    wins, so a guild-wide review tier cannot be silently beaten by a quotadier.
+    """
     ladders = (await session.scalars(select(RankLadder))).all()
-    by_guild: dict[int, LadderIndex] = {}
+    by_guild: dict[int, GuildLadders] = {}
     for ladder in ladders:
         tiers = (
             await session.scalars(select(RankTier).where(RankTier.ladder_id == ladder.id))
@@ -118,10 +122,48 @@ async def load_all_ladders(session: AsyncSession) -> dict[int, Any]:
             )
             for role_id in roles:
                 by_role[role_id] = (tier.key, tier.label or tier.key, tier.ordinal, caps)
-        by_guild[ladder.guild_id] = LadderIndex(
-            ladder_id=ladder.id,
-            guild_id=ladder.guild_id,
-            key=ladder.key,
-            by_role=by_role,
+        group = by_guild.setdefault(ladder.guild_id, GuildLadders(guild_id=ladder.guild_id))
+        group.add(
+            LadderIndex(
+                ladder_id=ladder.id,
+                guild_id=ladder.guild_id,
+                key=ladder.key,
+                by_role=by_role,
+                purpose=ladder.purpose,
+            )
         )
     return by_guild
+
+
+async def ladder_for_guild(session: AsyncSession, guild_id: int) -> RankLadder | None:
+    """One ladder for a guild, for callers that predate multi-ladder guilds.
+
+    Prefer the guild's full ladder set (`load_all_ladders`) when the answer depends on
+    capabilities. This exists so diagnostics that only need "is anything configured"
+    stay simple, and it returns the ladder that carries `review` when there is a choice,
+    because that is the one that decides verdicts.
+    """
+    candidates = (
+        await session.scalars(
+            select(RankLadder).where(RankLadder.guild_id == guild_id).order_by(RankLadder.id)
+        )
+    ).all()
+    if not candidates:
+        return None
+    for ladder in candidates:
+        has_review = await session.scalar(
+            select(TierCapability.id)
+            .join(RankTier, RankTier.id == TierCapability.tier_id)
+            .where(RankTier.ladder_id == ladder.id, TierCapability.capability == "review")
+            .limit(1)
+        )
+        if has_review is not None:
+            return ladder
+    return candidates[0]
+
+
+async def ladder_ids_for_guild(session: AsyncSession, guild_id: int) -> Sequence[int]:
+    """Ids of every ladder in a guild. Diagnostics and future admin tooling."""
+    return list(
+        (await session.scalars(select(RankLadder.id).where(RankLadder.guild_id == guild_id))).all()
+    )

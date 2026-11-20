@@ -129,4 +129,5 @@ def reaction_cleared(payload: discord.RawReactionClearEmojiEvent) -> ReactionCle
         guild_id=payload.guild_id,
         message_id=payload.message_id,
         emoji=emoji_ref(payload.emoji),
+        cleared_at=datetime.now(UTC),
     )

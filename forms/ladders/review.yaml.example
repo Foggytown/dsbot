@@ -1,0 +1,66 @@
+# =============================================================================
+# Rank ladders for one guild
+#
+# Copy to forms/ladders/<key>.yaml (git does not track the real ids) and apply:
+#
+#   uv run dsbot ladder-check --file forms/ladders/review.yaml
+#   uv run dsbot ladder-apply --file forms/ladders/review.yaml
+#
+# -----------------------------------------------------------------------------
+# WHY THERE ARE TWO FILES, NOT ONE
+# -----------------------------------------------------------------------------
+#
+# "Who may approve" and "who owes reports" are DIFFERENT questions about the same
+# people, and they must not be answered by one list. A guild can therefore have
+# several ladders:
+#
+#   review.yaml   tiers with `capabilities: [review]`  -> decides verdicts
+#   quota.yaml    tiers with no capabilities           -> decides the weekly table
+#
+# The bot asks for `review` when a reaction arrives, and asks for no capability when it
+# counts. A role listed only in a quota ladder can never approve a report, however high
+# its ordinal is. Two people in the same tier who disagree produce a `conflict`, which
+# is never guessed at.
+#
+# Ordinals only order people WITHIN the review question. They are not Discord role
+# positions and they grant nothing by themselves.
+#
+# -----------------------------------------------------------------------------
+# WHERE ROLES COME FROM
+# -----------------------------------------------------------------------------
+#
+# `guild_id` is the server that HOLDS the roles, which is normally a specialization
+# server, not the server where reports are read. Each channel's binding points here, so
+# the same person can be a reviewer in one channel's hierarchy and a reporter in
+# another: `uv run dsbot channel-ladder --channel <id> --ladder <key>`.
+#
+# Get a role id: Discord > Server Settings > Roles > right-click > Copy Role ID
+# (needs Developer Mode). An empty `roles: []` is allowed while drafting, but
+# `ladder-check` reports it, because nobody can match that tier until it is filled in.
+# =============================================================================
+
+key: review
+purpose: review
+name: Специализации — проверяющие
+guild_id: 1274460259661910149
+
+tiers:
+  # Highest first is only a convention; ordering comes from `ordinal`.
+  - key: high_command
+    label: High Command
+    ordinal: 100
+    roles: []
+    capabilities: [review]
+
+  - key: head_instructor
+    label: Head Instructor
+    ordinal: 50
+    roles: []
+    capabilities: [review, admin, quota_manage]
+
+  # Senior instructor and above may approve. Approving your own report is allowed.
+  - key: senior_instructor
+    label: Senior Instructor
+    ordinal: 30
+    roles: []
+    capabilities: [review]
