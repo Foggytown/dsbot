@@ -28,11 +28,6 @@ async def db(tmp_path: Path) -> AsyncIterator[Database]:
     await database.dispose()
 
 
-async def bind(db: Database, channel: int = 500, guild: int = 900) -> None:
-    async with db.write_session() as session:
-        await admin.import_or_bind(session, channel, guild)
-
-
 async def test_disabled_channel_is_not_treated_as_bound(db: Database) -> None:
     """The whole point: a paused channel stops being served."""
     from dsbot.modules.reports.authoring import import_forms
