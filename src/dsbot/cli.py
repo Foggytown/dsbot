@@ -883,46 +883,69 @@ def form_apply(
             typer.echo("not applied. Fix these, or re-run with --force")
             raise typer.Exit(code=1)
 
-        # Resolve the real guild name while we can talk to Discord, so the channels
-        # listing is readable and the binding records where it belongs.
+        # Resolve real names while we can talk to Discord, so the channels listing is
+        # readable and the binding records where it belongs.
         guild_name = ""
-        if guild is not None:
-            import discord as _discord
+        channel_name = ""
+        import discord as _discord
 
-            client = _discord.Client(intents=_discord.Intents.none())
-            runner: asyncio.Task[None] | None = None
-            try:
-                runner = asyncio.create_task(client.start(settings.discord_token))
-                await _wait_until_ready(client, deadline_seconds=60.0, runner=runner)
+        client = _discord.Client(intents=_discord.Intents.none())
+        runner: asyncio.Task[None] | None = None
+        try:
+            runner = asyncio.create_task(client.start(settings.discord_token))
+            await _wait_until_ready(client, deadline_seconds=60.0, runner=runner)
+
+            if guild is not None:
                 target = client.get_guild(guild)
-                if target is None:
-                    # get_guild() needs the Guilds intent; fetching works without it.
+                # get_guild can return a cached stub whose name is empty. Treat that as
+                # "not resolved" and fetch, otherwise the stored name stays blank.
+                if target is None or not target.name:
                     try:
                         target = await client.fetch_guild(guild)
                     except Exception as exc:
-                        typer.echo(f"WARNING: fetch_guild failed: {type(exc).__name__}: {exc}")
+                        typer.echo(
+                            f"WARNING: cannot see guild {guild}: {type(exc).__name__}: {exc}"
+                        )
                         target = None
-                if target is None:
-                    typer.echo(f"WARNING: bot cannot see guild {guild}; is the invite accepted?")
-                else:
+                if target is not None and target.name:
                     guild_name = target.name
+
+            try:
+                found = client.get_channel(channel)
+                if found is None:
+                    found = await client.fetch_channel(channel)
+                channel_name = getattr(found, "name", "") or ""
             except Exception:
-                typer.echo("WARNING: could not reach Discord to confirm the guild name")
-            finally:
-                if not client.is_closed():
-                    await client.close()
-                if runner is not None:
-                    runner.cancel()
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
-                        await runner
+                typer.echo(f"WARNING: cannot see channel {channel}")
+        except Exception:
+            typer.echo("WARNING: could not reach Discord to confirm names")
+        finally:
+            if not client.is_closed():
+                await client.close()
+            if runner is not None:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
 
         db = Database(settings)
         try:
             async with db.write_session() as session:
-                from dsbot.storage import admin
+                from dsbot.storage import admin, repos
 
                 if guild is not None and guild_name:
                     await admin.refresh_guild_names(session, {guild: guild_name})
+                resolved_guild = guild
+                if resolved_guild is None:
+                    existing = await repos.get_binding_by_channel(session, channel)
+                    resolved_guild = existing.guild_id if existing else None
+                if resolved_guild is not None:
+                    await admin.ensure_guild_and_channel(
+                        session,
+                        guild_id=resolved_guild,
+                        channel_id=channel,
+                        guild_name=guild_name,
+                        channel_name=channel_name,
+                    )
                 result = await import_forms(
                     session,
                     channel_id=channel,
@@ -937,9 +960,10 @@ def form_apply(
         finally:
             await db.dispose()
 
-        where = f" in guild {guild}" + (f" ({guild_name})" if guild_name else "")
+        place = f"#{channel_name}" if channel_name else f"channel {channel}"
+        where = f" in {guild_name}" if guild_name else (f" in guild {guild}" if guild else "")
         typer.echo(
-            f"applied {schema.key} to channel {channel}{where} "
+            f"applied {schema.key} to {place}{where} "
             f"(created={result.created}, updated={result.updated})"
         )
 

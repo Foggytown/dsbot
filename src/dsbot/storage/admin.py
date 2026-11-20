@@ -70,6 +70,8 @@ async def ensure_guild_and_channel(
         channel = Channel(id=channel_id, guild_id=guild_id, name=channel_name)
         session.add(channel)
         await session.flush()
+    elif channel_name and channel.name != channel_name:
+        channel.name = channel_name
     return channel
 
 
