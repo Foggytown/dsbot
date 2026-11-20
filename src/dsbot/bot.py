@@ -14,7 +14,7 @@ import contextlib
 import signal
 import sys
 from datetime import timedelta
-from pathlib import Path  # noqa: F401  (kept for downstream path helpers)
+from pathlib import Path
 from typing import Any
 
 import discord
@@ -95,14 +95,21 @@ class Bot(discord.ext.commands.Bot):
             log.exception("deferred_recovery_failed")
 
         bindings = await self._load_bindings()
+        if not bindings and (self.settings.channels_file or self.settings.auto_bind_channels):
+            # A fresh deployment has an empty database. Panels often offer no shell, so
+            # the channel list has to come from configuration instead.
+            bindings = await self._auto_bind()
+
         if not bindings:
             # Silence with no explanation is the worst failure mode: the bot is running,
             # the user sees nothing, and there is no clue why. Say it plainly.
             log.error(
                 "no_channel_bindings",
                 hint=(
-                    "No channel is bound, so every message is ignored. "
-                    "Run: uv run dsbot bind --guild <id> --channel <id>"
+                    "No channel is bound, so every message is ignored. Bind one by either:\n"
+                    "  - running: dsbot form-apply --channel <id> --file "
+                    "forms/training.yaml --guild <id>\n"
+                    "  - or setting DSBOT_AUTO_BIND_CHANNELS=<guild_id>:<channel_id> in .env"
                 ),
             )
         else:
@@ -126,6 +133,46 @@ class Bot(discord.ext.commands.Bot):
     async def _load_bindings(self) -> list[Any]:
         async with self.db.session() as session:
             return list(await repos.list_enabled_bindings(session))
+
+    async def _auto_bind(self) -> list[Any]:
+        """Make the database match `forms/channels.yaml`, then reload.
+
+        The channels file is configuration and lives in git, so a channel set up locally
+        is deployed by pushing. Idempotent: an existing binding keeps its state, including
+        a deliberate pause, unless the file says otherwise.
+        """
+        from dsbot.modules.reports.channels import load_channels_file
+        from dsbot.modules.reports.channels_sync import sync_channels
+
+        try:
+            spec = load_channels_file(Path(self.settings.channels_file))
+        except Exception:
+            log.exception("channels_file_unreadable", path=self.settings.channels_file)
+            return await self._load_bindings()
+
+        if not spec.channels:
+            log.error(
+                "channels_file_empty",
+                path=self.settings.channels_file,
+                hint="Add channels to that file, or set DSBOT_AUTO_BIND_CHANNELS.",
+            )
+            return await self._load_bindings()
+
+        try:
+            async with self.db.write_session() as session:
+                result = await sync_channels(session, spec)
+        except Exception:
+            log.exception("channels_sync_failed", path=self.settings.channels_file)
+            return await self._load_bindings()
+
+        log.info(
+            "channels_synced",
+            created=result.created,
+            updated=result.updated,
+            paused=result.paused,
+            unchanged=len(result.unchanged),
+        )
+        return await self._load_bindings()
 
     async def _sync_commands(self, bindings: list[Any]) -> None:
         """Push slash commands to each guild that has a binding.

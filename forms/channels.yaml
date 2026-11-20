@@ -1,0 +1,40 @@
+# =============================================================================
+# Channels this bot serves
+#
+# This file is CONFIGURATION, not data. It lives in git alongside the forms, so a
+# channel you set up locally is deployed by pushing. The server reads it at startup and
+# makes the database match.
+#
+# Data lives on the server only: messages, reports, verdicts, weekly results. This file
+# holds nothing that changes while the bot runs.
+#
+# Check:  uv run dsbot channels-check
+# Apply:  uv run dsbot channels-apply
+#
+# Startup also reads it, so on a panel with no shell you only need to redeploy.
+#
+# Each entry binds one channel to one form:
+#
+#   - guild:    the server id that CONTAINS the channel
+#     channel:  the channel to monitor
+#     form:     which YAML form from forms/
+#     rank_guild: which server's role ladder sets authority for approvals
+#                 (leave out to use the channel's own guild)
+#     locale:   ru or en, defaults to ru
+#     enabled:  false pauses the channel without deleting anything
+#
+# Leaving a channel OUT of this file does not delete it. Use `enabled: false` to pause
+# and keep its history.
+# =============================================================================
+
+channels:
+  # Test channel in the home server.
+  - guild: 1209516013779943544
+    channel: 1573045809774067812
+    form: training_report
+
+  # Instructors server: reports are read here, but authority comes from the
+  # specialization servers, so rank_guild differs from guild.
+  - guild: 1274460259661910149
+    channel: 1274460260941434901
+    form: training_report

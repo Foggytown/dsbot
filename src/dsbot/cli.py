@@ -949,6 +949,90 @@ def _set_channel_enabled(channel: int, enabled: bool, verbose: bool) -> None:
     asyncio.run(run_set())
 
 
+@app.command("channels-check")
+def channels_check(
+    file: Annotated[
+        Path | None, typer.Option("--file", "-f", help="Channels YAML to check")
+    ] = None,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Validate forms/channels.yaml without touching the database."""
+    _settings(verbose)
+
+    from dsbot.modules.reports.channels import (
+        DEFAULT_CHANNELS_FILE,
+        channels_problems,
+        load_channels_file,
+    )
+
+    path = file or DEFAULT_CHANNELS_FILE
+    try:
+        spec = load_channels_file(path)
+    except Exception as exc:
+        typer.echo(f"INVALID: {exc}")
+        raise typer.Exit(code=1) from None
+
+    typer.echo(f"ok: {len(spec.channels)} channel(s) in {path}")
+    for entry in spec.channels:
+        state = "enabled" if entry.enabled else "PAUSED"
+        rank = (
+            f"rank_guild={entry.rank_guild}"
+            if entry.rank_guild is not None
+            else "rank_guild=(same guild)"
+        )
+        typer.echo(
+            f"  guild {entry.guild}  channel {entry.channel}  "
+            f"form={entry.form}  {rank}  locale={entry.locale}  {state}"
+        )
+
+    problems = channels_problems(spec)
+    if problems:
+        typer.echo("")
+        for problem in problems:
+            typer.echo(f"PROBLEM: {problem}")
+        raise typer.Exit(code=1)
+
+
+@app.command("channels-apply")
+def channels_apply(
+    file: Annotated[
+        Path | None, typer.Option("--file", "-f", help="Channels YAML to apply")
+    ] = None,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Make the database match forms/channels.yaml. Nothing is deleted."""
+    settings = _settings(verbose)
+
+    from dsbot.modules.reports.channels import DEFAULT_CHANNELS_FILE, load_channels_file
+    from dsbot.modules.reports.channels_sync import sync_channels
+
+    path = file or Path(settings.channels_file) or DEFAULT_CHANNELS_FILE
+
+    async def run_apply() -> None:
+        try:
+            spec = load_channels_file(path)
+        except Exception as exc:
+            typer.echo(f"INVALID: {exc}")
+            raise typer.Exit(code=1) from None
+
+        db = Database(settings)
+        try:
+            async with db.write_session() as session:
+                result = await sync_channels(session, spec)
+        except FileNotFoundError as exc:
+            typer.echo(f"FAILED: {exc}")
+            raise typer.Exit(code=1) from None
+        finally:
+            await db.dispose()
+
+        typer.echo(
+            f"created={result.created} updated={result.updated} "
+            f"paused={result.paused} unchanged={len(result.unchanged)}"
+        )
+
+    asyncio.run(run_apply())
+
+
 @app.command("channels")
 def channels(
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,

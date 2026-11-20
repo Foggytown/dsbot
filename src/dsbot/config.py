@@ -45,6 +45,23 @@ class Settings(BaseSettings):
     # Optional explicit lock location. Defaults to var/<instance_name>.lock.
     lock_path: str = Field(default="")
 
+    # Channels to bind at startup, as "guild_id:channel_id" pairs separated by commas.
+    #
+    # Prefer `forms/channels.yaml`, which lives in git. This variable is the escape hatch
+    # for panels that provide no shell and cannot use the file.
+    #
+    #   DSBOT_AUTO_BIND_CHANNELS=1209516013779943544:1573045809774067812
+    auto_bind_channels: str = Field(default="")
+
+    # The form applied to channels bound via AUTO_BIND_CHANNELS.
+    auto_bind_form: str = Field(default="forms/training.yaml")
+
+    # The channels configuration file. Read at startup and applied to the database.
+    channels_file: str = Field(default="forms/channels.yaml")
+
+    # Timezone used to interpret cron expressions.
+    timezone: str = Field(default="Europe/Moscow")
+
     # Privileged intents, gated on what is actually implemented.
     # Message Content is required to read reports. Members is only needed once rank
     # resolution exists, so it stays off until then and avoids a needless portal step.
@@ -78,6 +95,25 @@ class Settings(BaseSettings):
 
     def pid_file(self) -> Path:
         return self.lock_file().with_suffix(".pid")
+
+    def auto_bind_pairs(self) -> list[tuple[int, int]]:
+        """Parse `DSBOT_AUTO_BIND_CHANNELS` into (guild_id, channel_id) pairs.
+
+        Malformed entries are skipped rather than crashing the bot: a typo in one pair
+        must not prevent the others from binding.
+        """
+        pairs: list[tuple[int, int]] = []
+        for chunk in self.auto_bind_channels.replace(";", ",").split(","):
+            entry = chunk.strip()
+            if not entry:
+                continue
+            separator = ":" if ":" in entry else "/"
+            left, _, right = entry.partition(separator)
+            try:
+                pairs.append((int(left.strip()), int(right.strip())))
+            except ValueError:
+                continue
+        return pairs
 
     def intents(self) -> Any:
         import discord
