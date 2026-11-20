@@ -75,6 +75,27 @@ async def ensure_guild_and_channel(
     return channel
 
 
+async def list_all_bindings(session: AsyncSession) -> Sequence[ChannelBinding]:
+    """Every binding, enabled or not, for management listings."""
+    result = await session.scalars(select(ChannelBinding).order_by(ChannelBinding.id))
+    return result.all()
+
+
+async def set_binding_enabled(session: AsyncSession, channel_id: int, enabled: bool) -> bool:
+    """Turn a channel's binding on or off. Returns False if the channel is not bound.
+
+    Disabling is the right way to pause a channel: the binding, its form, and all stored
+    history are kept, so re-enabling restores everything with one command.
+    """
+    binding = await session.scalar(
+        select(ChannelBinding).where(ChannelBinding.channel_id == channel_id)
+    )
+    if binding is None:
+        return False
+    binding.enabled = enabled
+    return True
+
+
 async def refresh_guild_names(session: AsyncSession, names: dict[int, str]) -> int:
     """Store real guild names, so `dsbot channels` is readable instead of showing '?'.
 
@@ -126,7 +147,8 @@ async def bind_channel(
     else:
         binding.module_key = module_key
         binding.locale = locale
-        binding.enabled = True
+        # Do not silently re-enable a channel an admin paused: applying a form to a
+        # paused channel should update the form, not resume it.
         if rank_source_guild_id is not None:
             binding.rank_source_guild_id = rank_source_guild_id
 

@@ -159,7 +159,8 @@ async def import_forms(
         session.add(binding)
         await session.flush()
     else:
-        binding.enabled = True
+        # An admin may have paused this channel deliberately. Applying a form updates
+        # the form; it must not resume a paused channel behind their back.
         binding.locale = locale
         if rank_source_guild_id is not None:
             binding.rank_source_guild_id = rank_source_guild_id

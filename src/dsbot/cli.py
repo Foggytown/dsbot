@@ -793,20 +793,64 @@ def form_check(
         raise typer.Exit(code=1)
 
 
+@app.command("disable")
+def disable(
+    channel: Annotated[int, typer.Option(help="Channel id")],
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Pause a channel: stop answering there, keep its form and history.
+
+    Takes effect immediately on a running bot, because the binding is read per message.
+    Re-enable with `dsbot enable`.
+    """
+    _set_channel_enabled(channel, False, verbose)
+
+
+@app.command("enable")
+def enable(
+    channel: Annotated[int, typer.Option(help="Channel id")],
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Resume a paused channel, with its form and history intact."""
+    _set_channel_enabled(channel, True, verbose)
+
+
+def _set_channel_enabled(channel: int, enabled: bool, verbose: bool) -> None:
+    settings = _settings(verbose)
+
+    from dsbot.storage import admin
+
+    async def run_set() -> None:
+        db = Database(settings)
+        try:
+            async with db.write_session() as session:
+                found = await admin.set_binding_enabled(session, channel, enabled)
+        finally:
+            await db.dispose()
+
+        action = "enabled" if enabled else "disabled"
+        if not found:
+            typer.echo(f"channel {channel} is not bound to any form")
+            raise typer.Exit(code=1)
+        typer.echo(f"channel {channel} {action}")
+
+    asyncio.run(run_set())
+
+
 @app.command("channels")
 def channels(
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """List every bound channel, its server, and its form."""
+    """List every bound channel, its server, its form, and whether it is active."""
     settings = _settings(verbose)
 
-    from dsbot.storage import repos
+    from dsbot.storage import admin, repos
 
     async def run_list() -> None:
         db = Database(settings)
         try:
             async with db.session() as session:
-                bindings = await repos.list_enabled_bindings(session)
+                bindings = await admin.list_all_bindings(session)
                 rows = []
                 for binding in bindings:
                     schemas = await repos.get_schemas_for_binding(session, binding.id)
@@ -822,6 +866,7 @@ def channels(
                             binding.module_key,
                             ", ".join(s.key for s in schemas) or "(none)",
                             binding.locale,
+                            "active" if binding.enabled else "PAUSED",
                         )
                     )
         finally:
@@ -831,11 +876,13 @@ def channels(
             typer.echo("no channels bound. Use `dsbot bind` or `dsbot form-apply`.")
             return
 
-        typer.echo(f"{'channel':>20}  {'server':>20}  {'module':<8} {'form':<20} locale")
-        for channel_id, guild_id, guild_name, module, forms, locale in rows:
+        typer.echo(
+            f"{'channel':>20}  {'server':>20}  {'module':<8} {'form':<20} {'locale':<6} state"
+        )
+        for channel_id, guild_id, guild_name, module, forms, locale, state in rows:
             typer.echo(
-                f"{channel_id:>20}  {guild_id:>20}  {module:<8} {forms:<20} {locale}"
-                f"   [{guild_name}]"
+                f"{channel_id:>20}  {guild_id:>20}  {module:<8} {forms:<20} "
+                f"{locale:<6} {state}   [{guild_name}]"
             )
 
     asyncio.run(run_list())

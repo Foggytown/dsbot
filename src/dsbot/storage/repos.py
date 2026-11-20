@@ -141,6 +141,17 @@ async def get_binding_by_channel(session: AsyncSession, channel_id: int) -> Chan
     )
 
 
+async def get_any_binding(session: AsyncSession, channel_id: int) -> ChannelBinding | None:
+    """Binding for a channel regardless of whether it is enabled.
+
+    Management commands need to see disabled channels too, otherwise `enable` could
+    never find the row it is meant to re-enable.
+    """
+    return await session.scalar(
+        select(ChannelBinding).where(ChannelBinding.channel_id == channel_id)
+    )
+
+
 async def list_enabled_bindings(session: AsyncSession) -> Sequence[ChannelBinding]:
     result = await session.scalars(select(ChannelBinding).where(ChannelBinding.enabled.is_(True)))
     return result.all()
