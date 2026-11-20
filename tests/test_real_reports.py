@@ -271,6 +271,75 @@ def group(content: str, attachments: int = 0) -> ReportCandidate:
     )
 
 
+def test_warning_pings_the_author_without_a_nickname() -> None:
+    """The author is pinged plainly; the nickname belongs in scan logs, not warnings."""
+    from dsbot.modules.reports.service import ReportService
+
+    schema = FORM
+    content = "1. ARC | 0042\n2. pepe\n3."
+    result = parse_report([schema], group(content, 0))
+
+    service = ReportService.__new__(ReportService)
+    service.contact_user_id = 999
+    body = service._compose_warning("ru", result, 42)
+
+    assert body.startswith("<@42>")
+    assert "`" not in body.splitlines()[0]
+    assert "<@999>" in body
+
+
+def test_warning_points_to_the_pinned_message_instead_of_repeating_the_form() -> None:
+    from dsbot.modules.reports.service import ReportService
+
+    schema = FORM
+    result = parse_report([schema], group("1. ARC | 0042\n2. pepe\n3.", 0))
+
+    service = ReportService.__new__(ReportService)
+    service.contact_user_id = None
+    body = service._compose_warning("ru", result, 42)
+
+    assert "закреплённом сообщении" in body
+    # No code block reproducing the form.
+    assert "```" not in body
+
+
+def test_rules_do_not_fire_when_the_qualification_is_unrecognised() -> None:
+    """An unknown qualification must not also produce photo and link complaints."""
+    schema = FORM
+    result = parse_report([schema], group("1. ARC | 0042\n2. pepe\n3.", 0))
+    codes = {i.code for i in result.issues}
+    assert "enum_unknown_option" in codes
+    assert "rule_min_attachments" not in codes
+    assert "rule_required" not in codes
+
+
+def test_rules_do_fire_for_a_recognised_non_t_qualification() -> None:
+    schema = FORM
+    result = parse_report([schema], group("1. ARC | 0042\n2. INF\n3.", 0))
+    codes = {i.code for i in result.issues}
+    assert "rule_required" in codes
+
+
+def test_absent_photos_are_reported_once() -> None:
+    """`field_missing` already says it; do not also say "found 0"."""
+    schema = FORM
+    result = parse_report([schema], group("1. ARC | 0042\n2. INF\n3.", 0))
+    codes = [i.code for i in result.issues]
+    assert codes.count("field_missing") == 1
+    assert "rule_min_attachments" not in codes
+
+
+def test_field_label_is_used_not_the_long_hint() -> None:
+    """A hint sentence is unreadable inside «...», so the short label is used."""
+    from dsbot.modules.reports.service import _field_hint
+
+    schema = FORM
+    result = parse_report([schema], group("1. ARC | 0042\n2. INF\n3.", 0))
+    hint = _field_hint("photos", result)
+    assert hint == "доказательства"
+    assert len(hint) < 40
+
+
 def test_correct_arc_report_is_valid() -> None:
     content = (
         "1. ARC | 7404\n"

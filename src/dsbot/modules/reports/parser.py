@@ -423,9 +423,21 @@ def validate(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue
     # --- cross-field rules -------------------------------------------------
     # These are what make hard forms expressible: requirements that depend on another
     # field's value cannot live on a single field.
+    #
+    # A rule must not fire when the field it depends on was not understood. If the
+    # qualification is unrecognised, the rules keyed on it prove nothing: reporting
+    # "need 2 photos" and "link is missing" as well is noise that hides the real error.
     scalar_values = {b.spec.id: field_value(b.spec.id) for b in fields}
+    unresolved: set[str] = set()
+    for bound in fields:
+        value = bound.result.value
+        matched = value.get("matched") if isinstance(value, dict) else None
+        if matched is False:
+            unresolved.add(bound.spec.id)
 
     for rule in schema.rules:
+        if any(condition.field in unresolved for condition in rule.when):
+            continue
         if not rule.applies(scalar_values):
             continue
 
@@ -439,7 +451,9 @@ def validate(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue
 
         if rule.min_attachments is not None:
             available = attachment_total()
-            if available < rule.min_attachments:
+            # When the field is entirely absent it is already reported as a missing
+            # field. Adding "need at least 2, found 0" on top says the same thing twice.
+            if available < rule.min_attachments and bound.result.present:
                 issues.append(
                     FieldIssue(
                         code="rule_min_attachments",

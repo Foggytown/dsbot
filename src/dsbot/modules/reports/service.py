@@ -29,7 +29,6 @@ from dsbot.modules.reports.templates import (
     REPORT_ISSUES,
     SUPPORTED_LOCALES,
     issue_line,
-    render_example,
 )
 from dsbot.storage import repos
 from dsbot.storage.db import Database
@@ -199,7 +198,6 @@ class ReportService:
             report_id,
             parsed,
             author_id=group[0].author_id,
-            nickname=group[0].author_name,
         )
         return ProcessResult(
             report_id=report_id,
@@ -363,17 +361,12 @@ class ReportService:
         report_id: int,
         parsed: ParseOutput,
         author_id: int,
-        *,
-        nickname: str | None = None,
     ) -> None:
         if self._reply is None:
             log.warning("no_reply_sink_configured", report_id=report_id)
             return
 
-        schema = context.schemas[0] if context.schemas else None
-        body = self._compose_warning(
-            context.locale, parsed, author_id, nickname=nickname, schema=schema
-        )
+        body = self._compose_warning(context.locale, parsed, author_id)
         async with self._db.session() as session:
             existing = await repos.get_validation_message(session, report_id)
 
@@ -446,9 +439,6 @@ class ReportService:
         locale: str,
         parsed: ParseOutput,
         author_id: int,
-        *,
-        nickname: str | None = None,
-        schema: FormSchemaDef | None = None,
     ) -> str:
         template = REPORT_ISSUES.get(locale) or REPORT_ISSUES[DEFAULT_LOCALE]
         lines: list[str] = []
@@ -467,12 +457,9 @@ class ReportService:
                 )
             )
 
-        example = render_example(schema, locale) if schema is not None else ""
         return template.format(
             mention=f"<@{author_id}>",
-            nick=nickname or f"<@{author_id}>",
             contact=f"<@{self.contact_user_id}>" if self.contact_user_id else "-",
-            example=example,
             lines="\n".join(lines),
         )
 
@@ -506,14 +493,19 @@ def _detail_context(detail: dict[str, Any] | None) -> dict[str, str]:
 
 
 def _field_hint(field_id: str | None, parsed: ParseOutput) -> str:
+    """A short name for a field, for use in a warning line.
+
+    A hint sentence is too long to read inside «...», so the label is preferred and the
+    hint is only a fallback. Without a label the field path is used: «поле 3».
+    """
     if field_id is None:
         return "?"
     for bound in parsed.fields:
         if bound.spec.id == field_id:
-            if bound.spec.hint:
-                return bound.spec.hint.get("ru") or next(iter(bound.spec.hint.values()))
             if bound.spec.labels:
                 return bound.spec.labels[0]
+            if bound.spec.path:
+                return f"поле {bound.spec.path}"
     return field_id
 
 

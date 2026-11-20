@@ -13,21 +13,21 @@ SUPPORTED_LOCALES: Final[tuple[str, ...]] = ("en", "ru")
 
 # Top-level bot message for an invalid report.
 #
-# `{nick}` is the reporter's server nickname. `{contact}` pings the operator so a
-# confused reporter can ask a human. `{example}` shows the correct shape of the form,
-# which is far more useful than a list of complaints.
+# `{mention}` pings the author. `{contact}` pings the operator. The correct shape is NOT
+# reproduced here: it belongs in the pinned template, which is the single place people
+# should copy from.
 REPORT_ISSUES: Final[dict[str, str]] = {
     "ru": (
-        "{mention} (`{nick}`), в рапорте есть ошибки формы:\n\n{lines}\n\n"
-        "Правильный вид:\n```\n{example}\n```\n"
+        "{mention}, в рапорте есть ошибки формы:\n\n{lines}\n\n"
+        "Правильный вид — в закреплённом сообщении.\n"
         "Исправьте сообщение — это предупреждение исчезнет само.\n"
-        "Если что-то непонятно или бот ошибается — напишите {contact}."
+        "Если бот ошибается — напишите {contact}."
     ),
     "en": (
-        "{mention} (`{nick}`), the report has form problems:\n\n{lines}\n\n"
-        "Correct shape:\n```\n{example}\n```\n"
+        "{mention}, the report has form problems:\n\n{lines}\n\n"
+        "The correct shape is in the pinned message.\n"
         "Edit the message and this warning will clear itself.\n"
-        "If something is unclear or the bot is wrong, contact {contact}."
+        "If the bot is wrong, contact {contact}."
     ),
 }
 
@@ -235,30 +235,3 @@ def issue_line(code: str, locale: str, **context: str) -> str:
         return body.format(**context)
     except KeyError:
         return body
-
-
-def render_example(schema: object, locale: str = DEFAULT_LOCALE) -> str:
-    """A concrete, correct example of the form.
-
-    Showing a filled-in example is the single most useful thing in a warning: a reporter
-    who sees `1. ARC | 0000 / 2. INF / 3. photos / 4. link` fixes the problem without
-    reading any explanation.
-    """
-    fields = getattr(schema, "fields", None) or []
-    lines: list[str] = []
-    for field in fields:
-        path = getattr(field, "path", None) or "1"
-        field_type = getattr(field, "type", "text")
-        if field_type == "identity":
-            sample = "ARC | 0000"
-        elif field_type == "enum":
-            options = getattr(field, "options", []) or []
-            sample = str(options[0]) if options else "VALUE"
-        elif field_type == "attachment_required":
-            sample = "фото" if locale == "ru" else "photos"
-        elif field_type == "discord_message_ref":
-            sample = "https://discord.com/channels/..."
-        else:
-            sample = "текст" if locale == "ru" else "text"
-        lines.append(f"{path}. {sample}")
-    return "\n".join(lines) if lines else "1. ARC | 0000"
