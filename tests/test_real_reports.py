@@ -304,13 +304,42 @@ def test_warning_points_to_the_pinned_message_instead_of_repeating_the_form() ->
 
 
 def test_rules_do_not_fire_when_the_qualification_is_unrecognised() -> None:
-    """An unknown qualification must not also produce photo and link complaints."""
+    """An unknown qualification must not also produce the 2-photo and link complaints."""
     schema = FORM
-    result = parse_report([schema], group("1. ARC | 0042\n2. pepe\n3.", 0))
+    result = parse_report([schema], group("1. ARC | 0042\n2. pepe\n3. фото", 1))
     codes = {i.code for i in result.issues}
     assert "enum_unknown_option" in codes
     assert "rule_min_attachments" not in codes
     assert "rule_required" not in codes
+
+
+def test_missing_photo_is_reported_even_with_unknown_qualification() -> None:
+    """ "At least one photo" applies to the form, not to the qualification."""
+    schema = FORM
+    result = parse_report([schema], group("1. ARC | 0042\n2. pepe\n3.", 0))
+    codes = {i.code for i in result.issues}
+    assert "field_missing" in codes
+    missing = next(i for i in result.issues if i.code == "field_missing")
+    assert missing.field_id == "photos"
+
+
+def test_warning_pings_the_contact_user() -> None:
+    """The last line must actually ping, not print a dash."""
+    from dsbot.modules.reports.service import ReportService
+
+    schema = FORM
+    result = parse_report([schema], group("1. ARC | 0042\n2. pepe\n3.", 0))
+
+    service = ReportService.__new__(ReportService)
+    service.contact_user_id = 123456789
+    body = service._compose_warning("ru", result, 42)
+    assert "<@123456789>" in body
+
+
+def test_contact_ping_comes_from_settings() -> None:
+    from dsbot.config import Settings
+
+    assert Settings().contact_user_id is not None
 
 
 def test_rules_do_fire_for_a_recognised_non_t_qualification() -> None:

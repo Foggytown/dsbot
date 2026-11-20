@@ -129,6 +129,72 @@ def is_running(pid: int | None) -> bool:
     return True
 
 
+def find_dsbot_processes() -> list[int]:
+    """Find every python process running `dsbot run`, not just the recorded pid.
+
+    `uv run` spawns a child, so the recorded pid can die while the real bot keeps
+    running. Stopping must therefore look for the processes themselves, otherwise
+    `stop` reports success and the bot continues answering messages.
+    """
+    pids: list[int] = []
+    if sys.platform != "win32":
+        return pids
+    try:
+        import subprocess
+
+        output = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                "Where-Object { $_.CommandLine -like '*dsbot*run*' } | "
+                "Select-Object -ExpandProperty ProcessId",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except Exception:
+        return pids
+    for line in output.stdout.splitlines():
+        line = line.strip()
+        if line.isdigit():
+            pids.append(int(line))
+    return pids
+
+
+def stop_all(*, wait_seconds: float = 10.0) -> str:
+    """Stop the bot by pid file AND by process scan. Returns what happened."""
+    messages: list[str] = []
+
+    pid = read_pid(DEFAULT_PID_PATH)
+    if pid is not None:
+        if is_running(pid):
+            messages.append(stop_running())
+        else:
+            messages.append(f"pid {pid} was stale")
+        clear_pid(DEFAULT_PID_PATH)
+
+    leftovers = find_dsbot_processes()
+    for leftover in leftovers:
+        with contextlib.suppress(OSError):
+            _signal_force(leftover)
+            messages.append(f"terminated lingering process {leftover}")
+
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        if not find_dsbot_processes():
+            break
+        time.sleep(0.25)
+
+    remaining = find_dsbot_processes()
+    if remaining:
+        messages.append(f"STILL RUNNING: {remaining}")
+    return "; ".join(messages) if messages else "not running"
+
+
 def stop_running(path: Path = DEFAULT_LOCK_PATH, *, wait_seconds: float = 15.0) -> str:
     """Stop the bot owning `path`. Returns a human-readable outcome.
 

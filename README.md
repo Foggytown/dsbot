@@ -180,11 +180,9 @@ uv run dsbot status    # is it running, and which pid
 uv run dsbot stop      # stop it cleanly (escalates to force)
 ```
 
-`stop` signals politely, then terminates if needed, and confirms the process is gone.
-A pid file in `var/dsbot.pid` makes this work no matter how the bot was started.
-
-If `stop` ever fails, the pid is printed; terminate directly with
-`Stop-Process -Id <pid> -Force`.
+`stop` reads the pid file **and** scans for lingering `dsbot run` processes, because
+`uv run` can leave the recorded pid dead while the real bot keeps running. It reports
+every process it terminated, and says `STILL RUNNING` if anything survived.
 
 ## Editing a channel's form (no code, no deploy)
 

@@ -424,9 +424,14 @@ def validate(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue
     # These are what make hard forms expressible: requirements that depend on another
     # field's value cannot live on a single field.
     #
-    # A rule must not fire when the field it depends on was not understood. If the
-    # qualification is unrecognised, the rules keyed on it prove nothing: reporting
-    # "need 2 photos" and "link is missing" as well is noise that hides the real error.
+    # Two different situations, deliberately handled differently:
+    #
+    #   * "at least one photo" is a property of the FORM, not of the qualification.
+    #     It applies even when the qualification was not understood, so it lives on the
+    #     photos field itself (required=True) and always fires.
+    #   * "2 photos" and "the link is required" depend on a *recognised* qualification.
+    #     If that field was not understood, those rules prove nothing, so they are
+    #     skipped: reporting them would hide the real error behind noise.
     scalar_values = {b.spec.id: field_value(b.spec.id) for b in fields}
     unresolved: set[str] = set()
     for bound in fields:

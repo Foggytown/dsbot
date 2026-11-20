@@ -558,17 +558,12 @@ def stop(
     """
     _settings(verbose)
 
-    from dsbot.core.lock import DEFAULT_PID_PATH, is_running, read_pid, stop_running
+    from dsbot.core.lock import stop_all
 
-    pid = read_pid(DEFAULT_PID_PATH)
-    if pid is None:
-        typer.echo("not running (no pid file)")
-        return
-
-    outcome = stop_running()
+    outcome = stop_all()
     typer.echo(outcome)
-    if is_running(pid):
-        typer.echo(f"If it refuses to die, terminate it directly:\n  Stop-Process -Id {pid} -Force")
+    if "STILL RUNNING" in outcome:
+        typer.echo("Terminate manually with: Stop-Process -Id <pid> -Force")
         raise typer.Exit(code=1)
 
 
