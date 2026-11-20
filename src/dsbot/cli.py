@@ -453,6 +453,100 @@ def replay(
     asyncio.run(run_replay())
 
 
+@app.command("scan")
+def scan(
+    channel: Annotated[int, typer.Option(help="Channel id to scan")],
+    limit: Annotated[int, typer.Option(help="How many recent messages to read")] = 100,
+    locale: Annotated[str | None, typer.Option(help="Language for issue text")] = None,
+    out: Annotated[
+        Path | None, typer.Option(help="Write the report to a file instead of the console")
+    ] = None,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Read recent messages and print a verdict for each. Read-only.
+
+    Deliberately ignores reactions: this judges the FORM only, so you can check the
+    parser against real traffic yourself. Nothing is written and nothing is posted.
+    """
+    settings = _settings(verbose)
+
+    from dsbot.jobs.scan import ScanMessage, render, scan_messages
+    from dsbot.modules.reports.parser import parse_report  # noqa: F401
+    from dsbot.modules.reports.schema import from_definition
+    from dsbot.storage import repos
+
+    async def run_scan() -> None:
+        import discord as _discord
+
+        db = Database(settings)
+        client = None
+        runner: asyncio.Task[None] | None = None
+        try:
+            async with db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel)
+                if binding is None:
+                    typer.echo(f"channel {channel} is not bound; run `dsbot bind` first")
+                    raise typer.Exit(code=1)
+                rows = await repos.get_schemas_for_binding(session, binding.id)
+                schemas = [from_definition(row.definition) for row in rows]
+                binding_locale = binding.locale
+
+            if not schemas:
+                typer.echo(f"channel {channel} has no form bound")
+                raise typer.Exit(code=1)
+
+            client = _discord.Client(intents=_discord.Intents.none())
+            runner = asyncio.create_task(client.start(settings.discord_token))
+            await _wait_until_ready(client, deadline_seconds=60.0, runner=runner)
+
+            target = client.get_channel(channel)
+            if target is None:
+                target = await client.fetch_channel(channel)
+            if not isinstance(target, _discord.abc.Messageable):
+                typer.echo(f"channel {channel} is not a text channel")
+                raise typer.Exit(code=1)
+
+            collected: list[ScanMessage] = []
+            # history() is newest-first; read backwards then restore chronological order.
+            async for message in target.history(limit=limit):  # type: ignore[attr-defined]
+                if message.author.bot:
+                    continue
+                collected.append(
+                    ScanMessage(
+                        message_id=message.id,
+                        author_id=message.author.id,
+                        author_name=getattr(message.author, "display_name", None)
+                        or str(message.author),
+                        content=message.content or "",
+                        created_at=message.created_at,
+                        attachment_count=len(message.attachments),
+                        attachment_names=tuple(a.filename for a in message.attachments),
+                    )
+                )
+            collected.reverse()
+
+            report = scan_messages(collected, schemas, locale=locale or binding_locale or "ru")
+            if out is not None:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                with out.open("w", encoding="utf-8") as handle:
+                    render(report, handle, locale=locale or binding_locale or "ru")
+                typer.echo(f"wrote {out}")
+            else:
+                import sys
+
+                render(report, sys.stdout, locale=locale or binding_locale or "ru")
+        finally:
+            if client is not None and not client.is_closed():
+                await client.close()
+            if runner is not None:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+            await db.dispose()
+
+    asyncio.run(run_scan())
+
+
 @app.command("stop")
 def stop(
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,

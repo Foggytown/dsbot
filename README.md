@@ -212,6 +212,32 @@ and a soldier writes `SOB | 0016` or `SOB | 01/0016`.
 The IDN after the formation is open-ended: only its length is checked (4 digits, or
 6+). `SOB | 01/0016 | 0017` means lore IDN `0016` plus optional NRP IDN `0017`.
 
+## Checking the form against real traffic
+
+`scan` reads recent messages and prints a verdict for each one. It is strictly
+read-only: it never reads reactions, never writes to the database, and never posts.
+
+```powershell
+uv run dsbot scan --channel <id> --limit 100
+uv run dsbot scan --channel <id> --limit 100 --out backfill-out/scan.txt
+```
+
+Output is one block per message:
+
+```
+  1. [INVALID     ] 11-20 12:04  instructor
+       text: 1. SOB | 0016 / 2. INF / 3. / 4.
+       parsed: identity=SOB | 0016  |  qualification=INF  |  photos=1 photo(s)
+       - Фото: нужно не меньше 2, найдено 1.
+       - Нужна ссылка на предыдущий одобренный рапорт (кроме квалификации T).
+```
+
+Markers are `VALID`, `INVALID`, `not a report`, and `photo`. This is the fastest way to
+see whether a form definition matches reality before trusting it live.
+
+Note: read the file with a UTF-8 aware editor, or `Get-Content -Encoding UTF8` in
+PowerShell; the default Windows console codepage will mangle Cyrillic.
+
 ## Development
 
 ```powershell
