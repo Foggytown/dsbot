@@ -170,10 +170,25 @@ def test_each_soldier_is_checked_independently() -> None:
     assert value["all_identities"][0]["lore_idn"] == "7784"
 
 
-def test_semicolon_is_not_a_separator() -> None:
-    """The separator is `,`, not `;`."""
+def test_semicolon_is_told_to_use_a_comma() -> None:
+    """`;` is a common separator, but the template uses `,`; say so directly."""
     _value, codes = ident("ARC | 7784 ; ARC | 8440")
-    assert codes != []
+    assert "semicolon_not_allowed" in codes
+    # No confusing follow-on errors about the IDN shape.
+    assert "idn_bad_shape" not in codes
+
+
+def test_semicolon_warning_text_names_the_comma() -> None:
+    from dsbot.modules.reports.templates import issue_line
+
+    text = issue_line("semicolon_not_allowed", "ru")
+    assert "," in text
+    assert ";" in text
+
+
+def test_comma_separated_soldiers_remain_valid() -> None:
+    _value, codes = ident("ARC | 7784, ARC | 8440")
+    assert codes == []
 
 
 def test_labelled_idns_are_rejected() -> None:

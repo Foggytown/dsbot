@@ -151,6 +151,16 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
         "ru": "- Нужен обычный слеш «/», а не обратный «\\». Например: SOB | 01/0038.",
         "en": "- Use a normal slash '/', not a backslash '\\'. For example: SOB | 01/0038.",
     },
+    "semicolon_not_allowed": {
+        "ru": (
+            "- Несколько бойцов разделяются запятой «,», а не точкой с запятой «;». "
+            "Например: ARC | 0042, ARC | 0043."
+        ),
+        "en": (
+            "- Separate several soldiers with a comma ',', not a semicolon ';'. "
+            "For example: ARC | 0042, ARC | 0043."
+        ),
+    },
     "list_allowed_qualifications": {
         "ru": "- Допустимые квалификации: {detail_options}.",
         "en": "- Allowed qualifications: {detail_options}.",

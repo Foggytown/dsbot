@@ -421,6 +421,30 @@ def parse_identity(
             FieldIssue(code="backslash_not_allowed", field_id=field_id, detail={"raw": text})
         )
 
+    # Semicolons are a very common way to separate soldiers, but the template uses a
+    # comma. Say so explicitly instead of failing later with a confusing IDN error.
+    if ";" in text:
+        field_issues.append(
+            FieldIssue(code="semicolon_not_allowed", field_id=field_id, detail={"raw": text})
+        )
+        return FieldResult(
+            value={
+                "formation": None,
+                "raw": text,
+                "idn_text": None,
+                "lore_idn": None,
+                "nrp_idn": None,
+                "prefix": None,
+                "idn_kind": "plain",
+                "idn_number": None,
+                "canonical": None,
+                "all_identities": [],
+                "extra_identities": False,
+            },
+            issues=field_issues,
+            present=True,
+        )
+
     soldiers = [part.strip() for part in text.split(",")]
     soldiers = [soldier for soldier in soldiers if soldier]
 
