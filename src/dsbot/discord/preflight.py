@@ -12,11 +12,16 @@ import structlog
 log = structlog.get_logger(__name__)
 
 # What a working setup needs in the report channel.
+#
+# MANAGE_MESSAGES is deliberately NOT required. Discord's docs for Delete Message:
+# "If operating on a guild channel and trying to delete a message that was not sent by
+# the current user, this endpoint requires the MANAGE_MESSAGES permission." The bot only
+# ever deletes its own warning messages, so Send Messages plus Read Message History is
+# enough. Asking for Manage Messages would be an unnecessary privilege escalation.
 REQUIRED_CHANNEL_PERMS: tuple[tuple[str, str], ...] = (
     ("view_channel", "View Channel"),
     ("read_message_history", "Read Message History"),
     ("send_messages", "Send Messages"),
-    ("manage_messages", "Manage Messages (needed to delete its own warnings)"),
     ("add_reactions", "Add Reactions"),
 )
 
@@ -31,7 +36,6 @@ def invite_url(client: discord.Client) -> str:
         view_channel=True,
         read_message_history=True,
         send_messages=True,
-        manage_messages=True,
         add_reactions=True,
     )
     client_id = getattr(client.user, "id", None)
@@ -61,20 +65,31 @@ async def preflight(client: discord.Client, guild_id: int, channel_id: int) -> l
 
     channel = client.get_channel(channel_id)
     if channel is None:
-        problems.append(f"channel {channel_id} not visible; check View Channel for the bot role")
-        return problems
+        try:
+            channel = await client.fetch_channel(channel_id)
+        except discord.HTTPException:
+            problems.append(
+                f"channel {channel_id} not visible; check View Channel for the bot role"
+            )
+            return problems
 
     if not isinstance(channel, discord.TextChannel):
         problems.append(f"channel {channel_id} is {type(channel).__name__}, not a text channel")
         return problems
+
+    # Permission maths is only trustworthy when guild state is cached. Without the
+    # Members intent, `guild.default_role` is None and discord.py computes from an empty
+    # base, which produced false "missing Read Message History" reports. Probing the
+    # operation directly is both simpler and truthful.
+    if guild.default_role is None:
+        return problems + await _probe_functionally(channel)
 
     member = guild.get_member(user.id)
     if member is None:
         try:
             member = await guild.fetch_member(user.id)
         except discord.HTTPException:
-            problems.append("could not fetch the bot's own member record (Members intent?)")
-            return problems
+            return problems + await _probe_functionally(channel)
 
     perms = channel.permissions_for(member)
     for attr, label in REQUIRED_CHANNEL_PERMS:
@@ -83,6 +98,40 @@ async def preflight(client: discord.Client, guild_id: int, channel_id: int) -> l
 
     if guild.owner_id == user.id:
         problems.append("bot owns the guild (unexpected)")
+
+    return problems
+
+
+async def _probe_functionally(channel: discord.TextChannel) -> list[str]:
+    """Check what the bot can actually do, by doing it.
+
+    Needs no cached guild state. A bot may delete its own messages without
+    MANAGE_MESSAGES, so that is exercised rather than assumed.
+    """
+    problems: list[str] = []
+    try:
+        probe = await channel.send("dsbot permission check (deletes itself)")
+    except discord.Forbidden:
+        problems.append(f"missing permission in #{channel.name}: Send Messages")
+        return problems
+    except discord.HTTPException:
+        problems.append(f"could not send to #{channel.name}")
+        return problems
+
+    try:
+        await probe.delete()
+    except discord.Forbidden:
+        problems.append(
+            "cannot delete its own message (unexpected: requires no special permission)"
+        )
+    except discord.HTTPException:
+        problems.append("could not delete its own probe message")
+
+    try:
+        async for _ in channel.history(limit=1):
+            break
+    except discord.Forbidden:
+        problems.append(f"missing permission in #{channel.name}: Read Message History")
 
     return problems
 

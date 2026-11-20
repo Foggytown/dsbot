@@ -60,8 +60,27 @@ Copy-Item .env.example .env    # then paste your bot token
 uv run dsbot init-db
 ```
 
-Discord developer portal: enable **Message Content Intent** (required to read
-report text) and **Server Members Intent** (required to resolve ranks).
+Discord developer portal: enable **Message Content Intent**. **Server Members Intent is
+not needed yet** - it becomes necessary only for rank resolution, and is toggled with
+`DSBOT_ENABLE_MEMBERS_INTENT=true`.
+
+### Bot permissions
+
+Deliberately minimal:
+
+| Permission | Why |
+|---|---|
+| View Channel | see the channel at all |
+| Read Message History | read reports, backfill, scan |
+| Send Messages | post warnings |
+| Add Reactions | prepare for the verdict engine |
+
+**Manage Messages is NOT required.** A bot may delete its own messages without it;
+Discord only requires that permission to delete messages it did not send. Verified live
+against a channel where `manage_messages` was `False` and self-delete succeeded.
+
+`dsbot doctor` probes the real operations (send, self-delete, read history) instead of
+trusting permission arithmetic, which is only accurate when the Members intent is on.
 
 ## Commands
 

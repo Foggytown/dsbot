@@ -114,7 +114,11 @@ class DiscordReplySink:
             return False
 
     async def clear(self, channel_id: int, message_id: int) -> bool:
-        """Delete our own warning once the report is fixed."""
+        """Delete our own warning once the report is fixed.
+
+        No MANAGE_MESSAGES needed: Discord only requires that permission to delete a
+        message the bot did not send itself.
+        """
         channel = await self._resolve(channel_id)
         partial = _partial_message(channel, message_id)
         if partial is None:
@@ -125,7 +129,13 @@ class DiscordReplySink:
         except discord.NotFound:
             return True  # already gone: the desired end state
         except discord.Forbidden:
-            log.error("reply_clear_forbidden", channel_id=channel_id)
+            # Almost always a non-bot-authored message, or a permission change.
+            log.error(
+                "reply_clear_forbidden",
+                channel_id=channel_id,
+                message_id=message_id,
+                hint="the bot can only delete its own messages without MANAGE_MESSAGES",
+            )
             return False
         except discord.HTTPException:
             log.exception("reply_clear_failed", channel_id=channel_id, message_id=message_id)
