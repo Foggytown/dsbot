@@ -23,14 +23,23 @@ _IDN_SPLIT_RE = re.compile(
 _PAIR_RE = re.compile(r"^(?P<a>\d{1,2})\s*/\s*(?P<b>\d{2,})$")
 _NUMBER_RE = re.compile(r"^(?P<n>\d{2,})$")
 
-# An IDN is exactly 4 digits, or 6 or more. Three and five digit values are rejected:
-# they are almost always a typo or a truncated paste, and quota counting depends on the
-# identifier being right.
-IDN_VALID_LENGTHS: Final = frozenset({4}) | frozenset(range(6, 32))
+# A lore (RP) IDN is 4 digits, or 6 or more: three and five digit values are almost
+# always a typo or a truncated paste, and quota counting depends on the identifier
+# being right.
+LORE_IDN_LENGTHS: Final = frozenset({4}) | frozenset(range(6, 32))
+
+# The system (NRP) IDN is always exactly 4 digits. It is the server's own counter and
+# never grows: a 6-digit number in that position is a lore IDN written in the wrong
+# slot, not a valid system IDN.
+SYSTEM_IDN_LENGTH: Final = 4
 
 
-def _idn_length_ok(value: str) -> bool:
-    return len(value) in IDN_VALID_LENGTHS
+def _lore_idn_length_ok(value: str) -> bool:
+    return len(value) in LORE_IDN_LENGTHS
+
+
+def _system_idn_length_ok(value: str) -> bool:
+    return len(value) == SYSTEM_IDN_LENGTH
 
 
 @dataclass(slots=True)
@@ -113,7 +122,7 @@ def parse_formation_idn(
     pair = _PAIR_RE.match(rest)
     if pair:
         number = pair.group("b")
-        if not _idn_length_ok(number):
+        if not _lore_idn_length_ok(number):
             issues.append(
                 FieldIssue(
                     code="idn_bad_length",
@@ -131,7 +140,7 @@ def parse_formation_idn(
     number = _NUMBER_RE.match(rest)
     if number:
         digits = number.group("n")
-        if not _idn_length_ok(digits):
+        if not _lore_idn_length_ok(digits):
             issues.append(
                 FieldIssue(
                     code="idn_bad_length",
@@ -373,15 +382,25 @@ def parse_identity(
         nrp_idn = numbers[1] if len(numbers) > 1 else None
 
     for idn_label, idn_value in (("lore IDN", lore_idn), ("NRP IDN", nrp_idn)):
-        if idn_value is not None and not _idn_length_ok(idn_value):
+        if idn_value is None:
+            continue
+        # The system (NRP) IDN is always 4 digits; a lore IDN may be 4 or 6+.
+        # Reporting the wrong rule is worse than no check, so the messages differ.
+        if idn_label == "NRP IDN":
+            ok = _system_idn_length_ok(idn_value)
+            expected = "exactly 4 digits (system IDN)"
+        else:
+            ok = _lore_idn_length_ok(idn_value)
+            expected = "4 digits, or 6+"
+        if not ok:
             issues.append(
                 FieldIssue(
-                    code="idn_bad_length",
+                    code="nrp_bad_length" if idn_label == "NRP IDN" else "idn_bad_length",
                     field_id=field_id,
                     detail={
                         "raw": idn_value,
                         "kind": idn_label,
-                        "expected": "4 digits, or 6+",
+                        "expected": expected,
                     },
                 )
             )

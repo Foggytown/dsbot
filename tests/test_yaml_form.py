@@ -257,10 +257,46 @@ def test_identity_bad_length() -> None:
     assert "idn_bad_length" in parsed["codes"]
 
 
-def test_identity_six_digit_idn_allowed() -> None:
+def test_six_digit_idn_allowed_as_lore() -> None:
     parsed = identity("SOB | 000016")
     assert parsed["value"]["lore_idn"] == "000016"
     assert parsed["codes"] == []
+
+
+def test_six_digit_lore_plus_four_digit_nrp_is_valid() -> None:
+    """A lore IDN may be 6 digits; the system IDN after it must still be 4."""
+    parsed = identity("SOB | 000016 | 0017")
+    assert parsed["value"]["lore_idn"] == "000016"
+    assert parsed["value"]["nrp_idn"] == "0017"
+    assert parsed["codes"] == []
+
+
+def test_system_idn_must_be_exactly_four_digits() -> None:
+    """A 6-digit value in the system slot is a lore IDN written in the wrong place."""
+    parsed = identity("SOB | 0016 | 000017")
+    assert parsed["value"]["nrp_idn"] == "000017"
+    assert "nrp_bad_length" in parsed["codes"]
+    assert "idn_bad_length" not in parsed["codes"]
+
+
+def test_system_idn_of_three_digits_is_rejected() -> None:
+    parsed = identity("SOB | 0016 | 017")
+    assert "nrp_bad_length" in parsed["codes"]
+
+
+def test_lore_and_system_lengths_report_different_rules() -> None:
+    """The two positions have different rules, so they must give different messages."""
+    from dsbot.modules.reports.templates import issue_line
+
+    lore = identity("SOB | 016")
+    nrp = identity("SOB | 0016 | 017")
+    assert lore["codes"] == ["idn_bad_length"]
+    assert nrp["codes"] == ["nrp_bad_length"]
+
+    lore_text = issue_line("idn_bad_length", "ru", detail_raw="016")
+    nrp_text = issue_line("nrp_bad_length", "ru", detail_raw="017")
+    assert "4 цифры или 6" in lore_text
+    assert "ровно 4 цифры" in nrp_text
 
 
 def test_identity_missing_formation_warns() -> None:

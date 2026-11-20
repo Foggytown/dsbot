@@ -47,6 +47,12 @@ characters share a number. `idn_text` is preserved verbatim alongside the parsed
 An IDN is **exactly 4 digits, or 6+**. Never zero-pad: `001` is a typo and must be
 rejected with `idn_bad_length`, not silently turned into `0001`.
 
+The two IDN positions have different rules:
+
+- **lore IDN** - 4 digits, or 6 or more (`idn_bad_length`)
+- **system / NRP IDN** - always exactly 4 digits (`nrp_bad_length`); it is the server's
+  own counter and never grows, so a 6-digit value there is a lore IDN in the wrong slot
+
 - `idn_kind = nrp` -> plain server code, e.g. `0016`
 - `idn_kind = rp_lore` -> lore IDN, possibly `01/0016` (sub-unit + number)
 

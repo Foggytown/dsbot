@@ -69,6 +69,15 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
         "ru": "- IDN «{detail_raw}» неверной длины: нужно 4 цифры или 6 и больше.",
         "en": "- IDN '{detail_raw}' has the wrong length: 4 digits, or 6 or more.",
     },
+    "nrp_bad_length": {
+        "ru": (
+            "- NRP-IDN «{detail_raw}» должен быть ровно 4 цифры (системный IDN идёт после лорного)."
+        ),
+        "en": (
+            "- NRP-IDN '{detail_raw}' must be exactly 4 digits "
+            "(the system IDN comes after the lore IDN)."
+        ),
+    },
     "formation_unknown": {
         "ru": "- Неизвестное формирование: «{detail_raw}».",
         "en": "- Unknown formation: '{detail_raw}'.",

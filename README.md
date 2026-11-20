@@ -209,8 +209,19 @@ Reporters always write a formation. Squads (ALPHA, NULL, ...) are internal struc
 and are **not** part of the form: `ALPHA | 01/0016` is rejected as an unknown formation,
 and a soldier writes `SOB | 0016` or `SOB | 01/0016`.
 
-The IDN after the formation is open-ended: only its length is checked (4 digits, or
-6+). `SOB | 01/0016 | 0017` means lore IDN `0016` plus optional NRP IDN `0017`.
+The IDN that follows the formation is open-ended: a **lore IDN** may be 4 digits or 6+,
+and an optional **system (NRP) IDN** after it must be **exactly 4 digits**.
+
+| Input | Meaning |
+|---|---|
+| `SOB \| 0016` | lore IDN `0016` |
+| `SOB \| 000016` | lore IDN `000016` (6 digits is fine) |
+| `SOB \| 000016 \| 0017` | lore `000016` + system `0017` |
+| `SOB \| 0016 \| 000017` | ✗ `nrp_bad_length` — the system IDN must be 4 digits |
+
+The two positions have different rules on purpose, and their warnings say so:
+`idn_bad_length` means a lore IDN is the wrong length (4 or 6+), while
+`nrp_bad_length` means the system IDN is not exactly 4 digits.
 
 ## Checking the form against real traffic
 
