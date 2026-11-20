@@ -7,6 +7,7 @@ it without a redeploy.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,7 +25,12 @@ class Settings(BaseSettings):
 
     discord_token: str = Field(default="")
 
-    database_url: str = Field(default="sqlite+aiosqlite:///./var/dsbot.db")
+    # Where persistent state lives. Hosting panels keep only one directory across
+    # redeploys, so everything writable must be under it: the database, the lock, the
+    # pid file. `DATA_DIR` is the panel convention; DSBOT_DATA_DIR overrides it.
+    data_dir: str = Field(default="")
+
+    database_url: str = Field(default="")
     sql_echo: bool = Field(default=False)
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO")
@@ -81,7 +87,38 @@ class Settings(BaseSettings):
 
     @property
     def is_sqlite(self) -> bool:
-        return self.database_url.startswith("sqlite")
+        return self.resolved_database_url.startswith("sqlite")
+
+    def state_dir(self) -> Path:
+        """Directory for everything that must survive a redeploy.
+
+        Resolution order:
+          1. DSBOT_DATA_DIR
+          2. DATA_DIR environment variable
+          3. an existing panel directory: /data or /app/data
+          4. ./var (local development)
+
+        The panel keeps only its data directory across restarts, so the database and
+        lock must live there or all history is lost on every redeploy. Auto-detecting
+        the common panel paths means a deployment works without any extra configuration.
+        """
+        if self.data_dir:
+            return Path(self.data_dir)
+        for variable in ("DATA_DIR", "DSBOT_DATA_DIR"):
+            value = os.getenv(variable, "").strip()
+            if value:
+                return Path(value)
+        for candidate in (Path("/data"), Path("/app/data")):
+            if candidate.is_dir():
+                return candidate
+        return Path("var")
+
+    @property
+    def resolved_database_url(self) -> str:
+        """Database URL, defaulting inside the state directory."""
+        if self.database_url:
+            return self.database_url
+        return f"sqlite+aiosqlite:///{self.state_dir().as_posix()}/dsbot.db"
 
     def lock_file(self) -> Path:
         """Lock file for this instance.
@@ -91,7 +128,7 @@ class Settings(BaseSettings):
         """
         if self.lock_path:
             return Path(self.lock_path)
-        return Path("var") / f"{self.instance_name}.lock"
+        return self.state_dir() / f"{self.instance_name}.lock"
 
     def pid_file(self) -> Path:
         return self.lock_file().with_suffix(".pid")

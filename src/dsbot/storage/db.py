@@ -41,7 +41,7 @@ class Database:
 
     @staticmethod
     def _build_engine(settings: Settings) -> AsyncEngine:
-        url = settings.database_url
+        url = settings.resolved_database_url
         if url.startswith("sqlite"):
             _ensure_sqlite_dir(url)
         engine = create_async_engine(

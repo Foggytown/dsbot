@@ -124,7 +124,7 @@ class Bot(discord.ext.commands.Bot):
 
         log.info(
             "bot_ready",
-            database=self.settings.database_url,
+            database=self.settings.resolved_database_url,
             intents=str(self.intents),
             bindings=len(bindings),
             group_window_seconds=self.settings.report_group_window_seconds,

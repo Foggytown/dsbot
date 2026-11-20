@@ -56,7 +56,8 @@ def init_db(verbose: bool = typer.Option(False, "--verbose", "-v")) -> None:
         try:
             await db.create_all()
             ok = await db.healthcheck()
-            typer.echo(f"database ready: {settings.database_url}")
+            typer.echo(f"database ready: {settings.resolved_database_url}")
+            typer.echo(f"state dir: {settings.state_dir()}")
             typer.echo(f"healthcheck: {'ok' if ok else 'FAILED'}")
         finally:
             await db.dispose()
@@ -587,7 +588,8 @@ def status(
     pid_path = settings.pid_file()
     pid = read_pid(pid_path)
     typer.echo(f"instance: {settings.instance_name}")
-    typer.echo(f"database: {settings.database_url}")
+    typer.echo(f"database: {settings.resolved_database_url}")
+    typer.echo(f"state dir: {settings.state_dir()}")
     if pid is None:
         typer.echo("stopped (no pid file)")
         return

@@ -3,9 +3,9 @@
 # Two-stage build: dependencies are installed into a virtual environment in the builder,
 # then copied into a slim runtime image. That keeps compilers out of the final image.
 #
-# The bot writes SQLite to /app/var, so mount a volume there to keep history across
-# redeploys:
-#     docker run -v dsbot-data:/app/var ...
+# Persistent state lives in /app/data, which is the directory hosting panels preserve
+# across redeploys. The database, lock and pid files are all placed there by the app
+# itself when DATA_DIR is set.
 
 FROM python:3.13-slim AS builder
 
@@ -37,26 +37,25 @@ RUN apt-get update \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH" \
-    DSBOT_DATABASE_URL="sqlite+aiosqlite:///./var/dsbot.db"
+    DATA_DIR="/data"
 
 WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
-# The project files the bot reads at runtime: forms are data, not code.
+# The files the bot reads at runtime: forms and channels are data, not code.
 COPY --from=builder /build/src ./src
 COPY pyproject.toml README.md main.py ./
 COPY forms ./forms
 COPY scripts ./scripts
 
-# Writable state. Declared as a volume so `docker run -v` preserves it.
-RUN mkdir -p /app/var
-VOLUME ["/app/var"]
-
-# Run unprivileged. The volume directory must be owned by that user beforehand, otherwise
-# Docker creates it as root and SQLite cannot write.
-RUN useradd --create-home --uid 1000 dsbot \
-    && chown -R dsbot:dsbot /app
+# Persistent state. Must exist and be writable before the unprivileged user starts,
+# otherwise SQLite cannot create the database.
+RUN mkdir -p /data \
+    && useradd --create-home --uid 1000 dsbot \
+    && chown -R dsbot:dsbot /app /data
 USER dsbot
+
+VOLUME ["/data"]
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "main.py", "run"]
