@@ -86,16 +86,19 @@ trusting permission arithmetic, which is only accurate when the Members intent i
 
 ```powershell
 uv run dsbot init-db
-uv run dsbot run                      # live bot; Ctrl+C to stop
+uv run dsbot run                      # live bot; Ctrl+C to stop (use `stop`)
 uv run dsbot run --dry-run            # ingest + parse, never post
+uv run dsbot status                   # is it running, and which instance
+uv run dsbot stop                     # stop this instance
 
-# channel setup
-uv run dsbot bind --guild <guild> --channel <channel> --rank-guild <guild>
+# channels come from forms/channels.yaml, not from ad-hoc commands
+uv run dsbot channels-check           # validate the file
+uv run dsbot channels-apply           # make the database match it
+uv run dsbot channels                 # what is actually bound
 
-# per-channel forms (this is how a second channel gets its own format)
-uv run dsbot form-export --channel <channel>     # -> forms/ch-<id>.json
-uv run dsbot form-template --out forms/x.json    # blank starter to edit
-uv run dsbot form-import --channel <channel> --file forms/ch-<id>.json
+# per-channel forms: edit YAML, then apply
+uv run dsbot form-check --file forms/training.yaml
+uv run dsbot form-apply --channel <channel> --file forms/training.yaml --guild <guild>
 uv run dsbot parse --file sample.txt --channel <channel>
 
 # history / analysis
@@ -113,26 +116,30 @@ schema does not yet cover.
 
 ## How per-channel forms work
 
-A channel is bound to one or more **form schemas**, stored as JSON in the database and
-selected per message by scoring. Adding a channel with a different format is adding a
-JSON file — no code change:
+A channel is bound to one or more **form schemas**. The form is YAML in `forms/`, which
+is the editable source of truth; the database stores the compiled copy so the parser
+never reads files at runtime.
 
 ```powershell
-uv run dsbot form-export --channel <id>      # inspect what it currently uses
-# edit the JSON: fields, labels, required-ness, enum options, typing
-uv run dsbot form-import --channel <id> --file forms/ch-<id>.json
-uv run dsbot parse --file example.txt --channel <id>   # verify before going live
+uv run dsbot form-pull --channel <id> --out forms/current.yaml   # what it uses now
+# edit the YAML: fields, labels, required-ness, enum options, typing
+uv run dsbot form-check --file forms/current.yaml                # validate
+uv run dsbot form-apply --channel <id> --file forms/current.yaml
+uv run dsbot parse --file example.txt --channel <id>             # verify
 ```
 
-Field `type` options: `text`, `long_text`, `enum`, `formation_idn`,
+Field `type` options: `text`, `long_text`, `enum`, `identity`, `formation_idn`,
 `discord_message_ref`, `attachment_required`, `count_fraction`, `name_ref`, `any`.
+Cross-field requirements are `rules:` (`when` + `min_attachments` / `allowed` / `required`).
 
 ## What exists today
 
 - `dsbot run` — live bot: ingests, parses, warns, clears warnings on fix
 - `dsbot run --dry-run` — same pipeline, never posts
-- per-channel form authoring: `form-export` / `form-template` / `form-import`
+- channels as configuration: `forms/channels.yaml`, applied at startup
+- forms and rank ladders as YAML: `forms/`, `forms/ladders/`
 - `dsbot backfill` + `dsbot analyze` — measure the parser against real history
+- `dsbot scan` — read-only verdicts over real channel history
 - `dsbot parse --channel <id>` — test a message against a channel's real form
 
 Not built yet: verdicts from reactions, weekly quota evaluation, dashboards.

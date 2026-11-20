@@ -19,7 +19,6 @@ from dsbot.core.bus import EventBus
 from dsbot.core.events import AttachmentRef, MessageCreated, MessageSnapshot
 from dsbot.discord.reply import RecordingReplySink
 from dsbot.ingest import Ingestor
-from dsbot.jobs.retry import ImmediateRetryScheduler
 from dsbot.modules.reports.parser import GroupMessage, ReportCandidate, parse_report
 from dsbot.modules.reports.schema import DEFAULT_SCHEMAS
 from dsbot.modules.reports.service import ReportService
@@ -164,7 +163,7 @@ def test_partial_idn_is_still_parsed_but_flagged() -> None:
 
 async def test_followup_text_is_never_spliced_into_the_report(db: Database) -> None:
     """Real bug: a stray "123" in the next message was absorbed into empty field 4."""
-    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
+    service = ReportService(db, RecordingReplySink())
     await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
     await post(db, message_id=2, content="123", attachments=0, minutes=-0.5)
 
@@ -193,7 +192,7 @@ def test_empty_link_field_is_absent_not_an_error() -> None:
 
 async def test_followup_with_text_and_photo_does_not_join_the_group(db: Database) -> None:
     """Real bug: a photo-less report was marked valid using a later report's photos."""
-    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
+    service = ReportService(db, RecordingReplySink())
 
     # Report A: no photos
     await post(db, message_id=1, content=REAL_REPORT, minutes=-3)
@@ -206,7 +205,7 @@ async def test_followup_with_text_and_photo_does_not_join_the_group(db: Database
 
 
 async def test_photo_only_followup_still_completes_the_report(db: Database) -> None:
-    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
+    service = ReportService(db, RecordingReplySink())
     await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
     await post(db, message_id=2, content="", attachments=2, minutes=-0.5)
 
@@ -216,7 +215,7 @@ async def test_photo_only_followup_still_completes_the_report(db: Database) -> N
 
 
 async def test_report_with_photos_in_its_own_message_is_valid(db: Database) -> None:
-    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
+    service = ReportService(db, RecordingReplySink())
     await post(db, message_id=1, content=REAL_REPORT, attachments=2, minutes=-1)
 
     result = await service.process_message(CHANNEL, AUTHOR, 1)
@@ -228,7 +227,7 @@ async def test_report_with_photos_in_its_own_message_is_valid(db: Database) -> N
 
 
 async def test_pending_lookup_finds_the_waiting_report(db: Database) -> None:
-    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
+    service = ReportService(db, RecordingReplySink())
     await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
     # The report must have been processed (deferred) before a photo can complete it.
     first = await service.process_message(CHANNEL, AUTHOR, 1)
@@ -242,7 +241,7 @@ async def test_pending_lookup_finds_the_waiting_report(db: Database) -> None:
 async def test_photo_completes_the_report_through_pending_path(db: Database) -> None:
     """End-to-end, matching live ordering: report arrives, then photo, then re-check."""
     sink = RecordingReplySink()
-    service = ReportService(db, sink, ImmediateRetryScheduler())
+    service = ReportService(db, sink)
 
     # 1. report arrives alone and is warned immediately
     await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
@@ -264,7 +263,7 @@ async def test_photo_already_present_makes_the_report_valid_immediately(
     db: Database,
 ) -> None:
     """If the photo lands before the bot catches up, no deferral is needed."""
-    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
+    service = ReportService(db, RecordingReplySink())
     await post(db, message_id=1, content=REAL_REPORT, minutes=-1)
     await post(db, message_id=2, content="", attachments=2, minutes=-1)
 
@@ -275,7 +274,7 @@ async def test_photo_already_present_makes_the_report_valid_immediately(
 
 
 async def test_chat_is_not_treated_as_pending_report(db: Database) -> None:
-    service = ReportService(db, RecordingReplySink(), ImmediateRetryScheduler())
+    service = ReportService(db, RecordingReplySink())
     await post(db, message_id=1, content=CHAT, minutes=-5)
     await post(db, message_id=2, content="", attachments=1, minutes=-4)
 
@@ -307,7 +306,7 @@ async def test_full_live_sequence(logs: None = None) -> None:
                 )
 
             sink = RecordingReplySink()
-            service = ReportService(db, sink, ImmediateRetryScheduler())
+            service = ReportService(db, sink)
 
             # 1. valid report with photos
             await post(db, message_id=1, content=REAL_REPORT, attachments=2)
@@ -334,7 +333,7 @@ async def test_full_live_sequence(logs: None = None) -> None:
 async def test_ingestor_runs_the_service_pipeline(db: Database) -> None:
     """The bus path must reach the reports module, not just the ingestor."""
     sink = RecordingReplySink()
-    service = ReportService(db, sink, ImmediateRetryScheduler())
+    service = ReportService(db, sink)
     bus = EventBus()
     ingestor = Ingestor(db, bus)
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -35,18 +35,6 @@ from dsbot.storage.db import Database
 
 if TYPE_CHECKING:
     from dsbot.discord.reply import ReplySink
-
-
-class RetryScheduler(Protocol):
-    """Schedules a delayed re-check of one report.
-
-    Declared as a protocol so the reports module does not depend on the scheduler
-    implementation, and tests can use a purely in-memory one.
-    """
-
-    async def schedule(
-        self, *, when: datetime, channel_id: int, message_id: int, key: str
-    ) -> None: ...
 
 
 log = structlog.get_logger(__name__)
@@ -85,7 +73,6 @@ class ReportService:
         self,
         db: Database,
         reply: ReplySink | None = None,
-        retry: RetryScheduler | None = None,
         *,
         group_window: timedelta | None = None,
         allow_bot_authors: bool = False,
@@ -93,7 +80,6 @@ class ReportService:
     ) -> None:
         self._db = db
         self._reply = reply
-        self._retry = retry
         # Operator-level override; per-channel config can still differ.
         self._group_window = group_window
         # Dev only: lets a test message authored by the bot itself flow through the
@@ -104,10 +90,6 @@ class ReportService:
         self.contact_user_id = contact_user_id
         # The message currently being evaluated, so a reply can quote it.
         self._report_message_id: int = 0
-
-    def attach_retry(self, retry: RetryScheduler) -> None:
-        """Late binding, because the scheduler needs the service to exist first."""
-        self._retry = retry
 
     # --- context -----------------------------------------------------------
 

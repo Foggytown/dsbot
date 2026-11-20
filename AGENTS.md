@@ -8,9 +8,29 @@ A Discord bot that passively monitors report channels in an RP military communit
 parses reports written as numbered forms, tracks staff verdicts expressed as reactions,
 and evaluates weekly quotas per character.
 
-Phase 1 scope: **capture -> parse -> validate -> verdict -> weekly summary -> export**.
+Deployed phases:
+
+- **Phase 1 (done):** capture -> parse -> validate -> warnings -> export.
+- **Phase 2 (in progress):** cross-server rank resolution, verdict engine, weekly quotas.
+
 Explicitly out of scope for now: role assignment, soldier progression tiers,
 soldier-to-instructor assignment, dashboards.
+
+## What lives where
+
+| Data | Location | Why |
+|---|---|---|
+| Messages, reports, reactions, verdicts, weekly results | server database | change constantly, server only |
+| Forms | `forms/*.yaml` | configuration, reviewed in git |
+| Rank ladders | `forms/ladders/*.yaml` | configuration |
+| Served channels | `forms/channels.yaml` | configuration |
+| Token and deployment settings | `.env` on the server | secret, never committed |
+
+Config is applied at startup, so a locally configured channel is deployed by pushing.
+There is nothing to merge between machines: runtime data exists only on the server.
+
+Persistent state must live in the panel data directory (`/data`). Resolution order:
+`DSBOT_DATA_DIR`, `DATA_DIR`, an existing `/data` or `/app/data`, then `./var`.
 
 ## Non-negotiable constraints
 
@@ -120,6 +140,27 @@ normalize -> tokenize -> select schema -> bind fields -> parse typed values -> v
 - A malformed report is a **structured issue list**, never an exception. Raw message
   text is always stored regardless of parse outcome.
 - Refuse to parse the template itself: `template_markers` disqualify a message.
+
+### Strictness is deliberate
+
+Report values feed weekly statistics, so silent tolerance produces wrong numbers. The
+form is the specification; deviation is an error with a specific message.
+
+Rejected on purpose: `[8076]` brackets, `01\0016` backslash, `NRP-`/`RP-` labels,
+extra words in the formation, any capitalisation other than the template's, `;` as a
+separator, and a second IDN shape that does not exist.
+
+Kept: case-insensitive qualification codes with trailing commentary stripped, and
+`formation | idn | idn` for every formation (only `01/` and `00/` are SOB-specific).
+
+### Conditional rules must not guess
+
+A rule keyed on the qualification does not fire when the qualification was not
+recognised. Otherwise a reporter is told "need 2 photos" instead of "your qualification
+is wrong", and the real mistake is hidden.
+
+The one check that always applies is "at least one photo", because it is a property of
+the form, not of the qualification.
 
 ## Engineering conventions
 

@@ -33,7 +33,6 @@ from dsbot.core.lock import InstanceLock
 from dsbot.discord import sink
 from dsbot.discord.reply import DiscordReplySink, ReplySink
 from dsbot.ingest import Ingestor
-from dsbot.jobs.retry import RetryScheduler
 from dsbot.modules.reports.service import ReportService
 from dsbot.storage import repos
 from dsbot.storage.db import Database
@@ -64,8 +63,6 @@ class Bot(discord.ext.commands.Bot):
             allow_bot_authors=settings.dev_accept_bot_messages,
             contact_user_id=settings.contact_user_id,
         )
-        self.retry = RetryScheduler(self.reports)
-        self.reports.attach_retry(self.retry)
         self._tasks: set[asyncio.Task[Any]] = set()
 
     # --- lifecycle ---------------------------------------------------------
@@ -83,14 +80,15 @@ class Bot(discord.ext.commands.Bot):
 
         await register_commands(self, self.db)
 
-        # A restart between "deferred" and its deadline loses the in-memory timer, and
-        # the report would then never resolve. Sweep them at startup.
+        # Reports are warned about immediately now, but older rows may still carry the
+        # retired "deferred" status from before that change. Resolve them on start so a
+        # database migrated from an older version does not keep silent leftovers.
         from dsbot.jobs.replay import expire_deferred
 
         try:
             resolved = await expire_deferred(self.db, self.reports)
             if resolved:
-                log.info("deferred_recovered_at_startup", count=resolved)
+                log.info("stale_deferred_resolved_at_startup", count=resolved)
         except Exception:
             log.exception("deferred_recovery_failed")
 
@@ -191,7 +189,6 @@ class Bot(discord.ext.commands.Bot):
                 log.exception("slash_command_sync_failed", guild_id=guild_id)
 
     async def close(self) -> None:
-        await self.retry.aclose()
         await self.bus.aclose()
         await self.db.dispose()
         await super().close()

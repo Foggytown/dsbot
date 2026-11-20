@@ -18,7 +18,7 @@ from dsbot.core.bus import EventBus
 from dsbot.core.events import AttachmentRef, Event, MessageCreated, MessageSnapshot
 from dsbot.discord.reply import RecordingReplySink
 from dsbot.ingest import Ingestor
-from dsbot.modules.reports.authoring import STARTER_DEFINITION, export_forms, import_forms
+from dsbot.modules.reports.authoring import export_forms, import_forms
 from dsbot.modules.reports.schema import DEFAULT_SCHEMAS
 from dsbot.modules.reports.service import ReportService
 from dsbot.storage import repos
@@ -27,6 +27,17 @@ from dsbot.storage.db import Database
 CHANNEL = 500
 GUILD = 900
 AUTHOR = 42
+
+
+def load_training_definition() -> dict:
+    """The real form, as a payload for import_forms.
+
+    Using the shipped YAML instead of a hand-written stub means these tests exercise the
+    same definition the bot actually runs.
+    """
+    import yaml
+
+    return yaml.safe_load(Path("forms/training.yaml").read_text(encoding="utf-8"))
 
 
 @pytest.fixture
@@ -352,7 +363,7 @@ async def test_roundtrip_export_import(bound_db: Database) -> None:
 
 
 async def test_import_creates_a_new_form_for_a_new_channel(db: Database) -> None:
-    definition = dict(STARTER_DEFINITION)
+    definition = load_training_definition()
     definition["key"] = "custom_form"
 
     async with db.write_session() as session:
@@ -482,7 +493,7 @@ async def test_two_channels_can_differ_in_form(db: Database) -> None:
             await import_forms(
                 session,
                 channel_id=888,
-                payload={"schemas": [STARTER_DEFINITION]},
+                payload={"schemas": [load_training_definition()]},
             )
 
 

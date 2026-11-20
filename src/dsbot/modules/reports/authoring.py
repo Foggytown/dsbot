@@ -25,43 +25,8 @@ from dsbot.modules.reports.schema import FormSchemaDef, from_definition
 from dsbot.storage import admin
 from dsbot.storage.models import BindingSchema, ChannelBinding, FormSchema
 
+
 # A minimal starting point for a new channel form: two fields, no assumptions.
-STARTER_DEFINITION: dict[str, Any] = {
-    "key": "new_channel_form",
-    "title": "",
-    "locale": "ru",
-    "template_markers": [],
-    "anchors": [],
-    "attribution_field": None,
-    "attribution_requires_review": False,
-    "min_score": 1.0,
-    "fields": [
-        {
-            "id": "field_1",
-            "labels": [],
-            "path": "1",
-            "type": "text",
-            "required": True,
-            "required_when": None,
-            "options": [],
-            "accepts_attachments": False,
-            "hint": {},
-        },
-        {
-            "id": "field_2",
-            "labels": [],
-            "path": "2",
-            "type": "text",
-            "required": True,
-            "required_when": None,
-            "options": [],
-            "accepts_attachments": False,
-            "hint": {},
-        },
-    ],
-}
-
-
 @dataclass(slots=True)
 class FormBundle:
     """A channel's forms in editor-friendly form."""
