@@ -215,9 +215,16 @@ and an optional **system (NRP) IDN** after it must be **exactly 4 digits**.
 | Input | Meaning |
 |---|---|
 | `SOB \| 0016` | lore IDN `0016` |
-| `SOB \| 000016` | lore IDN `000016` (6 digits is fine) |
-| `SOB \| 000016 \| 0017` | lore `000016` + system `0017` |
+| `SOB \| 01/0016` | prefixed lore IDN (prefix `01`) |
+| `SOB \| 00/0016` | prefixed lore IDN (prefix `00`) |
+| `SOB \| 000016` | 6-digit lore IDN, no prefix |
+| `SOB \| 01/0016 \| 0017` | lore `0016` + system `0017` |
+| `SOB \| 02/0016` | ✗ `lore_prefix_invalid` — only `01/` and `00/` exist |
 | `SOB \| 0016 \| 000017` | ✗ `nrp_bad_length` — the system IDN must be 4 digits |
+
+A prefixed lore IDN may only start with `01/` or `00/`; there are no other valid
+combinations. The allowed prefixes are `lore_prefixes` on the field, so they stay
+editable in the form file.
 
 The two positions have different rules on purpose, and their warnings say so:
 `idn_bad_length` means a lore IDN is the wrong length (4 or 6+), while

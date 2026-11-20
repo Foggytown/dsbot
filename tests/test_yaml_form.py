@@ -204,7 +204,7 @@ FORMATIONS = IDENTITY_FIELD.formations  # type: ignore[union-attr]
 def identity(text: str) -> dict:
     from dsbot.modules.reports.fields import parse_identity
 
-    result = parse_identity(text, "identity", FORMATIONS)
+    result = parse_identity(text, "identity", FORMATIONS, ["01", "00"])
     return {
         "value": result.value,
         "codes": [i.code for i in result.issues],
@@ -220,12 +220,33 @@ def test_identity_plain_idn() -> None:
 
 
 def test_identity_with_numeric_prefix() -> None:
-    """`01/0016` is a normal lore IDN. The bot does not care what the 01 means."""
-    parsed = identity("SOB | 01/0016")
-    assert parsed["value"]["formation"] == "SOB"
-    assert parsed["value"]["prefix"] == "01"
-    assert parsed["value"]["lore_idn"] == "0016"
-    assert parsed["codes"] == []
+    """`01/0016` and `00/0016` are the only valid prefixed forms."""
+    for prefix in ("01", "00"):
+        parsed = identity(f"SOB | {prefix}/0016")
+        assert parsed["value"]["prefix"] == prefix
+        assert parsed["value"]["lore_idn"] == "0016"
+        assert parsed["codes"] == []
+
+
+def test_other_lore_prefixes_are_rejected() -> None:
+    """Only 01 and 00 exist; anything else must not be accepted."""
+    for prefix in ("02", "03", "10", "99"):
+        parsed = identity(f"SOB | {prefix}/0016")
+        assert "lore_prefix_invalid" in parsed["codes"], prefix
+
+
+def test_prefixed_lore_idn_still_checks_length() -> None:
+    parsed = identity("SOB | 01/016")
+    assert "idn_bad_length" in parsed["codes"]
+    assert "lore_prefix_invalid" not in parsed["codes"]
+
+
+def test_prefix_warning_names_the_allowed_values() -> None:
+    from dsbot.modules.reports.templates import issue_line
+
+    text = issue_line("lore_prefix_invalid", "ru", detail_raw="02")
+    assert "01/" in text
+    assert "00/" in text
 
 
 def test_identity_with_optional_nrp() -> None:

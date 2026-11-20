@@ -82,6 +82,10 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
         "ru": "- Неизвестное формирование: «{detail_raw}».",
         "en": "- Unknown formation: '{detail_raw}'.",
     },
+    "lore_prefix_invalid": {
+        "ru": ("- Лорный IDN может начинаться только с 01/ или 00/, а указано «{detail_raw}»."),
+        "en": "- A lore IDN may only start with 01/ or 00/, but '{detail_raw}' was given.",
+    },
     "rule_min_attachments": {
         "ru": "- Фото: нужно не меньше {detail_required}, найдено {detail_found}.",
         "en": "- Photos: need at least {detail_required}, found {detail_found}.",

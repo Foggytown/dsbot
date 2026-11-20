@@ -56,6 +56,10 @@ fields:
       - "104TH"
       - MERC
 
+    # A prefixed lore IDN may only start with one of these. There are no other
+    # valid combinations: 01/xxxx and 00/xxxx only.
+    lore_prefixes: ["01", "00"]
+
     hint:
       ru: "Например: SOB | 0016  или  ALPHA | 01/0016"
       en: "For example: SOB | 0016  or  ALPHA | 01/0016"

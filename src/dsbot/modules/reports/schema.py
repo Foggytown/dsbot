@@ -144,6 +144,9 @@ class FieldSpec(BaseModel):
     formations: list[str] = Field(default_factory=list)
     # Number of attachments this field consumes. 0 means it is text-only.
     attachment_slots: int = 0
+    # Allowed prefixes for a lore IDN such as 01/0016. Only these combinations are
+    # valid in this community, so anything else is rejected rather than stored.
+    lore_prefixes: list[str] = Field(default_factory=lambda: ["01", "00"])
     # Value may legitimately be an attachment rather than text.
     accepts_attachments: bool = False
     # Free-text note shown to a reporter in the warning message.
