@@ -50,6 +50,10 @@ rejected with `idn_bad_length`, not silently turned into `0001`.
 - `idn_kind = nrp` -> plain server code, e.g. `0016`
 - `idn_kind = rp_lore` -> lore IDN, possibly `01/0016` (sub-unit + number)
 
+Squads (ALPHA, NULL) are **not** part of the form. They are internal structure of a
+formation, and a reporter always writes the formation. `ALPHA | 01/0016` is rejected as
+an unknown formation; the correct input is `SOB | 01/0016`.
+
 A Discord user may have several characters. Which one an instructor was acting as is
 not inferable from a report and is not the bot's problem.
 

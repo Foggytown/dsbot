@@ -42,7 +42,8 @@ fields:
     type: identity
     required: true
 
-    # The finite list of formations. Add or remove freely.
+    # The finite list of formations. Reporters write this, always. Squads (ALPHA,
+    # NULL, ...) are internal to a formation and are NOT part of the form.
     formations:
       - SOB
       - ARC
@@ -54,18 +55,6 @@ fields:
       - JEDI
       - "104TH"
       - MERC
-
-    # Squads belong to a formation. ALPHA and NULL are squads of SOB, so a soldier
-    # reporting as ALPHA is still a SOB soldier and writes 01/xxxx.
-    # An ordinary SOB soldier has no squad and just writes a plain 4-digit IDN.
-    # Add more squads here as they appear.
-    squads:
-      ALPHA:
-        formation: SOB
-        prefix: "01"
-      "NULL":
-        formation: SOB
-        prefix: "00"
 
     hint:
       ru: "Например: SOB | 0016  или  ALPHA | 01/0016"

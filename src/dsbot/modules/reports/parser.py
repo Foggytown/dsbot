@@ -337,7 +337,7 @@ def _attachment_slot(schema: FormSchemaDef, spec: FieldSpec) -> int:
 def _parse_by_type(spec: FieldSpec, raw: str, attachment_count: int, slot: int = 0) -> FieldResult:
     match spec.type:
         case "identity":
-            return parse_identity(raw, spec.id, spec.formations, spec.squads, spec.lore_prefixes)
+            return parse_identity(raw, spec.id, spec.formations)
         case "formation_idn":
             return parse_formation_idn(raw, spec.id, spec.formations)
         case "enum":

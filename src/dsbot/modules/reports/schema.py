@@ -97,27 +97,6 @@ class Rule(BaseModel):
         return all(c.matches(values.get(c.field)) for c in self.when)
 
 
-class Squad(BaseModel):
-    """A squad inside a formation.
-
-    ALPHA and NULL are squads of SOB. A soldier reporting as ALPHA is still a SOB
-    soldier for quota and statistics purposes; the squad only decides the IDN prefix.
-    """
-
-    formation: str
-    prefix: str = ""
-
-    @field_validator("prefix", mode="before")
-    @classmethod
-    def _prefix_digits(cls, value: Any) -> str:
-        if value is None:
-            return ""
-        text = str(value).strip()
-        if text and not text.isdigit():
-            raise ValueError(f"squad prefix must be digits, got {text!r}")
-        return text.zfill(2) if text else ""
-
-
 class FieldSpec(BaseModel):
     """One numbered item in a form."""
 
@@ -142,13 +121,6 @@ class FieldSpec(BaseModel):
     formations: list[str] = Field(default_factory=list)
     # Number of attachments this field consumes. 0 means it is text-only.
     attachment_slots: int = 0
-    # Sub-units that accept a lore IDN form like 01/0016, with the required prefix.
-    # e.g. {"ALPHA": "01", "NULL": "00"} means an Alpha soldier writes 01/xxxx.
-    # Deprecated in favour of `squads`, kept so old stored forms still load.
-    lore_prefixes: dict[str, str] = Field(default_factory=dict)
-    # Squads belong to a formation. ALPHA and NULL are squads of SOB, not formations:
-    # a soldier in ALPHA is still a SOB soldier, and writes 01/xxxx.
-    squads: dict[str, Squad] = Field(default_factory=dict)
     # Value may legitimately be an attachment rather than text.
     accepts_attachments: bool = False
     # Free-text note shown to a reporter in the warning message.

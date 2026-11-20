@@ -299,80 +299,47 @@ def parse_identity(
     raw: str,
     field_id: str,
     formations: list[str] | None = None,
-    squads: dict[str, Any] | None = None,
-    lore_prefixes: dict[str, str] | None = None,
 ) -> FieldResult:
-    """Parse the combined identity field: formation, squad, lore IDN, optional NRP IDN.
+    """Parse the identity field: formation plus lore IDN and/or NRP IDN.
 
-    Accepts the shapes people actually type:
+    Accepts the shapes people actually write:
         SOB | 0016
         SOB | 01/0016
-        ALPHA | 01/0016
-        NULL | 00/0016
         SOB | 01/0016 | 0017
 
-    Three distinct vocabularies appear here and must not be conflated:
+    Only two vocabularies exist here:
 
-      * formations - a closed list: SOB, ARC, CT, ...  (what a soldier *belongs to*)
-      * squads     - a closed list, each belonging to a formation: ALPHA and NULL are
-                     squads *of SOB*. A squad decides the IDN prefix only.
-      * IDN        - open-ended; only its length is checked.
+      * the formation - a closed list: SOB, ARC, CT, ...
+      * the IDN      - open-ended; only its length is checked (4 digits, or 6+)
 
-    A soldier writing ALPHA is still a SOB soldier. That distinction matters for
-    quotas and statistics later, so `formation` is always resolved to SOB while
-    `squad` records ALPHA.
-
-    `lore_prefixes` is the old flat mapping, still honoured for stored forms.
+    Squads (ALPHA, NULL) are deliberately NOT modelled: reporters write their
+    formation, and a squad is internal structure of that formation. `01/0016` is
+    accepted as a normal lore IDN with a numeric prefix, whatever caused that prefix.
     """
     text = strip_emphasis(normalize(raw)).strip()
     if is_blank_value(text):
         return FieldResult(value=None, present=False)
 
     known = {f.upper() for f in (formations or [])}
-
-    # squad name -> (owning formation, required prefix)
-    squad_map: dict[str, tuple[str, str]] = {}
-    for name, spec in (squads or {}).items():
-        if isinstance(spec, dict):
-            owning = str(spec.get("formation") or "").upper()
-            prefix = str(spec.get("prefix") or "").zfill(2) if spec.get("prefix") else ""
-        else:
-            owning = str(getattr(spec, "formation", "") or "").upper()
-            prefix = str(getattr(spec, "prefix", "") or "")
-        squad_map[name.upper()] = (owning, prefix)
-    for name, prefix in (lore_prefixes or {}).items():
-        # Legacy shape carried no owning formation; assume the only thing we can.
-        squad_map.setdefault(name.upper(), ("", str(prefix).zfill(2)))
-
     issues: list[FieldIssue] = []
 
     parts = [p.strip() for p in re.split(r"[|/\\]", text) if p.strip()]
     formation: str | None = None
-    squad: str | None = None
     numbers: list[str] = []
 
     for part in parts:
         cleaned = part.strip(" .,:;")
         upper = cleaned.upper()
-        if formation is None and squad is None:
-            if upper in squad_map:
-                squad = upper
-                continue
-            if upper in known:
-                formation = upper
-                continue
+        if formation is None and upper in known:
+            formation = upper
+            continue
+        if formation is None:
             token = re.split(r"\s+", cleaned)[0].upper() if cleaned else ""
             if token and not token.isdigit():
                 formation = token
                 continue
         if re.fullmatch(r"\d{1,8}", cleaned):
             numbers.append(cleaned)
-
-    # A squad implies its formation: ALPHA is a SOB squad.
-    if squad is not None:
-        owning = squad_map[squad][0]
-        if owning:
-            formation = owning
 
     if formation is None:
         issues.append(
@@ -394,11 +361,11 @@ def parse_identity(
 
     lore_idn: str | None = None
     nrp_idn: str | None = None
-    sub_unit: str | None = None
+    prefix: str | None = None
 
-    # A numeric prefix of length 1-2 before a 4-digit number, e.g. 01/0016.
+    # A numeric group of length 1-2 before a 4-digit number is a lore prefix, e.g. 01/0016.
     if len(numbers) >= 2 and len(numbers[0]) <= 2:
-        sub_unit = numbers[0].zfill(2)
+        prefix = numbers[0].zfill(2)
         lore_idn = numbers[1]
         nrp_idn = numbers[2] if len(numbers) > 2 else None
     elif numbers:
@@ -419,36 +386,14 @@ def parse_identity(
                 )
             )
 
-    # A squad with a known prefix must use it.
-    expected_prefix = squad_map[squad][1] if squad and squad in squad_map else ""
-    if expected_prefix:
-        if sub_unit is None:
-            issues.append(
-                FieldIssue(
-                    code="identity_prefix_missing",
-                    field_id=field_id,
-                    severity="warning",
-                    detail={"squad": squad, "expected": expected_prefix},
-                )
-            )
-        elif sub_unit != expected_prefix:
-            issues.append(
-                FieldIssue(
-                    code="identity_prefix_mismatch",
-                    field_id=field_id,
-                    detail={"squad": squad, "expected": expected_prefix, "got": sub_unit},
-                )
-            )
-
     value: dict[str, Any] = {
         "formation": formation,
-        "squad": squad,
         "raw": text,
         "idn_text": "/".join(numbers) if numbers else None,
         "lore_idn": lore_idn,
         "nrp_idn": nrp_idn,
-        "sub_unit": sub_unit,
-        "idn_kind": "rp_lore" if sub_unit is not None else "nrp",
+        "prefix": prefix,
+        "idn_kind": "rp_lore" if prefix is not None else "nrp",
         "idn_number": lore_idn,
     }
     return FieldResult(value=value, issues=issues, present=True)

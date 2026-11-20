@@ -34,7 +34,7 @@ EXAMPLE_HEADER = """\
 #     uv run dsbot form-check --file forms/<name>.yaml
 #
 # FIELD TYPES
-#   identity          formation | lore IDN | optional NRP IDN   (see lore_prefixes)
+#   identity          formation | lore IDN | optional NRP IDN
 #   enum              a value from a finite list
 #   attachment        photos/evidence; counts attachments
 #   discord_message_ref   a link to a message
@@ -87,11 +87,6 @@ def compile_problems(schema: FormSchemaDef) -> list[str]:
                 f"field '{field.id}': needs either a path (e.g. '1') or labels, "
                 "otherwise it can never be found in a message"
             )
-        for sub_unit, prefix in field.lore_prefixes.items():
-            if not prefix.isdigit():
-                problems.append(
-                    f"field '{field.id}': lore prefix for {sub_unit} must be digits, got {prefix!r}"
-                )
 
     for rule in schema.rules:
         if rule.field not in ids:

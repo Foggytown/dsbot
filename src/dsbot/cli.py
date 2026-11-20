@@ -672,8 +672,6 @@ def form_check(
             values = f"  options={field.options}"
         elif field.type == "identity":
             values = f"  formations={field.formations}"
-            if field.lore_prefixes:
-                values += f"  prefixes={field.lore_prefixes}"
         typer.echo(f"  {field.path or '-':<4} {field.id:<18} {field.type:<20}{values}")
     for rule in schema.rules:
         when = " and ".join(f"{c.field} {c.op} {c.value!r}" for c in rule.when) or "always"

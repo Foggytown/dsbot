@@ -199,17 +199,18 @@ rules:
 Rules exist because some requirements depend on *another* field: "1 photo if T,
 otherwise 2+" cannot be expressed on the photos field alone.
 
-## Formations vs squads
+## Formations
 
 ```yaml
-formations: [SOB, ARC, CT, ...]   # what a soldier belongs to
-squads:                            # squads belong to a formation
-  ALPHA: {formation: SOB, prefix: "01"}
-  "NULL": {formation: SOB, prefix: "00"}
+formations: [SOB, ARC, CT, 501ST, 212TH, GUARD, GHOST, JEDI, 104TH, MERC]
 ```
 
-A soldier writing `ALPHA | 01/0016` is still a **SOB** soldier; the squad only decides
-the IDN prefix. An ordinary SOB soldier has no squad and writes `SOB | 0016`.
+Reporters always write a formation. Squads (ALPHA, NULL, ...) are internal structure
+and are **not** part of the form: `ALPHA | 01/0016` is rejected as an unknown formation,
+and a soldier writes `SOB | 0016` or `SOB | 01/0016`.
+
+The IDN after the formation is open-ended: only its length is checked (4 digits, or
+6+). `SOB | 01/0016 | 0017` means lore IDN `0016` plus optional NRP IDN `0017`.
 
 ## Development
 

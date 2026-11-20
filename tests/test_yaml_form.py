@@ -181,61 +181,32 @@ def test_rule_message_is_human_readable() -> None:
 
 IDENTITY_FIELD = load_training().field_by_id("identity")
 FORMATIONS = IDENTITY_FIELD.formations  # type: ignore[union-attr]
-SQUADS = IDENTITY_FIELD.squads  # type: ignore[union-attr]
 
 
 def identity(text: str) -> dict:
     from dsbot.modules.reports.fields import parse_identity
 
-    result = parse_identity(text, "identity", FORMATIONS, SQUADS, {})
+    result = parse_identity(text, "identity", FORMATIONS)
     return {
         "value": result.value,
         "codes": [i.code for i in result.issues],
     }
 
 
-def test_identity_plain_nrp() -> None:
-    """An ordinary SOB soldier has no squad and just writes a 4-digit IDN."""
+def test_identity_plain_idn() -> None:
+    """The normal case: formation plus a 4-digit IDN."""
     parsed = identity("SOB | 0016")
     assert parsed["value"]["formation"] == "SOB"
-    assert parsed["value"]["squad"] is None
     assert parsed["value"]["lore_idn"] == "0016"
     assert parsed["codes"] == []
 
 
-def test_identity_squad_resolves_to_owning_formation() -> None:
-    """ALPHA is a SOB squad, so the soldier still belongs to SOB."""
-    parsed = identity("ALPHA | 01/0016")
-    assert parsed["value"]["squad"] == "ALPHA"
-    assert parsed["value"]["formation"] == "SOB"
-    assert parsed["value"]["sub_unit"] == "01"
-    assert parsed["value"]["lore_idn"] == "0016"
-    assert parsed["codes"] == []
-
-
-def test_identity_null_squad() -> None:
-    parsed = identity("NULL | 00/0016")
-    assert parsed["value"]["squad"] == "NULL"
-    assert parsed["value"]["formation"] == "SOB"
-    assert parsed["value"]["sub_unit"] == "00"
-    assert parsed["codes"] == []
-
-
-def test_identity_squad_with_wrong_prefix_is_an_error() -> None:
-    parsed = identity("ALPHA | 00/0016")
-    assert "identity_prefix_mismatch" in parsed["codes"]
-
-
-def test_identity_squad_without_prefix_warns() -> None:
-    parsed = identity("ALPHA | 0016")
-    assert "identity_prefix_missing" in parsed["codes"]
-
-
-def test_identity_formation_with_prefix_is_allowed() -> None:
-    """SOB | 01/0016 is legitimate: a lore IDN written with an explicit prefix."""
+def test_identity_with_numeric_prefix() -> None:
+    """`01/0016` is a normal lore IDN. The bot does not care what the 01 means."""
     parsed = identity("SOB | 01/0016")
     assert parsed["value"]["formation"] == "SOB"
-    assert parsed["value"]["squad"] is None
+    assert parsed["value"]["prefix"] == "01"
+    assert parsed["value"]["lore_idn"] == "0016"
     assert parsed["codes"] == []
 
 
@@ -243,6 +214,19 @@ def test_identity_with_optional_nrp() -> None:
     parsed = identity("SOB | 01/0016 | 0017")
     assert parsed["value"]["lore_idn"] == "0016"
     assert parsed["value"]["nrp_idn"] == "0017"
+    assert parsed["codes"] == []
+
+
+def test_identity_plain_can_also_carry_nrp() -> None:
+    parsed = identity("SOB | 0016 | 0017")
+    assert parsed["value"]["lore_idn"] == "0016"
+    assert parsed["value"]["nrp_idn"] == "0017"
+
+
+def test_squad_names_are_not_accepted_as_formations() -> None:
+    """ALPHA is a squad, not a formation; reporters must write SOB."""
+    parsed = identity("ALPHA | 01/0016")
+    assert "formation_unknown" in parsed["codes"]
 
 
 def test_identity_unknown_formation() -> None:
@@ -253,3 +237,14 @@ def test_identity_unknown_formation() -> None:
 def test_identity_bad_length() -> None:
     parsed = identity("SOB | 016")
     assert "idn_bad_length" in parsed["codes"]
+
+
+def test_identity_six_digit_idn_allowed() -> None:
+    parsed = identity("SOB | 000016")
+    assert parsed["value"]["lore_idn"] == "000016"
+    assert parsed["codes"] == []
+
+
+def test_identity_missing_formation_warns() -> None:
+    parsed = identity("0016")
+    assert "idn_no_formation" in parsed["codes"]
