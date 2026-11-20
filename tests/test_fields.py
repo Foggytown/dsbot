@@ -108,11 +108,14 @@ def test_enum_unknown_is_an_error_by_default() -> None:
 
 
 def test_enum_unknown_can_be_downgraded_to_warning() -> None:
-    """Free-text schemas can opt out of strict matching."""
+    """Free-text schemas can opt out of strict matching.
+
+    The allowed-list hint keeps its own severity, so only the unknown-value issue changes.
+    """
     result = parse_enum("XYZ", "qualification", ["INF", "ENG"], strict=False)
     assert result.present
-    assert any(i.code == "enum_unknown_option" for i in result.issues)
-    assert all(i.severity == "warning" for i in result.issues)
+    unknown = next(i for i in result.issues if i.code == "enum_unknown_option")
+    assert unknown.severity == "warning"
 
 
 def test_discord_link_parsed_into_ids() -> None:

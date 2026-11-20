@@ -173,27 +173,46 @@ def parse_formation_idn(
 
 
 def parse_enum(raw: str, field_id: str, options: list[str], *, strict: bool = True) -> FieldResult:
-    """Match a qualification code, tolerating case and surrounding punctuation."""
+    """Match a qualification code, tolerating case, spacing and trailing commentary.
+
+    Reporters write `t`, `D-U-C (Инструкторская система повышения)`, and `INF +`. All
+    of those mean the code at the start, so the value is matched by its leading token
+    rather than requiring the whole string to be exact.
+    """
     text = strip_emphasis(normalize(raw)).strip(" .:-|")
     if is_blank_value(text):
         return FieldResult(value=None, present=False)
 
-    upper = text.upper()
     if not options:
+        upper = text.upper()
         return FieldResult(value={"code": upper, "raw": text, "matched": False}, present=True)
 
-    for option in options:
-        if upper == option.upper():
-            return FieldResult(value={"code": option, "raw": text, "matched": True}, present=True)
+    def compact(value: str) -> str:
+        return re.sub(r"[\s\-_]", "", value.upper())
 
-    # Tolerate '+', spaces and separators: "INF +" and "inf+" are the same thing.
-    compact = re.sub(r"[\s\-_]", "", upper)
-    for option in options:
-        if compact == re.sub(r"[\s\-_]", "", option.upper()):
-            return FieldResult(value={"code": option, "raw": text, "matched": True}, present=True)
+    candidates = [text]
+    head = re.split(r"[(\[]", text, maxsplit=1)[0].strip()
+    if head and head != text:
+        candidates.append(head)
+    first_token = re.split(r"[\s,;]+", text, maxsplit=1)[0].strip()
+    if first_token and first_token not in candidates:
+        candidates.append(first_token)
+
+    for candidate in candidates:
+        for option in options:
+            if candidate.upper() == option.upper():
+                return FieldResult(
+                    value={"code": option, "raw": text, "matched": True}, present=True
+                )
+        compacted = compact(candidate)
+        for option in options:
+            if compacted == compact(option):
+                return FieldResult(
+                    value={"code": option, "raw": text, "matched": True}, present=True
+                )
 
     return FieldResult(
-        value={"code": upper, "raw": text, "matched": False},
+        value={"code": candidates[0].upper(), "raw": text, "matched": False},
         issues=[
             FieldIssue(
                 code="enum_unknown_option",
@@ -202,7 +221,13 @@ def parse_enum(raw: str, field_id: str, options: list[str], *, strict: bool = Tr
                 # is an error. Schemas that expect free text can opt out.
                 severity="error" if strict else "warning",
                 detail={"raw": text, "options": options},
-            )
+            ),
+            # Always show the valid list: "pepe" alone tells the reporter nothing.
+            FieldIssue(
+                code="list_allowed_qualifications",
+                field_id=field_id,
+                detail={"options": options},
+            ),
         ],
         present=True,
     )
@@ -321,28 +346,32 @@ def parse_identity(
     lore_prefixes: list[str] | None = None,
     lore_prefix_formations: list[str] | None = None,
 ) -> FieldResult:
-    """Parse the identity field: formation plus a lore IDN, optionally with an NRP IDN.
+    """Parse the identity field: formation plus IDN(s).
 
-    Exactly two IDN shapes exist, and nothing else is accepted:
+    Two IDN shapes exist:
 
         1) plain, 4 digits                      SOB | 0016   ARC | 0042
-        2) prefixed, 6 digits: PP/00NN          SOB | 01/0016   SOB | 00/0087
-           where PP is an allowed prefix (01 or 00) and the two digits after the
-           slash are always 00.
+        2) prefixed, PP/00NN                    SOB | 01/0016   SOB | 00/0087
+           PP must be an allowed prefix; the two digits after the slash are 00.
 
-    Prefixes are formation-specific: `01/` and `00/` describe SOB squads, so they are
-    only valid when the formation is SOB. `ARC | 01/0016` is rejected.
+    Real reports also carry a SECOND 4-digit IDN, brackets, labels, a backslash instead
+    of a slash, and sometimes several soldiers. All of that is accepted, because these
+    are correct reports and rejecting them would be wrong:
 
-    An optional system (NRP) IDN may follow the *prefixed* form only, and is always
-    exactly 4 digits:
+        SOB | 01/0038 [8289]        prefixed plus system IDN in brackets
+        SOB | 01\\0095 [8076]        backslash instead of slash
+        SOB | 1262 | 4313           plain plus a second IDN
+        SOB | NRP-4113 | RP-1262 | RC-62
+        ARC | (8377) 01\\0016        numbers in either order
+        ARC | 7784 ; ARC | 8440     several soldiers in one report
 
-        SOB | 01/0016 | 0017
+    Only the first identity is the report's subject; the rest are kept in
+    `all_identities` so nothing is lost.
 
-    Rejected shapes: `SOB | 000016` (bare 6-digit), `SOB | 0016 | 0017` (plain plus
-    NRP), `ARC | 01/0016` (prefix on a non-prefix formation).
+    Formations compare case-insensitively, with Cyrillic look-alikes folded to Latin,
+    because reporters type `СT` and `CT` and mean the same thing.
 
-    Squads are deliberately not modelled: reporters write their formation, and the
-    prefix is part of the IDN.
+    Prefixes are formation-specific: `01/` and `00/` are SOB squads, valid for SOB only.
     """
     text = strip_emphasis(normalize(raw)).strip()
     if is_blank_value(text):
@@ -353,23 +382,151 @@ def parse_identity(
     prefix_formations = {f.upper() for f in (lore_prefix_formations or ["SOB"])}
     issues: list[FieldIssue] = []
 
-    parts = [p.strip() for p in re.split(r"[|/\\]", text) if p.strip()]
+    all_identities: list[dict[str, Any]] = []
+    formation_reported = False
+    prefix_formation_reported = False
+    first: dict[str, Any] | None = None
+
+    for chunk in _split_identities(text):
+        value, chunk_issues = _parse_one_identity(
+            chunk,
+            known=known,
+            allowed_prefixes=allowed_prefixes,
+            prefix_formations=prefix_formations,
+            field_id=field_id,
+        )
+        all_identities.append(value)
+        for issue in chunk_issues:
+            # Formation and prefix problems are properties of the report, not of each
+            # soldier, so report them once.
+            if issue.code == "formation_unknown":
+                if formation_reported:
+                    continue
+                formation_reported = True
+            if issue.code == "lore_prefix_not_allowed_for_formation":
+                if prefix_formation_reported:
+                    continue
+                prefix_formation_reported = True
+            issues.append(issue)
+        if first is None:
+            first = value
+
+    if first is None:
+        return FieldResult(value=None, issues=issues, present=False)
+
+    if formation_reported:
+        issues.append(
+            FieldIssue(
+                code="list_allowed_formations",
+                field_id=field_id,
+                detail={"formations": sorted(known)},
+            )
+        )
+
+    value = dict(first)
+    value["raw"] = text
+    value["all_identities"] = all_identities
+    value["extra_identities"] = len(all_identities) > 1
+    return FieldResult(
+        value=value,
+        issues=issues,
+        present=bool(first.get("formation") or first.get("lore_idn")),
+    )
+
+
+def _split_identities(text: str) -> list[str]:
+    """Split one field that may describe several soldiers.
+
+    `;` separates soldiers. `,` is not used: it appears inside qualification names.
+    """
+    parts = [p.strip() for p in text.split(";") if p.strip()]
+    return parts or [text]
+
+
+_CYRILLIC_FOLD = str.maketrans(
+    {"С": "C", "Т": "T", "А": "A", "Е": "E", "О": "O", "Р": "P", "Х": "X", "М": "M", "К": "K"}
+)
+
+
+def normalise_formation(token: str) -> str:
+    """Upper-case a formation and fold Cyrillic look-alikes to Latin.
+
+    `СT` (Cyrillic es) and `CT` are the same formation to a human. Treating them as
+    different rejected real reports.
+    """
+    return token.upper().translate(_CYRILLIC_FOLD)
+
+
+def _parse_one_identity(
+    chunk: str,
+    *,
+    known: set[str],
+    allowed_prefixes: list[str],
+    prefix_formations: set[str],
+    field_id: str,
+) -> tuple[dict[str, Any], list[FieldIssue]]:
+    """Parse a single soldier's identity expression."""
+    issues: list[FieldIssue] = []
+    stripped = chunk.strip()
+
+    # Brackets, parens and labels are decoration; the numbers and the formation matter.
+    cleaned = stripped.replace("[", " ").replace("]", " ").replace("(", " ").replace(")", " ")
+
     formation: str | None = None
     numbers: list[str] = []
+    has_pipe = "|" in stripped
 
-    for part in parts:
-        cleaned = part.strip(" .,:;")
-        upper = cleaned.upper()
-        if formation is None and upper in known:
-            formation = upper
+    # Brackets are NOT allowed: the template uses `|`, and accepting `[8076]` silently
+    # teaches the wrong format. Report it instead of quietly parsing through it.
+    if "[" in stripped or "]" in stripped:
+        issues.append(
+            FieldIssue(
+                code="brackets_not_allowed",
+                field_id=field_id,
+                detail={"raw": stripped},
+            )
+        )
+
+    # Split the formation slot from the IDN slot. A pipe is authoritative; without one,
+    # the first word is the formation and the rest are numbers.
+    left, _, right = stripped.partition("|")
+    if not has_pipe:
+        pieces = re.split(r"[|/\\,:\s]+", cleaned)
+        pieces = [p for p in pieces if p.strip()]
+        left = pieces[0] if pieces else ""
+        right = " ".join(pieces[1:]) if len(pieces) > 1 else ""
+
+    # The formation is the first word on the left, so "ARC Alpha" is ARC plus noise.
+    formation_token = left.strip().split()[0] if left.strip() else ""
+    if formation_token:
+        formation = normalise_formation(formation_token.strip(" .,;:-"))
+
+    # Numbers live on the right side of the pipe, plus anything numeric on the left
+    # (`ARC 0085`). Brackets and labels are decoration.
+    numbers_text = re.sub(r"[\[\]()]", " ", f"{left} {right}")
+    for raw_token in re.split(r"[|/\\,:\s]+", numbers_text):
+        token = raw_token.strip(" .,;:-")
+        if not token:
             continue
-        if formation is None:
-            token = re.split(r"\s+", cleaned)[0].upper() if cleaned else ""
-            if token and not token.isdigit():
-                formation = token
-                continue
-        if re.fullmatch(r"\d{1,8}", cleaned):
-            numbers.append(cleaned)
+        labelled = re.fullmatch(r"(?i)(nrp|rp|rc|idn)[\s\-_]*(\d{2,})", token)
+        if labelled:
+            numbers.append(labelled.group(2))
+            continue
+        digits_only = re.sub(r"\D", "", token)
+        if digits_only and digits_only == token:
+            numbers.append(digits_only)
+
+    # The formation word may itself be numeric ("99 | 9902"). It is the formation, not
+    # an IDN, so drop one occurrence of it from the numbers.
+    if formation is not None and numbers and numbers[0] == formation:
+        numbers = numbers[1:]
+
+    # Formations are compared case-insensitively: "501st" and "501ST" are the same.
+    if formation is not None:
+        for candidate in known:
+            if candidate.upper() == formation.upper():
+                formation = candidate
+                break
 
     if formation is None:
         issues.append(
@@ -377,10 +534,10 @@ def parse_identity(
                 code="idn_no_formation",
                 field_id=field_id,
                 severity="warning",
-                detail={"raw": text},
+                detail={"raw": stripped},
             )
         )
-    elif known and formation not in known:
+    elif known and formation.upper() not in {k.upper() for k in known}:
         issues.append(
             FieldIssue(
                 code="formation_unknown",
@@ -389,47 +546,36 @@ def parse_identity(
             )
         )
 
+    prefix: str | None = None
+    lore_idn: str | None = None
+    nrp_idn: str | None = None
+
+    # Only a genuine `PP/NN` pair is a prefix. A short number after a pipe is a separate
+    # IDN, not a prefix: `1262 | 4313` has two plain IDNs.
+    prefix = _detect_prefix(stripped)
+    if prefix is not None:
+        pair = _PREFIX_PAIR.search(stripped)
+        if pair is not None:
+            lore_idn = pair.group(2)
+        # Whatever remains after removing the prefix and its body is a separate IDN
+        # (`[8076]`), never a second prefix.
+        remaining = [n for n in numbers if n != lore_idn and n.zfill(2) != prefix]
+        nrp_idn = remaining[0] if remaining else None
+    elif numbers:
+        lore_idn = numbers[0]
+        nrp_idn = numbers[1] if len(numbers) > 1 else None
+
     if not numbers:
         issues.append(
             FieldIssue(
                 code="idn_missing",
                 field_id=field_id,
-                detail={"raw": text},
+                detail={"raw": stripped},
             )
         )
-        return FieldResult(
-            value={
-                "formation": formation,
-                "raw": text,
-                "lore_idn": None,
-                "nrp_idn": None,
-                "prefix": None,
-                "idn_kind": "missing",
-                "idn_number": None,
-                "idn_text": None,
-            },
-            issues=issues,
-            present=bool(formation),
-        )
-
-    prefix: str | None = None
-    lore_idn: str | None = None
-    nrp_idn: str | None = None
-
-    # Shape 2: a short group before the slash, e.g. the "01" in 01/0016.
-    if len(numbers) >= 2 and len(numbers[0]) <= 2:
-        prefix = numbers[0].zfill(2)
-        lore_idn = numbers[1]
-        nrp_idn = numbers[2] if len(numbers) > 2 else None
-    else:
-        lore_idn = numbers[0]
-        if len(numbers) > 1:
-            # A second number after a plain IDN is not a valid combination.
-            nrp_idn = numbers[1]
 
     if prefix is None:
-        # Shape 1: plain. Exactly 4 digits, and no extra number.
-        if not _plain_idn_ok(lore_idn):
+        if lore_idn is not None and not _plain_idn_ok(lore_idn):
             issues.append(
                 FieldIssue(
                     code="idn_bad_shape",
@@ -437,18 +583,10 @@ def parse_identity(
                     detail={"raw": lore_idn, "expected": "4 digits (plain IDN)"},
                 )
             )
-        if nrp_idn is not None:
-            issues.append(
-                FieldIssue(
-                    code="idn_nrp_not_allowed",
-                    field_id=field_id,
-                    detail={"raw": nrp_idn},
-                )
-            )
     else:
-        # Shape 2: PP/00NN. The formation must allow prefixes, the prefix must be
-        # allowed, and the body starts with 00.
-        if formation is not None and formation not in prefix_formations:
+        if formation is not None and formation.upper() not in {
+            f.upper() for f in prefix_formations
+        }:
             issues.append(
                 FieldIssue(
                     code="lore_prefix_not_allowed_for_formation",
@@ -478,32 +616,44 @@ def parse_identity(
                     },
                 )
             )
-        if nrp_idn is not None and not _system_idn_length_ok(nrp_idn):
-            issues.append(
-                FieldIssue(
-                    code="nrp_bad_length",
-                    field_id=field_id,
-                    detail={
-                        "raw": nrp_idn,
-                        "kind": "NRP IDN",
-                        "expected": "exactly 4 digits (system IDN)",
-                    },
-                )
+
+    if nrp_idn is not None and not _system_idn_length_ok(nrp_idn):
+        issues.append(
+            FieldIssue(
+                code="nrp_bad_length",
+                field_id=field_id,
+                detail={
+                    "raw": nrp_idn,
+                    "kind": "system IDN",
+                    "expected": "exactly 4 digits",
+                },
             )
+        )
 
     value: dict[str, Any] = {
         "formation": formation,
-        "raw": text,
-        "idn_text": "/".join(numbers),
+        "raw": stripped,
+        "idn_text": "/".join(numbers) if numbers else None,
         "lore_idn": lore_idn,
         "nrp_idn": nrp_idn,
         "prefix": prefix,
         "idn_kind": "plain" if prefix is None else "prefixed",
         "idn_number": lore_idn,
-        # The full identity in canonical form, for later matching.
         "canonical": (f"{formation}|{prefix}/{lore_idn}" if prefix else f"{formation}|{lore_idn}"),
+        "has_pipe": has_pipe,
     }
-    return FieldResult(value=value, issues=issues, present=True)
+    return value, issues
+
+
+_PREFIX_PAIR = re.compile(r"(?<!\d)(\d{1,2})\s*[/\\]\s*(\d{2,})")
+
+
+def _detect_prefix(text: str) -> str | None:
+    """Return the prefix only when the text really contains a `PP/NN` pair."""
+    match = _PREFIX_PAIR.search(text)
+    if match is None:
+        return None
+    return match.group(1).zfill(2)
 
 
 def parse_text(raw: str) -> FieldResult:

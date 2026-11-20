@@ -12,14 +12,22 @@ DEFAULT_LOCALE: Final = "ru"
 SUPPORTED_LOCALES: Final[tuple[str, ...]] = ("en", "ru")
 
 # Top-level bot message for an invalid report.
+#
+# `{nick}` is the reporter's server nickname. `{contact}` pings the operator so a
+# confused reporter can ask a human. `{example}` shows the correct shape of the form,
+# which is far more useful than a list of complaints.
 REPORT_ISSUES: Final[dict[str, str]] = {
     "ru": (
-        "{mention}, в рапорте есть ошибки формы:\n\n{lines}\n\n"
-        "Исправьте сообщение — это предупреждение исчезнет само."
+        "{mention} (`{nick}`), в рапорте есть ошибки формы:\n\n{lines}\n\n"
+        "Правильный вид:\n```\n{example}\n```\n"
+        "Исправьте сообщение — это предупреждение исчезнет само.\n"
+        "Если что-то непонятно или бот ошибается — напишите {contact}."
     ),
     "en": (
-        "{mention}, the report has form problems:\n\n{lines}\n\n"
-        "Edit the message and this warning will clear itself."
+        "{mention} (`{nick}`), the report has form problems:\n\n{lines}\n\n"
+        "Correct shape:\n```\n{example}\n```\n"
+        "Edit the message and this warning will clear itself.\n"
+        "If something is unclear or the bot is wrong, contact {contact}."
     ),
 }
 
@@ -81,6 +89,18 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
     "formation_unknown": {
         "ru": "- Неизвестное формирование: «{detail_raw}».",
         "en": "- Unknown formation: '{detail_raw}'.",
+    },
+    "list_allowed_formations": {
+        "ru": "- Допустимые формирования: {detail_formations}.",
+        "en": "- Allowed formations: {detail_formations}.",
+    },
+    "brackets_not_allowed": {
+        "ru": "- Скобки [ ] не нужны. Формат: «ФОРМИРОВАНИЕ | IDN», например SOB | 01/0038.",
+        "en": "- No [ ] brackets. Format: 'FORMATION | IDN', for example SOB | 01/0038.",
+    },
+    "list_allowed_qualifications": {
+        "ru": "- Допустимые квалификации: {detail_options}.",
+        "en": "- Allowed qualifications: {detail_options}.",
     },
     "lore_prefix_invalid": {
         "ru": ("- Лорный IDN может начинаться только с 01/ или 00/, а указано «{detail_raw}»."),
@@ -161,3 +181,30 @@ def issue_line(code: str, locale: str, **context: str) -> str:
         return body.format(**context)
     except KeyError:
         return body
+
+
+def render_example(schema: object, locale: str = DEFAULT_LOCALE) -> str:
+    """A concrete, correct example of the form.
+
+    Showing a filled-in example is the single most useful thing in a warning: a reporter
+    who sees `1. ARC | 0000 / 2. INF / 3. photos / 4. link` fixes the problem without
+    reading any explanation.
+    """
+    fields = getattr(schema, "fields", None) or []
+    lines: list[str] = []
+    for field in fields:
+        path = getattr(field, "path", None) or "1"
+        field_type = getattr(field, "type", "text")
+        if field_type == "identity":
+            sample = "ARC | 0000"
+        elif field_type == "enum":
+            options = getattr(field, "options", []) or []
+            sample = str(options[0]) if options else "VALUE"
+        elif field_type == "attachment_required":
+            sample = "фото" if locale == "ru" else "photos"
+        elif field_type == "discord_message_ref":
+            sample = "https://discord.com/channels/..."
+        else:
+            sample = "текст" if locale == "ru" else "text"
+        lines.append(f"{path}. {sample}")
+    return "\n".join(lines) if lines else "1. ARC | 0000"

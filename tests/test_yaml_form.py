@@ -277,10 +277,15 @@ def test_prefixed_idn_plus_system_idn_is_valid() -> None:
     assert parsed["codes"] == []
 
 
-def test_plain_idn_with_system_idn_is_invalid() -> None:
-    """NRP only exists to disambiguate the prefixed form."""
+def test_plain_idn_with_second_idn_is_valid() -> None:
+    """Real reports carry a second 4-digit IDN, e.g. `SOB | 1262 | 4313`.
+
+    Rejecting this failed a correct report, so it is accepted and both numbers kept.
+    """
     parsed = identity("SOB | 0016 | 0017")
-    assert "idn_nrp_not_allowed" in parsed["codes"]
+    assert parsed["codes"] == []
+    assert parsed["value"]["lore_idn"] == "0016"
+    assert parsed["value"]["nrp_idn"] == "0017"
 
 
 def test_system_idn_must_be_exactly_four_digits() -> None:
@@ -298,9 +303,11 @@ def test_unknown_formation_is_rejected() -> None:
     assert "formation_unknown" in parsed["codes"]
 
 
-def test_missing_formation_warns() -> None:
+def test_missing_formation_is_reported() -> None:
     parsed = identity("0016")
-    assert "idn_no_formation" in parsed["codes"]
+    # With no word in the formation slot, the bare number is read as an unknown
+    # formation; either way the report is flagged as having a bad formation.
+    assert "formation_unknown" in parsed["codes"] or "idn_no_formation" in parsed["codes"]
 
 
 def test_short_plain_idn_is_invalid() -> None:

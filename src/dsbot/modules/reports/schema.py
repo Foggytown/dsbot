@@ -172,6 +172,18 @@ class FieldSpec(BaseModel):
         }
         return aliases.get(value.strip().lower(), value.strip().lower())
 
+    @model_validator(mode="after")
+    def _attachments_imply_accepts(self) -> FieldSpec:
+        """An attachment field always accepts attachments.
+
+        Without this, `type: attachment` left `accepts_attachments` False and the
+        parser ignored every uploaded photo, reporting "no photos" on reports that had
+        them. The flag is derived from the type rather than duplicated in the YAML.
+        """
+        if self.type == "attachment_required" and not self.accepts_attachments:
+            self.accepts_attachments = True
+        return self
+
     @field_validator("path")
     @classmethod
     def _validate_path(cls, value: str | None) -> str | None:
@@ -222,6 +234,11 @@ class FormSchemaDef(BaseModel):
             if f.id == field_id:
                 return f
         return None
+
+    def options_of(self, field_id: str) -> list[str]:
+        """Allowed values of a field, for tests and for building messages."""
+        field = self.field_by_id(field_id)
+        return list(field.options) if field else []
 
     def to_definition(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

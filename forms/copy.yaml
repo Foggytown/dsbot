@@ -1,0 +1,180 @@
+# dsbot report form
+#
+# Edit this file, then apply it:
+#     uv run dsbot form-apply --channel <CHANNEL_ID> --file forms/<name>.yaml
+#
+# Check it without applying:
+#     uv run dsbot form-check --file forms/<name>.yaml
+#
+# FIELD TYPES
+#   identity          formation | lore IDN | optional NRP IDN
+#   enum              a value from a finite list
+#   attachment        photos/evidence; counts attachments
+#   discord_message_ref   a link to a message
+#   text              free text
+#   count_fraction    "7/8"
+#   name_ref          a person's name
+#
+# RULE OPERATORS: eq, ne, in, not_in, gt, gte, lt, lte
+
+key: training_report
+title: Формуляр рапорта на обучение
+locale: ru
+template_markers:
+- формуляр рапорта на обучение
+- используйте подобный формат
+anchors:
+- формирование
+- квалификаци
+- доказательства
+fields:
+- id: identity
+  labels:
+  - формирование
+  - рп-idn
+  - rp-idn
+  path: '1'
+  type: identity
+  required: true
+  required_when: null
+  options: []
+  strict_options: true
+  formations:
+  - SOB
+  - ARC
+  - CT
+  - 501ST
+  - 212TH
+  - GUARD
+  - GHOST
+  - JEDI
+  - 104TH
+  - MERC
+  attachment_slots: 0
+  lore_prefixes:
+  - '01'
+  - '00'
+  lore_prefix_formations:
+  - SOB
+  accepts_attachments: false
+  hint:
+    ru: 'Например: SOB | 0016  или  ALPHA | 01/0016'
+    en: 'For example: SOB | 0016  or  ALPHA | 01/0016'
+- id: qualification
+  labels:
+  - название квалификации
+  - квалификация
+  path: '2'
+  type: enum
+  required: true
+  required_when: null
+  options:
+  - T
+  - INF
+  - M-A-C
+  - M-L-C
+  - M-U-C
+  - D-E-C
+  - D-S-C
+  - D-U-C
+  strict_options: true
+  formations: []
+  attachment_slots: 0
+  lore_prefixes:
+  - '01'
+  - '00'
+  lore_prefix_formations:
+  - SOB
+  accepts_attachments: false
+  hint:
+    ru: 'Одна из: T, INF, M-A-C, M-L-C, M-U-C, D-E-C, D-S-C, D-U-C'
+    en: 'One of: T, INF, M-A-C, M-L-C, M-U-C, D-E-C, D-S-C, D-U-C'
+- id: photos
+  labels:
+  - доказательства
+  - фото
+  path: '3'
+  type: attachment_required
+  required: true
+  required_when: null
+  options: []
+  strict_options: true
+  formations: []
+  attachment_slots: 0
+  lore_prefixes:
+  - '01'
+  - '00'
+  lore_prefix_formations:
+  - SOB
+  accepts_attachments: false
+  hint:
+    ru: Приложите фото. Для T — 1 фото, для остальных — 2 и больше.
+    en: Attach photos. 1 for T, 2 or more otherwise.
+- id: previous_report
+  labels:
+  - ссылка
+  - повышение
+  - предыдущий рапорт
+  path: '4'
+  type: discord_message_ref
+  required: false
+  required_when: null
+  options: []
+  strict_options: true
+  formations: []
+  attachment_slots: 0
+  lore_prefixes:
+  - '01'
+  - '00'
+  lore_prefix_formations:
+  - SOB
+  accepts_attachments: false
+  hint:
+    ru: Ссылка на предыдущий одобренный рапорт в этом канале.
+    en: Link to the previous approved report in this channel.
+rules:
+- id: photos_for_t
+  field: photos
+  message:
+    ru: Для квалификации T нужно ровно 1 фото.
+    en: Qualification T requires exactly 1 photo.
+  when:
+  - field: qualification
+    op: eq
+    value: T
+  min_count: null
+  min_attachments: 1
+  max_attachments: 1
+  allowed: []
+  type: null
+- id: photos_for_others
+  field: photos
+  message:
+    ru: Для этой квалификации нужно 2 и больше фото.
+    en: This qualification needs 2 or more photos.
+  when:
+  - field: qualification
+    op: ne
+    value: T
+  min_count: null
+  min_attachments: 2
+  max_attachments: null
+  allowed: []
+  type: null
+- id: link_required_unless_t
+  field: previous_report
+  message:
+    ru: Нужна ссылка на предыдущий одобренный рапорт (кроме квалификации T).
+    en: A link to the previous approved report is required (except for T).
+  when:
+  - field: qualification
+    op: ne
+    value: T
+  min_count: null
+  min_attachments: null
+  max_attachments: null
+  allowed: []
+  type: null
+attribution_field: null
+attribution_requires_review: false
+min_score: 1.0

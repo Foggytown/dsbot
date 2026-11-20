@@ -229,9 +229,18 @@ def render(report: ScanReport, out: TextIO, *, locale: str = "ru") -> None:
                 joined = "  |  ".join(f"{k}={v}" for k, v in row.fields.items())
                 out.write(f"       parsed: {joined}\n")
             for issue in row.issues:
-                if issue.get("severity") != "error":
+                if issue.get("severity") not in ("error", "info"):
                     continue
-                detail = {f"detail_{k}": str(v) for k, v in (issue.get("detail") or {}).items()}
+                if issue.get("severity") == "info" and not str(issue.get("code")).startswith(
+                    "list_"
+                ):
+                    continue
+                detail: dict[str, str] = {}
+                for key, value in (issue.get("detail") or {}).items():
+                    if isinstance(value, list):
+                        detail[f"detail_{key}"] = ", ".join(str(v) for v in value)
+                    else:
+                        detail[f"detail_{key}"] = str(value)
                 line = issue_line(
                     str(issue.get("code")),
                     locale,

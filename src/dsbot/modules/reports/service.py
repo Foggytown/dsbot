@@ -29,6 +29,7 @@ from dsbot.modules.reports.templates import (
     REPORT_ISSUES,
     SUPPORTED_LOCALES,
     issue_line,
+    render_example,
 )
 from dsbot.storage import repos
 from dsbot.storage.db import Database
@@ -89,6 +90,7 @@ class ReportService:
         *,
         group_window: timedelta | None = None,
         allow_bot_authors: bool = False,
+        contact_user_id: int | None = None,
     ) -> None:
         self._db = db
         self._reply = reply
@@ -99,6 +101,8 @@ class ReportService:
         # same pipeline, which is the only way to exercise the live gateway path
         # without a second Discord account.
         self._allow_bot_authors = allow_bot_authors
+        # Who to ping when a reporter needs a human. Shown in every warning.
+        self.contact_user_id = contact_user_id
         # The message currently being evaluated, so a reply can quote it.
         self._report_message_id: int = 0
 
@@ -190,7 +194,13 @@ class ReportService:
         # deferred report that dies with the process is worse. Warn immediately; if the
         # photos arrive later the warning is cleared automatically.
         report_id = await self._persist(context, candidate, parsed, status="invalid")
-        await self._warn(context, report_id, parsed, author_id=group[0].author_id)
+        await self._warn(
+            context,
+            report_id,
+            parsed,
+            author_id=group[0].author_id,
+            nickname=group[0].author_name,
+        )
         return ProcessResult(
             report_id=report_id,
             matched=True,
@@ -258,6 +268,7 @@ class ReportService:
                 created_at=_aware(message.created_at),
                 content=message.content,
                 attachment_count=len(message.attachments or []),
+                author_name=message.author_display_name or message.author_name,
             )
         ]
 
@@ -352,12 +363,17 @@ class ReportService:
         report_id: int,
         parsed: ParseOutput,
         author_id: int,
+        *,
+        nickname: str | None = None,
     ) -> None:
         if self._reply is None:
             log.warning("no_reply_sink_configured", report_id=report_id)
             return
 
-        body = self._compose_warning(context.locale, parsed, author_id)
+        schema = context.schemas[0] if context.schemas else None
+        body = self._compose_warning(
+            context.locale, parsed, author_id, nickname=nickname, schema=schema
+        )
         async with self._db.session() as session:
             existing = await repos.get_validation_message(session, report_id)
 
@@ -425,19 +441,40 @@ class ReportService:
             context.channel_id, body, reference_message_id=report_message_id
         )
 
-    def _compose_warning(self, locale: str, parsed: ParseOutput, author_id: int) -> str:
+    def _compose_warning(
+        self,
+        locale: str,
+        parsed: ParseOutput,
+        author_id: int,
+        *,
+        nickname: str | None = None,
+        schema: FormSchemaDef | None = None,
+    ) -> str:
         template = REPORT_ISSUES.get(locale) or REPORT_ISSUES[DEFAULT_LOCALE]
-        lines = [
-            issue_line(
-                issue.code,
-                locale,
-                field_hint=_field_hint(issue.field_id, parsed),
-                **_detail_context(issue.detail),
+        lines: list[str] = []
+        for issue in parsed.issues:
+            if issue.severity not in ("error", "info"):
+                continue
+            # Informational entries exist to print the allowed lists.
+            if issue.severity == "info" and not issue.code.startswith("list_"):
+                continue
+            lines.append(
+                issue_line(
+                    issue.code,
+                    locale,
+                    field_hint=_field_hint(issue.field_id, parsed),
+                    **_detail_context(issue.detail),
+                )
             )
-            for issue in parsed.issues
-            if issue.severity == "error"
-        ]
-        return template.format(mention=f"<@{author_id}>", lines="\n".join(lines))
+
+        example = render_example(schema, locale) if schema is not None else ""
+        return template.format(
+            mention=f"<@{author_id}>",
+            nick=nickname or f"<@{author_id}>",
+            contact=f"<@{self.contact_user_id}>" if self.contact_user_id else "-",
+            example=example,
+            lines="\n".join(lines),
+        )
 
 
 def _group_message(message: Any) -> GroupMessage:
@@ -447,14 +484,25 @@ def _group_message(message: Any) -> GroupMessage:
         created_at=_aware(message.created_at),
         content=message.content,
         attachment_count=len(message.attachments or []),
+        author_name=message.author_display_name or message.author_name,
     )
 
 
 def _detail_context(detail: dict[str, Any] | None) -> dict[str, str]:
-    """Expose issue detail as flat template variables like `detail_raw`."""
+    """Expose issue detail as flat template variables like `detail_raw`.
+
+    Lists are joined with `, ` so a warning can print the allowed formations or
+    qualifications on one readable line.
+    """
     if not detail:
         return {}
-    return {f"detail_{key}": str(value) for key, value in detail.items()}
+    context: dict[str, str] = {}
+    for key, value in detail.items():
+        if isinstance(value, list):
+            context[f"detail_{key}"] = ", ".join(str(v) for v in value)
+        else:
+            context[f"detail_{key}"] = str(value)
+    return context
 
 
 def _field_hint(field_id: str | None, parsed: ParseOutput) -> str:

@@ -62,6 +62,7 @@ class Bot(discord.ext.commands.Bot):
             self.reply,
             group_window=timedelta(seconds=settings.report_group_window_seconds),
             allow_bot_authors=settings.dev_accept_bot_messages,
+            contact_user_id=settings.contact_user_id,
         )
         self.retry = RetryScheduler(self.reports)
         self.reports.attach_retry(self.retry)
@@ -265,6 +266,8 @@ class Bot(discord.ext.commands.Bot):
             log.info(
                 "report_processed",
                 report_id=result.report_id,
+                author=snapshot.author_name,
+                author_id=snapshot.author_id,
                 matched=result.matched,
                 valid=result.valid,
                 action=result.action,
@@ -286,6 +289,8 @@ class Bot(discord.ext.commands.Bot):
             log.info(
                 "report_rechecked",
                 report_id=result.report_id,
+                author=snapshot.author_name,
+                author_id=snapshot.author_id,
                 triggered_by=snapshot.message_id,
                 action=result.action,
                 valid=result.valid,

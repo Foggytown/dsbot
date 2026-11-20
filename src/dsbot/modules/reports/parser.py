@@ -56,6 +56,8 @@ class GroupMessage:
     content: str
     attachment_count: int = 0
     urls: tuple[str, ...] = ()
+    # Server nickname (display name), used when addressing the author in a warning.
+    author_name: str | None = None
 
 
 @dataclass(slots=True)

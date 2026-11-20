@@ -42,19 +42,21 @@ fields:
     type: identity
     required: true
 
-    # The finite list of formations. Reporters write this, always. Squads (ALPHA,
-    # NULL, ...) are internal to a formation and are NOT part of the form.
+    # The finite list of formations, as reporters write them. Comparison is
+    # case-insensitive, so "501st" matches and "501ST" as literal text is never stored.
+    # Squads (ALPHA, NULL) are internal to a formation and are NOT part of the form.
     formations:
       - SOB
       - ARC
       - CT
-      - "501ST"
-      - "212TH"
-      - GUARD
-      - GHOST
-      - JEDI
-      - "104TH"
-      - MERC
+      - 501st
+      - 212th
+      - Guard
+      - Ghost
+      - Jedi
+      - 104th
+      - 99th
+      - Merc
 
     # A prefixed lore IDN may only start with one of these. There are no other
     # valid combinations: 01/00NN and 00/00NN only.
