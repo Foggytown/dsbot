@@ -80,13 +80,13 @@ def bind(
     settings = _settings(verbose)
 
     async def run() -> None:
-        from dsbot.modules.reports.schema import DEFAULT_SCHEMAS
+        from dsbot.modules.reports.yaml_form import load_default_schemas
         from dsbot.storage import admin
 
         db = Database(settings)
         try:
             async with db.write_session() as session:
-                await admin.ensure_schema_seed(session, DEFAULT_SCHEMAS)
+                await admin.ensure_schema_seed(session, load_default_schemas())
                 binding = await admin.bind_channel(
                     session,
                     guild_id=guild,
@@ -788,6 +788,114 @@ def form_check(
         raise typer.Exit(code=1)
 
 
+@app.command("ladder-check")
+def ladder_check(
+    file: Annotated[Path, typer.Option("--file", "-f", help="Ladder YAML to check")],
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Validate a rank ladder without applying it."""
+    _settings(verbose)
+
+    from dsbot.modules.ranks.ladder import ladder_problems, load_ladder
+
+    try:
+        spec = load_ladder(file)
+    except Exception as exc:
+        typer.echo(f"INVALID: {exc}")
+        raise typer.Exit(code=1) from None
+
+    typer.echo(f"ok: {spec.key} (guild {spec.guild_id}, {len(spec.tiers)} tiers)")
+    for tier in sorted(spec.tiers, key=lambda t: t.ordinal, reverse=True):
+        caps = ", ".join(tier.capabilities) or "-"
+        roles = ", ".join(str(r) for r in tier.roles) or "(none)"
+        typer.echo(
+            f"  {tier.ordinal:>4}  {tier.key:<20} {tier.label:<22} roles[{roles}]  caps[{caps}]"
+        )
+
+    problems = ladder_problems(spec)
+    if problems:
+        typer.echo("")
+        for problem in problems:
+            typer.echo(f"PROBLEM: {problem}")
+        raise typer.Exit(code=1)
+
+
+@app.command("ladder-apply")
+def ladder_apply(
+    file: Annotated[Path, typer.Option("--file", "-f", help="Ladder YAML to apply")],
+    force: Annotated[
+        bool, typer.Option("--force", help="Apply even if checks report problems")
+    ] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Load a rank ladder into the database, replacing that guild's ladder."""
+    settings = _settings(verbose)
+
+    from dsbot.modules.ranks.ladder import ladder_problems, load_ladder
+    from dsbot.storage import ranks_repo
+
+    async def run_apply() -> None:
+        try:
+            spec = load_ladder(file)
+        except Exception as exc:
+            typer.echo(f"INVALID: {exc}")
+            raise typer.Exit(code=1) from None
+
+        problems = ladder_problems(spec)
+        if problems and not force:
+            for problem in problems:
+                typer.echo(f"PROBLEM: {problem}")
+            typer.echo("not applied. Fix these, or re-run with --force")
+            raise typer.Exit(code=1)
+
+        db = Database(settings)
+        try:
+            async with db.write_session() as session:
+                ladder = await ranks_repo.replace_ladder(session, spec)
+        finally:
+            await db.dispose()
+
+        typer.echo(
+            f"applied ladder {ladder.key} (id {ladder.id}) for guild "
+            f"{spec.guild_id}: {len(spec.tiers)} tiers"
+        )
+
+    asyncio.run(run_apply())
+
+
+@app.command("ladder-show")
+def ladder_show(
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Show every ladder in the database."""
+    settings = _settings(verbose)
+
+    from dsbot.storage import ranks_repo
+
+    async def run_show() -> None:
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                ladders = await ranks_repo.list_ladders(session)
+        finally:
+            await db.dispose()
+
+        if not ladders:
+            typer.echo("no ladders configured. Use `dsbot ladder-apply`.")
+            return
+        for ladder, tiers in ladders:
+            typer.echo(f"\n[{ladder.key}] {ladder.name or '-'} (guild {ladder.guild_id})")
+            for tier in tiers:
+                roles = ", ".join(str(r) for r in tier["roles"]) or "(none)"
+                caps = ", ".join(tier["capabilities"]) or "-"
+                typer.echo(
+                    f"  {tier['ordinal']:>4}  {tier['key']:<20} {tier['label']:<22} "
+                    f"roles[{roles}] caps[{caps}]"
+                )
+
+    asyncio.run(run_show())
+
+
 @app.command("disable")
 def disable(
     channel: Annotated[int, typer.Option(help="Channel id")],
@@ -1156,13 +1264,15 @@ def parse_text(
     settings = _settings(verbose)
 
     from dsbot.modules.reports.parser import GroupMessage, ReportCandidate, parse_report
-    from dsbot.modules.reports.schema import DEFAULT_SCHEMAS, from_definition
+    from dsbot.modules.reports.schema import from_definition
 
     content = file.read_text(encoding="utf-8")
 
     async def load_schemas() -> list:
         if channel is None:
-            return list(DEFAULT_SCHEMAS)
+            from dsbot.modules.reports.yaml_form import load_default_schemas
+
+            return load_default_schemas()
         from dsbot.storage import repos
 
         db = Database(settings)

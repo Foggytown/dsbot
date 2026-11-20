@@ -59,6 +59,32 @@ def parse_form_file(path: Path) -> FormSchemaDef:
     return FormSchemaDef.model_validate(load_yaml(path))
 
 
+# The shipped form file is the single source of truth for "the default form".
+# `schema.training_report_schema()` is a legacy code copy and must not be used for new
+# channels: it would silently install an outdated field layout.
+DEFAULT_FORM_DIR = Path("forms")
+DEFAULT_FORM_FILE = DEFAULT_FORM_DIR / "training.yaml"
+
+
+def load_default_schemas() -> list[FormSchemaDef]:
+    """Every YAML form in `forms/`, for seeding a new channel or offline parsing.
+
+    Falls back to the built-in definition only if the directory holds no YAML at all,
+    so a fresh checkout still works.
+    """
+    from dsbot.modules.reports.schema import DEFAULT_SCHEMAS
+
+    if not DEFAULT_FORM_DIR.is_dir():
+        return list(DEFAULT_SCHEMAS)
+    schemas: list[FormSchemaDef] = []
+    for path in sorted(DEFAULT_FORM_DIR.glob("*.yaml")):
+        try:
+            schemas.append(parse_form_file(path))
+        except Exception:
+            continue
+    return schemas or list(DEFAULT_SCHEMAS)
+
+
 def form_to_yaml(schema: FormSchemaDef) -> str:
     """Serialise a form back to YAML, with the explanatory header preserved."""
     body = schema.model_dump(mode="json", exclude_defaults=False)

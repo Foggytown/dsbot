@@ -21,7 +21,8 @@ from dsbot.modules.reports.parser import (
     ReportCandidate,
     parse_report,
 )
-from dsbot.modules.reports.schema import DEFAULT_SCHEMAS, FormSchemaDef
+from dsbot.modules.reports.schema import FormSchemaDef
+from dsbot.modules.reports.yaml_form import load_default_schemas
 
 
 @dataclass(slots=True)
@@ -124,7 +125,7 @@ def analyze_records(
     window_minutes: int = 30,
     sample_limit: int = 10,
 ) -> AnalysisReport:
-    active = schemas if schemas is not None else list(DEFAULT_SCHEMAS)
+    active = schemas if schemas is not None else load_default_schemas()
     report = AnalysisReport(total_messages=len(records))
     groups = group_by_author(records, window_minutes=window_minutes)
     report.author_groups = len(groups)

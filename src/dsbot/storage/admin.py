@@ -25,9 +25,16 @@ _DEFAULT_LADDER_KEY = "default"
 
 
 async def ensure_schema_seed(
-    session: AsyncSession, schemas: Sequence[FormSchemaDef]
+    session: AsyncSession, schemas: Sequence[FormSchemaDef], *, overwrite: bool = False
 ) -> dict[str, int]:
-    """Insert or update built-in schemas. Returns key -> id."""
+    """Insert built-in schemas that do not exist yet. Returns key -> id.
+
+    `overwrite` defaults to False on purpose. The stored definition is the source of
+    truth: an admin edits it through YAML or slash commands. Re-seeding on every bind
+    used to reset a carefully configured form back to the code default, silently
+    discarding its rules and valid value lists. Only an explicit migration should pass
+    overwrite=True.
+    """
     ids: dict[str, int] = {}
     for definition in schemas:
         row = await session.scalar(select(FormSchema).where(FormSchema.key == definition.key))
@@ -40,7 +47,7 @@ async def ensure_schema_seed(
             )
             session.add(row)
             await session.flush()
-        else:
+        elif overwrite:
             row.title = definition.title
             row.definition = definition.to_definition()
             row.version += 1

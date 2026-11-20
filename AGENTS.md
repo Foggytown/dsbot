@@ -130,6 +130,30 @@ normalize -> tokenize -> select schema -> bind fields -> parse typed values -> v
 - Log with `structlog`; console output is forced to UTF-8 because report text is
   Cyrillic and Windows consoles default to cp866.
 - Ruff line length 100. `RUF001/002/003` are disabled: Cyrillic in source is expected.
+- **Never rewrite source files with PowerShell.** `Get-Content`/`Set-Content` mangles
+  UTF-8 Cyrillic and has corrupted source and tests repeatedly. Use the edit tool or a
+  Python script. When reading command output set `$env:PYTHONIOENCODING="utf-8"`.
+
+## Mistake log — do not repeat these
+
+Each of these shipped and had to be found by a live run or a user report.
+
+1. **`get_channel()` returns None for uncached channels.** It silently discarded every
+   warning. Always fall back to `fetch_channel`, and log when a send fails.
+2. **`uv run` leaves a child process alive.** Ctrl+C does not stop the bot, and the pid
+   file can go stale while the real process keeps running. `stop` must scan for
+   `dsbot run` processes, not just trust the pid.
+3. **`ensure_schema_seed` overwrote the configured form** with the code default on
+   every `bind`, silently wiping rules and value lists. The stored definition is the
+   source of truth; seeding must only insert missing rows.
+4. **`attachment_required` did not imply `accepts_attachments`.** The bot ignored every
+   uploaded photo and reported correct reports as missing evidence.
+5. **Two bots on one database** caused random behaviour and `UNIQUE` crashes. The lock
+   exists to refuse the second instance.
+6. **Deferred warnings were a dead end.** The timer was lost on restart. Warnings are
+   immediate; a later edit clears them.
+7. **Permission maths needs the Members intent.** Without it `guild.default_role` is
+   None and `permissions_for` returns wrong answers. Prefer probing the real operation.
 
 ## Verification
 

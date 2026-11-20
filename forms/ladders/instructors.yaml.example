@@ -1,0 +1,47 @@
+# =============================================================================
+# Rank ladder for one guild
+#
+# A ladder is the authority ordering for tiers in ONE Discord server. Roles live in
+# the specialization servers, so this file is bound to a specific guild id.
+#
+# Check:  uv run dsbot ladder-check --file forms/ladders/instructors.yaml
+# Apply:  uv run dsbot ladder-apply --file forms/ladders/instructors.yaml
+#
+# ordinal answers exactly one question: whose verdict outranks whose.
+# It does NOT grant permissions - use capabilities for that.
+#
+# capabilities (optional):
+#   review        may approve or reject a report
+#   admin         may configure forms, ladders and quotas
+#   quota_manage  may change weekly requirements
+# =============================================================================
+
+key: instructors
+name: Специализации — инструкторы
+guild_id: 1274460259661910149
+
+tiers:
+  # Highest first is only a convention; ordering comes from `ordinal`.
+  - key: high_command
+    label: High Command
+    ordinal: 100
+    roles: []
+    capabilities: [review]
+
+  - key: head_instructor
+    label: Head Instructor
+    ordinal: 50
+    roles: []
+    capabilities: [review, admin, quota_manage]
+
+  - key: senior_instructor
+    label: Senior Instructor
+    ordinal: 30
+    roles: []
+    capabilities: [review]
+
+  - key: instructor
+    label: Instructor
+    ordinal: 10
+    roles: []
+    capabilities: []
