@@ -14,6 +14,14 @@
 #   review        may approve or reject a report
 #   admin         may configure forms, ladders and quotas
 #   quota_manage  may change weekly requirements
+#
+# WHO IS COUNTED comes from `roles` too: everyone holding a role listed here is in the
+# weekly table, including people who filed nothing (they show as 0). A tier with an
+# empty `roles` list therefore contributes nobody and cannot approve anything, and
+# `ladder-check` reports it as a problem.
+#
+# Where to get a role id: Discord > Server Settings > Roles > right-click the role >
+# Copy Role ID (requires Developer Mode in Advanced settings).
 # =============================================================================
 
 key: instructors
@@ -40,6 +48,8 @@ tiers:
     roles: []
     capabilities: [review]
 
+  # Senior instructor and above may approve; this tier may not (`capabilities` empty).
+  # Its members still appear in the count, because they are the people who owe reports.
   - key: instructor
     label: Instructor
     ordinal: 10

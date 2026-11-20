@@ -92,6 +92,19 @@ class Database:
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
+    async def prepare(self) -> list[str]:
+        """Create missing tables, then add missing columns to existing ones.
+
+        `create_all` alone is not enough for a live deployment: it never alters a table
+        that already exists, so a column added by a new release would be invisible and
+        every query mentioning it would fail. Upgrades are additive, so this is safe to
+        call on every start and on every CLI command that reads report data.
+        """
+        from dsbot.storage.migrate import upgrade_schema
+
+        await self.create_all()
+        return await upgrade_schema(self)
+
     async def healthcheck(self) -> bool:
         try:
             async with self.session() as session:

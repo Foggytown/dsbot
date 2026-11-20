@@ -27,13 +27,19 @@ from dsbot.core.events import (
     MessageCreated,
     MessageDeleted,
     MessageEdited,
+    ReactionAdded,
     ReactionCleared,
+    ReactionRemoved,
 )
 from dsbot.core.lock import InstanceLock
 from dsbot.discord import sink
 from dsbot.discord.reply import DiscordReplySink, ReplySink
 from dsbot.ingest import Ingestor
+from dsbot.modules.ranks.resolver import LadderIndex, RankResolver
+from dsbot.modules.ranks.roster import DiscordRosterSource, RosterService
+from dsbot.modules.ranks.source import DiscordRankSource
 from dsbot.modules.reports.service import ReportService
+from dsbot.modules.verdict.service import VerdictService
 from dsbot.storage import repos
 from dsbot.storage.db import Database
 
@@ -63,7 +69,17 @@ class Bot(discord.ext.commands.Bot):
             allow_bot_authors=settings.dev_accept_bot_messages,
             contact_user_id=settings.contact_user_id,
         )
+        # Ranks are resolved from the rapporteur's home guild, so the same object serves
+        # both verdicts and roster scraping.
+        self.rank_source = DiscordRankSource(self)
+        self.resolver = RankResolver(
+            self.rank_source,
+            {},
+        )
+        self.roster = RosterService(self.db, DiscordRosterSource(self))
+        self.verdicts = VerdictService(self.db, self.resolver, self.reply)
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._ladders: dict[int, LadderIndex] = {}
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -73,12 +89,28 @@ class Bot(discord.ext.commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.db.create_all()
+        applied = await self.db.prepare()
+        if applied:
+            log.warning(
+                "schema_upgraded_on_start",
+                columns=applied,
+                hint="Existing rows keep their old values; new columns start empty.",
+            )
         self.bus.subscribe("message_created", self._on_message_created)
         self.bus.subscribe("message_edited", self._on_message_edited)
+        self.bus.subscribe("reaction_added", self._on_reaction_added)
+        self.bus.subscribe("reaction_removed", self._on_reaction_removed)
+        self.bus.subscribe("reaction_cleared", self._on_reaction_cleared)
+
+        await self._load_ladders()
 
         from dsbot.discord.commands import register_commands
 
         await register_commands(self, self.db)
+
+        from dsbot.discord.count_commands import register_count_commands
+
+        await register_count_commands(self, self.db, self.resolver)
 
         # Reports are warned about immediately now, but older rows may still carry the
         # retired "deferred" status from before that change. Resolve them on start so a
@@ -348,6 +380,130 @@ class Bot(discord.ext.commands.Bot):
         await self.reports.process_message(
             event.message.channel_id, event.message.author_id, event.message.message_id
         )
+
+    # --- reactions ---------------------------------------------------------
+
+    async def _on_reaction_added(self, event: ReactionAdded) -> None:
+        """Store the reaction with a rank snapshot, then recompute the verdict.
+
+        The snapshot is the whole point: a reaction arrives from a user with no roles
+        (they are not a member of the report guild), so the tier must be resolved from
+        their home guild once, now, and frozen. Recomputing later must not apply a
+        ladder that has since changed.
+        """
+        if event.guild_id is None:
+            return
+        binding = await self._binding_for(event.channel_id)
+        if binding is None:
+            return
+
+        rank_guild = binding.rank_source_guild_id or binding.guild_id
+        rank = await self._resolve_rank(rank_guild, event.user_id)
+
+        await self._store_reaction(
+            event,
+            tier_key=rank.tier_key if rank else None,
+            tier_ordinal=rank.ordinal if rank else None,
+            tier_label=rank.tier_label if rank else None,
+            can_review=rank.can_review if rank else None,
+        )
+        await self._recompute_verdict(event.message_id, event.user_id, rank)
+
+    async def _on_reaction_removed(self, event: ReactionRemoved) -> None:
+        async with self.db.write_session() as session:
+            await repos.remove_reaction(
+                session,
+                message_id=event.message_id,
+                emoji_key=event.emoji.key,
+                user_id=event.user_id,
+            )
+        await self._recompute_verdict(event.message_id, event.user_id, None)
+
+    async def _on_reaction_cleared(self, event: ReactionCleared) -> None:
+        async with self.db.write_session() as session:
+            await repos.remove_reaction_emoji(
+                session, message_id=event.message_id, emoji_key=event.emoji.key
+            )
+        await self._recompute_verdict(event.message_id, None, None)
+
+    async def _store_reaction(
+        self,
+        event: ReactionAdded,
+        *,
+        tier_key: str | None,
+        tier_ordinal: int | None,
+        tier_label: str | None,
+        can_review: bool | None,
+    ) -> None:
+        async with self.db.write_session() as session:
+            await repos.add_reaction(
+                session,
+                message_id=event.message_id,
+                channel_id=event.channel_id,
+                guild_id=event.guild_id,
+                emoji_key=event.emoji.key,
+                emoji_id=event.emoji.id,
+                emoji_name=event.emoji.name,
+                user_id=event.user_id,
+                tier_key=tier_key,
+                tier_ordinal=tier_ordinal,
+                tier_label=tier_label,
+                can_review=can_review,
+            )
+
+    async def _recompute_verdict(self, message_id: int, user_id: int | None, rank: Any) -> None:
+        update = await self.verdicts.on_reaction(message_id)
+        if update is None:
+            log.debug("reaction_on_non_report", message_id=message_id)
+            return
+        if rank is None and user_id is not None:
+            log.info(
+                "reaction_rank_unresolved",
+                message_id=message_id,
+                user_id=user_id,
+                verdict=update.verdict,
+            )
+
+    async def _resolve_rank(self, guild_id: int, user_id: int) -> Any:
+        """Resolve a reactor's tier, tolerating Discord being unreachable.
+
+        A missing rank is not fatal: the reaction is still stored, it simply cannot
+        contribute to a verdict. Dropping the reaction would lose state and make a
+        later un-react behave wrongly.
+        """
+        try:
+            return await self.resolver.resolve(guild_id, user_id)
+        except Exception:
+            log.exception("rank_resolve_failed", guild_id=guild_id, user_id=user_id)
+            return None
+
+    async def _binding_for(self, channel_id: int) -> Any:
+        async with self.db.session() as session:
+            return await repos.get_binding_by_channel(session, channel_id)
+
+    async def _load_ladders(self) -> None:
+        """Load ladders into the resolver. A config change needs a restart, as with forms."""
+        from dsbot.storage import ranks_repo
+
+        try:
+            async with self.db.session() as session:
+                ladders = await ranks_repo.load_all_ladders(session)
+        except Exception:
+            log.exception("ladder_load_failed")
+            return
+
+        self._ladders = ladders
+        self.resolver.set_ladders(ladders)
+        if not ladders:
+            log.warning(
+                "no_rank_ladders",
+                hint="No ladder is loaded, so no reaction can approve anything. "
+                "Run `dsbot ladder-apply --file forms/ladders/instructors.yaml`.",
+            )
+            return
+        for guild_id, index in ladders.items():
+            role_count = len(index.by_role)
+            log.info("ladder_loaded", guild_id=guild_id, key=index.key, roles=role_count)
 
     # --- helpers -----------------------------------------------------------
 

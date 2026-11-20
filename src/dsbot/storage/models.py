@@ -297,8 +297,12 @@ class MessageReaction(Base):
     emoji_name: Mapped[str | None] = mapped_column(String(120))
     user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     # Rank snapshot at reaction time: a later promotion must not rewrite history.
+    # `can_review` is snapshotted too, otherwise recomputing an old verdict would
+    # silently apply today's ladder to a reaction made under yesterday's.
+    tier_key: Mapped[str | None] = mapped_column(String(80))
     tier_ordinal: Mapped[int | None] = mapped_column(Integer)
     tier_label: Mapped[str | None] = mapped_column(String(200))
+    can_review: Mapped[bool | None] = mapped_column(Boolean)
     added_at: Mapped[datetime] = _ts()
 
 
@@ -447,6 +451,32 @@ class QuotaPolicy(Base):
     count_pending: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class RosterMember(Base):
+    """Who is counted, scraped from role membership at one moment.
+
+    Counting must be reproducible: a member who loses a role tomorrow must not
+    silently disappear from last week's numbers. Each count therefore stores the
+    roster it used, and `captured_at` says how old that snapshot is.
+
+    The roster is taken from the *rank source* guild, not the report guild, because
+    instructors are not members of the channel's server.
+    """
+
+    __tablename__ = "roster_members"
+    __table_args__ = (UniqueConstraint("ladder_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ladder_id: Mapped[int] = mapped_column(
+        ForeignKey("rank_ladders.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    tier_key: Mapped[str | None] = mapped_column(String(80))
+    tier_label: Mapped[str | None] = mapped_column(String(200))
+    tier_ordinal: Mapped[int | None] = mapped_column(Integer)
+    captured_at: Mapped[datetime] = _ts()
+
+
 class ScheduleJob(Base):
     """A registered callback plus its cron/interval config, editable from Discord."""
 
@@ -475,14 +505,26 @@ class WeeklyRun(Base):
     period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Where the published report lives, so a re-run can edit it instead of posting
+    # a second copy into the channel.
+    report_channel_id: Mapped[int | None] = mapped_column(BigInteger)
+    report_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    # A long roster is split across several messages, so all of their ids are kept as
+    # a list in `published_ids`. `report_message_id` is the first one, for convenience.
+    published_ids: Mapped[list[Any]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = _ts()
 
 
 class WeeklyResult(Base):
-    """Per-character outcome of a weekly run. The grain is the character."""
+    """Per-person outcome of a count. The grain is a Discord user, not a character.
+
+    Counting is per *person*: several characters belonging to one instructor are
+    still one instructor's workload. `character_id` stays in the table for reports
+    that name a soldier, but is not what determines the grain.
+    """
 
     __tablename__ = "weekly_results"
-    __table_args__ = (UniqueConstraint("run_id", "character_id"),)
+    __table_args__ = (UniqueConstraint("run_id", "user_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[int] = mapped_column(
@@ -490,12 +532,15 @@ class WeeklyResult(Base):
     )
     character_id: Mapped[int | None] = mapped_column(ForeignKey("characters.id"), index=True)
     user_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    display_name: Mapped[str | None] = mapped_column(String(200))
     tier_id: Mapped[int | None] = mapped_column(ForeignKey("rank_tiers.id"))
     tier_label: Mapped[str | None] = mapped_column(String(200))
+    tier_ordinal: Mapped[int | None] = mapped_column(Integer)
     required_count: Mapped[int] = mapped_column(Integer, default=0)
     approved_count: Mapped[int] = mapped_column(Integer, default=0)
     rejected_count: Mapped[int] = mapped_column(Integer, default=0)
     pending_count: Mapped[int] = mapped_column(Integer, default=0)
+    conflict_count: Mapped[int] = mapped_column(Integer, default=0)
     met: Mapped[bool] = mapped_column(Boolean, default=False)
 
 

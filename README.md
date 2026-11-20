@@ -105,6 +105,17 @@ uv run dsbot parse --file sample.txt --channel <channel>
 uv run dsbot backfill --channel <channel> --since 14d --out backfill-out/reports.jsonl
 uv run dsbot analyze --dump backfill-out/reports.jsonl
 uv run dsbot export --channel <channel> --out backfill-out/reports.csv
+
+# counting: who filed how many approved reports
+uv run dsbot roster-refresh --channel <channel>   # scrape role membership once
+uv run dsbot roster --channel <channel>           # who is counted
+uv run dsbot quota-set --channel <channel> --tier instructor --count 3
+uv run dsbot quota-show --channel <channel>
+uv run dsbot count --channel <channel>            # current week
+uv run dsbot count --channel <channel> --week last --csv out.csv
+uv run dsbot count --channel <channel> --from 2026-11-01 --to 2026-11-17
+uv run dsbot count --channel <channel> --publish 123456789   # post it somewhere
+uv run dsbot report-format --channel <channel> --publish-to 123456789 --title "Недельные нормы"
 ```
 
 `backfill --to-db` writes to the database in the same pass. `--since` accepts an
@@ -113,6 +124,33 @@ ISO date or a relative duration (`14d`, `36h`).
 `analyze` is the important one before going live: it runs the *same* parser over a
 real dump and reports match rate, which fields are missing, and sample messages the
 schema does not yet cover.
+
+## How counting works
+
+A person's number is the count of their reports that ended up **approved**, for one
+period. The rules that were agreed explicitly, and why:
+
+| Situation | Counted? | Why |
+|---|---|---|
+| approved by a tier with `review` | yes | normal case |
+| still undecided at count time | yes, shown as `ждёт проверки` | an unreviewed report is the reviewers' backlog, not the instructor's fault |
+| rejected | no | staff decided against it |
+| `conflict` (two equal tiers disagree) | no | guessing a side would produce a wrong number |
+
+Approval authority comes from the rank ladder, never from Discord's role order: only a
+tier whose `capabilities` include `review` can approve or reject. A senior instructor may
+approve their own report; two reviewers of the *same* tier who disagree produce a
+conflict instead of an arbitrary winner.
+
+**Who is counted** is everyone holding a role listed in the ladder, scraped into the
+database by `roster-refresh`. That is why the **Members intent must be enabled** in the
+Discord developer portal and `DSBOT_ENABLE_MEMBERS_INTENT=true`: without it Discord
+refuses to list guild members, and someone with zero reports would silently vanish from
+the table instead of showing `0`. The scrape is stored, so a count itself needs no
+Discord connection and can be reproduced later.
+
+The list is scraped from the channel's **rank source guild**, not the report guild,
+because instructors are not members of the server where reports are read.
 
 ## How per-channel forms work
 
@@ -141,8 +179,11 @@ Cross-field requirements are `rules:` (`when` + `min_attachments` / `allowed` / 
 - `dsbot backfill` + `dsbot analyze` — measure the parser against real history
 - `dsbot scan` — read-only verdicts over real channel history
 - `dsbot parse --channel <id>` — test a message against a channel's real form
+- verdicts from reactions, recomputed from state so un-reacting reverts them
+- `dsbot count` / `/reports count` — approved reports per person per week, CSV and
+  optional publication to a channel
 
-Not built yet: verdicts from reactions, weekly quota evaluation, dashboards.
+Not built yet: scheduled automatic weekly posting, dashboards, role assignment.
 
 ## Testing locally before touching the real server
 

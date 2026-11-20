@@ -14,10 +14,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import discord
 import structlog
@@ -25,6 +25,7 @@ import typer
 
 from dsbot.config import Settings, get_settings
 from dsbot.logging_setup import configure_logging
+from dsbot.storage import admin, repos
 from dsbot.storage.db import Database
 
 log = structlog.get_logger(__name__)
@@ -54,10 +55,12 @@ def init_db(verbose: bool = typer.Option(False, "--verbose", "-v")) -> None:
     async def run() -> None:
         db = Database(settings)
         try:
-            await db.create_all()
+            applied = await db.prepare()
             ok = await db.healthcheck()
             typer.echo(f"database ready: {settings.resolved_database_url}")
             typer.echo(f"state dir: {settings.state_dir()}")
+            if applied:
+                typer.echo(f"upgraded columns: {', '.join(applied)}")
             typer.echo(f"healthcheck: {'ok' if ok else 'FAILED'}")
         finally:
             await db.dispose()
@@ -1334,9 +1337,465 @@ def parse_text(
     )
 
 
+# --- phase 3: counting, roster and quotas ---------------------------------
+
+
+def _period_window(week: str, weeks: int | None, date_from: str | None, date_to: str | None) -> Any:
+    """Resolve the period the operator asked for.
+
+    Explicit dates win over a relative window: if someone typed both, they meant the
+    dates. `--week last` is the common case and is spelled out rather than inferred.
+    """
+    from dsbot.modules.quotas.period import (
+        current_week,
+        explicit_period,
+        previous_week,
+        weeks_back,
+    )
+
+    timezone = get_settings().default_timezone
+
+    if date_from or date_to:
+        if not (date_from and date_to):
+            raise typer.BadParameter("--from and --to must be given together")
+        return explicit_period(date.fromisoformat(date_from), date.fromisoformat(date_to), timezone)
+    if weeks is not None:
+        return weeks_back(weeks, timezone=timezone)
+    if week.strip().lower() in {"last", "previous", "prev"}:
+        return previous_week(timezone=timezone)
+    return current_week(timezone=timezone)
+
+
+def _require_scrape_settings(settings: Settings) -> None:
+    """Fail early and specifically when the roster cannot possibly be read.
+
+    Both failures are configuration, not bugs, and each has a one-line fix. Reporting
+    them before connecting beats a stack trace from deep inside discord.py.
+    """
+    if not settings.discord_token:
+        raise typer.BadParameter(
+            "DSBOT_DISCORD_TOKEN is empty, so Discord cannot be asked who holds a role"
+        )
+    if not settings.enable_members_intent:
+        raise typer.BadParameter(
+            "the Members intent is off (DSBOT_ENABLE_MEMBERS_INTENT=false). Discord "
+            "refuses to list guild members without it, so people with no reports would "
+            "be missing from the count instead of showing 0. Enable SERVER MEMBERS "
+            "INTENT in the developer portal and set it to true."
+        )
+
+
+def _new_lookup_client() -> Any:
+    """A Discord client with exactly the intents a roster scrape needs."""
+    import discord
+
+    return discord.Client(intents=_lookup_intents())
+
+
+def _lookup_intents() -> Any:
+    """Guilds plus Members, nothing else.
+
+    Deliberately minimal: this connection only lists members and sends a report. It must
+    not request Message Content, so it cannot be mistaken for a second ingest path.
+    """
+    import discord
+
+    intents = discord.Intents.none()
+    intents.guilds = True
+    intents.members = True
+    return intents
+
+
+async def _with_lookup_client(settings: Settings, work: Any) -> Any:
+    """Connect once, run `work(client)`, disconnect.
+
+    discord.py only exposes a ready hook through a client subclass, so this wraps the
+    pattern in one place instead of repeating the connect/ready/close dance per command.
+    """
+    import discord
+
+    box: dict[str, Any] = {}
+
+    class _Once(discord.Client):
+        async def on_ready(self) -> None:
+            try:
+                box["value"] = await work(self)
+            except Exception as exc:
+                box["error"] = exc
+            finally:
+                await self.close()
+
+    if not settings.discord_token:
+        raise typer.BadParameter("DSBOT_DISCORD_TOKEN is empty")
+    client = _Once(intents=_lookup_intents())
+    await client.start(settings.discord_token)
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+@app.command("roster-refresh")
+def roster_refresh(
+    channel: Annotated[int, typer.Option(help="Report channel whose roster to scrape")],
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Scrape everyone holding a ladder role into the database.
+
+    Kept separate from `count` on purpose: scraping needs a gateway connection, counting
+    reads the stored snapshot. That way a count is reproducible offline, and the live
+    bot can serve a count without a restart.
+    """
+    settings = _settings(verbose)
+    _require_scrape_settings(settings)
+
+    async def run() -> None:
+        from dsbot.modules.ranks.roster import DiscordRosterSource, RosterService
+        from dsbot.storage import ranks_repo
+
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel)
+                if binding is None:
+                    typer.echo(f"channel {channel} is not bound to any form")
+                    raise typer.Exit(code=1)
+                ladders = await ranks_repo.load_all_ladders(session)
+
+            guild_id = binding.rank_source_guild_id or binding.guild_id
+            ladder = ladders.get(guild_id)
+            if ladder is None or ladder.ladder_id is None:
+                typer.echo(
+                    f"no ladder for guild {guild_id}. Apply one first: "
+                    "uv run dsbot ladder-apply --file forms/ladders/instructors.yaml"
+                )
+                raise typer.Exit(code=1)
+
+            async def work(client: Any) -> Any:
+                service = RosterService(db, DiscordRosterSource(client))
+                return await service.refresh(guild_id, ladder, ladder_id=ladder.ladder_id or 0)
+
+            try:
+                result = await _with_lookup_client(settings, work)
+            except Exception:
+                typer.echo("could not connect to Discord to read members", err=True)
+                raise typer.Exit(code=1) from None
+
+            if result is None or not result.ok:
+                detail = getattr(result, "error", None) or "no members returned"
+                typer.echo(f"roster not refreshed: {detail}", err=True)
+                raise typer.Exit(code=1)
+            typer.echo(
+                f"roster refreshed: {len(result.members)} of {result.total_members} "
+                f"member(s) on ladder {ladder.key} (guild {guild_id})"
+            )
+        finally:
+            await db.dispose()
+
+    asyncio.run(run())
+
+
+@app.command("roster")
+def roster_show(
+    channel: Annotated[int, typer.Option(help="Report channel whose roster to show")],
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Show the stored roster that counting uses."""
+    settings = _settings(verbose)
+
+    async def run() -> None:
+        from dsbot.storage import ranks_repo
+
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel)
+                if binding is None:
+                    typer.echo(f"channel {channel} is not bound to any form")
+                    raise typer.Exit(code=1)
+                ladders = await ranks_repo.load_all_ladders(session)
+                guild_id = binding.rank_source_guild_id or binding.guild_id
+                ladder = ladders.get(guild_id)
+                if ladder is None or ladder.ladder_id is None:
+                    typer.echo(f"no ladder for guild {guild_id}")
+                    raise typer.Exit(code=1)
+                rows = await repos.list_roster(session, ladder.ladder_id)
+                key = ladder.key
+        finally:
+            await db.dispose()
+
+        if not rows:
+            typer.echo(
+                "roster is empty. Scrape it once with:\n"
+                f"  uv run dsbot roster-refresh --channel {channel}"
+            )
+            return
+        typer.echo(f"{len(rows)} person(s) on ladder {key} (guild {guild_id})")
+        for row in rows:
+            ordinal = row.tier_ordinal if row.tier_ordinal is not None else "-"
+            typer.echo(
+                f"  {ordinal!s:>4}  {row.tier_label or '-':<22} "
+                f"{row.user_id:<20} {row.display_name}"
+            )
+
+    asyncio.run(run())
+
+
+@app.command("count")
+def count_command(
+    channel: Annotated[int, typer.Option(help="Report channel id to count for")],
+    week: Annotated[str, typer.Option(help="'current' (default) or 'last'")] = "current",
+    weeks: Annotated[
+        int | None, typer.Option(help="Last N ISO weeks including the current one")
+    ] = None,
+    date_from: Annotated[str | None, typer.Option("--from", help="Start date, YYYY-MM-DD")] = None,
+    date_to: Annotated[str | None, typer.Option("--to", help="End date, inclusive")] = None,
+    csv_out: Annotated[
+        Path | None, typer.Option("--csv", help="Write the result to this CSV file")
+    ] = None,
+    save: Annotated[bool, typer.Option(help="Store this run so a re-run updates it")] = False,
+    publish: Annotated[int | None, typer.Option(help="Channel id to post the report to")] = None,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Count approved reports per person for one period."""
+    settings = _settings(verbose)
+    period = _period_window(week, weeks, date_from, date_to)
+
+    async def run() -> None:
+        from dsbot.discord.reply import DiscordReplySink
+        from dsbot.modules.quotas.service import CountingService, CountRequest
+
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel)
+            if binding is None:
+                typer.echo(f"channel {channel} is not bound to any form")
+                raise typer.Exit(code=1)
+
+            # A CLI count may run against a database last upgraded by an older build.
+            await db.prepare()
+
+            persist = save or publish is not None
+            request = CountRequest(
+                binding_id=binding.id,
+                channel_id=channel,
+                period=period,
+                timezone=settings.default_timezone,
+            )
+
+            if publish is None:
+                # Counting is a pure database read; no Discord connection needed.
+                outcome = await CountingService(db).count(
+                    request, scope=f"Канал: <#{channel}>", persist=persist
+                )
+                _print_outcome(outcome, csv_out)
+                return
+
+            target_channel = publish
+
+            async def work(client: Any) -> Any:
+                service = CountingService(db, DiscordReplySink(client))
+                counted = await service.count(
+                    request, scope=f"Канал: <#{channel}>", persist=persist
+                )
+                _print_outcome(counted, csv_out)
+                posted = await service.publish(request, counted, target_channel_id=target_channel)
+                typer.echo(f"posted to {target_channel}: {len(posted)} message(s)")
+                return counted
+
+            await _with_lookup_client(settings, work)
+        finally:
+            await db.dispose()
+
+    asyncio.run(run())
+
+
+def _print_outcome(outcome: Any, csv_out: Path | None) -> None:
+    for message in outcome.messages():
+        typer.echo(message)
+        typer.echo("")
+    for problem in outcome.problems:
+        typer.echo(f"PROBLEM: {problem}", err=True)
+    if csv_out is not None:
+        csv_out.parent.mkdir(parents=True, exist_ok=True)
+        csv_out.write_text(outcome.csv(), encoding="utf-8")
+        typer.echo(f"written: {csv_out}")
+    if outcome.roster_missing:
+        typer.echo(
+            "Подсказка: роли ещё не заданы, поэтому список людей для подсчёта неизвестен.\n"
+            "  uv run dsbot ladder-apply --file forms/ladders/instructors.yaml\n"
+            "  uv run dsbot roster-refresh --channel <id>",
+            err=True,
+        )
+
+
+@app.command("report-format")
+def report_format(
+    channel: Annotated[int, typer.Option(help="Report channel id")],
+    title: Annotated[str | None, typer.Option(help="Heading shown in the report")] = None,
+    publish_to: Annotated[
+        int | None,
+        typer.Option(
+            "--publish-to",
+            help="Channel that receives the periodic report; 0 clears it",
+        ),
+    ] = None,
+    show: Annotated[bool, typer.Option("--show", help="Only show the current setting")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Set where and under what title the counting report is published.
+
+    The destination lives in the binding, not in code: an admin decides it per channel,
+    which is what "publish it to another channel set by them" means in practice.
+    """
+    settings = _settings(verbose)
+
+    async def run() -> None:
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel)
+            if binding is None:
+                typer.echo(f"channel {channel} is not bound to any form")
+                raise typer.Exit(code=1)
+
+            config = dict(binding.config or {})
+            if show or (title is None and publish_to is None):
+                typer.echo(f"channel {channel}")
+                typer.echo(f"  title:      {config.get('report_title') or '(default)'}")
+                typer.echo(f"  publish_to: {config.get('report_channel_id') or '(ephemeral only)'}")
+                return
+
+            if title is not None:
+                config["report_title"] = title
+            if publish_to is not None:
+                config["report_channel_id"] = None if publish_to == 0 else publish_to
+
+            async with db.write_session() as session:
+                row = await repos.get_binding_by_channel(session, channel)
+                assert row is not None
+                row.config = config
+            typer.echo("updated. In effect on the next count.")
+        finally:
+            await db.dispose()
+
+    asyncio.run(run())
+
+
+@app.command("quota-set")
+def quota_set(
+    channel: Annotated[int, typer.Option(help="Report channel id")],
+    tier: Annotated[str, typer.Option(help="Tier key from the ladder, e.g. instructor")],
+    count: Annotated[int, typer.Option(help="Reports required per week")],
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Set how many reports a tier must produce per week."""
+    settings = _settings(verbose)
+
+    async def run() -> None:
+        from sqlalchemy import select
+
+        from dsbot.storage import ranks_repo
+        from dsbot.storage.models import RankTier
+
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel)
+                if binding is None:
+                    typer.echo(f"channel {channel} is not bound to any form")
+                    raise typer.Exit(code=1)
+                guild_id = binding.rank_source_guild_id or binding.guild_id
+                ladders = await ranks_repo.load_all_ladders(session)
+                ladder = ladders.get(guild_id)
+                if ladder is None or ladder.ladder_id is None:
+                    typer.echo(f"no ladder for guild {guild_id}")
+                    raise typer.Exit(code=1)
+                tiers = (
+                    await session.scalars(
+                        select(RankTier).where(RankTier.ladder_id == ladder.ladder_id)
+                    )
+                ).all()
+
+            match = next((t for t in tiers if t.key == tier), None)
+            if match is None:
+                known = ", ".join(sorted(t.key for t in tiers))
+                typer.echo(f"unknown tier {tier!r}. Known: {known}")
+                raise typer.Exit(code=1)
+
+            async with db.write_session() as session:
+                await admin.set_quota(
+                    session,
+                    ladder_id=ladder.ladder_id,
+                    tier_id=match.id,
+                    binding_id=binding.id,
+                    required_count=count,
+                )
+            typer.echo(f"quota: {match.label or match.key} -> {count} per week")
+        finally:
+            await db.dispose()
+
+    asyncio.run(run())
+
+
+@app.command("quota-show")
+def quota_show(
+    channel: Annotated[int, typer.Option(help="Report channel id")],
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Show the weekly requirements that apply to one channel."""
+    settings = _settings(verbose)
+
+    async def run() -> None:
+        from dsbot.storage import ranks_repo
+
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel)
+                if binding is None:
+                    typer.echo(f"channel {channel} is not bound to any form")
+                    raise typer.Exit(code=1)
+                guild_id = binding.rank_source_guild_id or binding.guild_id
+                ladders = await ranks_repo.load_all_ladders(session)
+                ladder = ladders.get(guild_id)
+                if ladder is None or ladder.ladder_id is None:
+                    typer.echo(f"no ladder for guild {guild_id}")
+                    raise typer.Exit(code=1)
+                policies = await repos.get_quota_policies(
+                    session, ladder_id=ladder.ladder_id, binding_id=binding.id
+                )
+                ordinals = await repos.get_tier_ordinals(session, ladder.ladder_id)
+                tiers = {
+                    tier.id: tier
+                    for tier in (await session.scalars(_all_tiers(ladder.ladder_id))).all()
+                }
+        finally:
+            await db.dispose()
+
+        if not policies:
+            typer.echo("no quotas configured. Set one with:")
+            typer.echo(f"  uv run dsbot quota-set --channel {channel} --tier instructor --count 3")
+            return
+        for policy in policies:
+            tier = tiers.get(policy.tier_id) if policy.tier_id else None
+            scope = "this channel" if policy.binding_id else "whole ladder"
+            label = (tier.label or tier.key) if tier else "(any tier)"
+            ordinal = ordinals.get(policy.tier_id, "-") if policy.tier_id else "-"
+            typer.echo(
+                f"  {label:<24} {policy.required_count:>3}/week  [{scope}] ordinal={ordinal}"
+            )
+
+    asyncio.run(run())
+
+
+def _all_tiers(ladder_id: int) -> Any:
+    from sqlalchemy import select
+
+    from dsbot.storage.models import RankTier
+
+    return select(RankTier).where(RankTier.ladder_id == ladder_id)
+
+
 def main() -> None:
     app()
-
-
-if __name__ == "__main__":
-    main()

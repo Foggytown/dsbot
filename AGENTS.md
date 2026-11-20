@@ -10,8 +10,11 @@ and evaluates weekly quotas per character.
 
 Deployed phases:
 
-- **Phase 1 (done):** capture -> parse -> validate -> warnings -> export.
-- **Phase 2 (in progress):** cross-server rank resolution, verdict engine, weekly quotas.
+- Phase 1 (done): capture -> parse -> validate -> warnings -> export.
+- **Phase 2 (done):** cross-server rank resolution, verdict engine from reactions.
+- **Phase 3 (done):** approved-report counting per person per week, roster scraping,
+  slash command, CSV and optional publication.
+- **Next:** scheduled weekly posting, dashboards.
 
 Explicitly out of scope for now: role assignment, soldier progression tiers,
 soldier-to-instructor assignment, dashboards.
@@ -117,6 +120,53 @@ Never read `member.roles` at the reaction site.
 `verdict = f(active reaction set, rank ordering)`. Un-reacting reverts to the next
 highest surviving verdict automatically. Do not implement last-event-wins.
 
+### Who may approve
+
+Only a tier whose `capabilities` include `review`. Senior instructor and above in the
+current ladder. A reviewer may approve **their own** report; that is expected, not an
+error to "fix". A reaction whose author's rank could not be resolved is stored but
+counts for nothing — a NULL `can_review` must never be treated as "allowed", or any
+stranger's check mark would approve a report.
+
+Two reviewers of the **same** ordinal who disagree produce `conflict`. Different
+ordinals are resolved by the higher one. A conflict is never guessed at.
+
+### What counting counts
+
+Counting answers one question: how many approved reports did this person file in the
+period. The rules are deliberate and were agreed explicitly:
+
+| Situation | Counted | Reason |
+|---|---|---|
+| `approved` | yes | normal case |
+| still `pending` at count time | **yes**, reported separately | reviewers' backlog is not the reporter's fault |
+| `rejected` | no | staff decided against it |
+| `conflict` | no | guessing a side produces a wrong number |
+
+That second row is the important one: a report nobody reviewed yet **counts**, because
+the alternative punishes an instructor for someone else's delay. It is still surfaced as
+`ждёт проверки` so a full backlog stays visible instead of hiding inside the total.
+
+### Who is counted
+
+Everyone holding a role listed in the ladder — including people with zero reports, who
+must show as `0`. "Nobody reported" and "nobody is tracked" must never look the same.
+
+This requires the **Members intent**: Discord refuses to list guild members without it.
+Its absence is a configuration error to report, never a silent fallback. Roster
+membership is scraped from the channel's **rank source guild** and stored in
+`roster_members`, so counts are reproducible and a role change tomorrow cannot rewrite
+last week.
+
+The grain is the **person**, not the character: one instructor with several characters is
+one workload.
+
+### Period boundaries
+
+ISO weeks, Monday 00:00 to the next Monday 00:00, in `DSBOT_DEFAULT_TIMEZONE`.
+Half-open: `[start, end)`. A report filed Sunday 23:00 belongs to that week even if it is
+approved on Monday, because credit follows the report, not the review.
+
 ### A report is a message group
 
 Evidence photos may arrive in a follow-up message by the same author. Validation must
@@ -195,6 +245,17 @@ Each of these shipped and had to be found by a live run or a user report.
    immediate; a later edit clears them.
 7. **Permission maths needs the Members intent.** Without it `guild.default_role` is
    None and `permissions_for` returns wrong answers. Prefer probing the real operation.
+8. **`create_all` does not alter existing tables.** Adding a column to a model left every
+   existing database with the old shape, and the first query mentioning the column died
+   with "no such column". The server database is the only copy of months of reports, so
+   it cannot be rebuilt. `Database.prepare()` runs additive `ALTER TABLE ADD COLUMN`
+   upgrades on every start; new columns need an entry in `storage/migrate.py`.
+9. **A NULL capability must not mean "allowed".** Treating an unresolved rank as a
+   reviewer would let any stranger's reaction approve a report. Null means "cannot
+   review", and the report stays undecided.
+10. **Republishing duplicated pages.** Editing only the first message of a multi-page
+    report left the old later pages and added new ones. All published ids are stored and
+    every page is edited, with orphans removed.
 
 ## Verification
 

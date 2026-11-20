@@ -30,11 +30,17 @@ from dsbot.storage.models import (
     Guild,
     Message,
     MessageReaction,
+    QuotaPolicy,
+    RankTier,
     RawEvent,
     Report,
     ReportField,
+    ReportVerdictHistory,
+    RosterMember,
     UserRankCache,
     ValidationMessage,
+    WeeklyResult,
+    WeeklyRun,
 )
 
 # --- raw events ------------------------------------------------------------
@@ -246,8 +252,10 @@ async def add_reaction(
     emoji_id: int | None,
     emoji_name: str | None,
     user_id: int,
+    tier_key: str | None = None,
     tier_ordinal: int | None = None,
     tier_label: str | None = None,
+    can_review: bool | None = None,
 ) -> None:
     existing = await session.scalar(
         select(MessageReaction).where(
@@ -257,8 +265,10 @@ async def add_reaction(
         )
     )
     if existing is not None:
+        existing.tier_key = tier_key
         existing.tier_ordinal = tier_ordinal
         existing.tier_label = tier_label
+        existing.can_review = can_review
         return
     # Flush the lookup's pending state before the INSERT, so a DELETE earlier in the
     # same transaction cannot be resurrected by a stale identity-map entry.
@@ -272,8 +282,10 @@ async def add_reaction(
             emoji_id=emoji_id,
             emoji_name=emoji_name,
             user_id=user_id,
+            tier_key=tier_key,
             tier_ordinal=tier_ordinal,
             tier_label=tier_label,
+            can_review=can_review,
         )
     )
 
@@ -318,6 +330,15 @@ async def get_report_by_message(
     return await session.scalar(
         select(Report).where(Report.channel_id == channel_id, Report.message_id == message_id)
     )
+
+
+async def get_report_by_message_id(session: AsyncSession, message_id: int) -> Report | None:
+    """Look a report up by message alone.
+
+    Reaction events carry the message id and the channel, but a channel-wide lookup
+    keeps the verdict path independent of how the event was routed.
+    """
+    return await session.scalar(select(Report).where(Report.message_id == message_id))
 
 
 async def upsert_report(
@@ -509,3 +530,270 @@ async def put_cached_rank(
     row.tier_ordinal = tier_ordinal
     row.source = source
     row.resolved_at = datetime.now(UTC)
+
+
+# --- phase 3: counting -----------------------------------------------------
+#
+# Counting is a read-only sweep over stored state. Nothing here writes, so a count can
+# run inside the live bot while it keeps ingesting: the database hands out a consistent
+# snapshot per transaction, and a report approved a second later is simply picked up by
+# the next run.
+
+
+async def list_reports_for_binding_between(
+    session: AsyncSession,
+    *,
+    binding_id: int,
+    start: datetime,
+    end: datetime,
+) -> Sequence[Report]:
+    """Every real report in one period.
+
+    Chat is excluded: only messages that matched a form are reports. `deferred` is a
+    retired status kept for old rows and must not be counted either.
+    """
+    stmt = (
+        select(Report)
+        .where(
+            Report.binding_id == binding_id,
+            Report.created_at >= start,
+            Report.created_at < end,
+            Report.status.in_(("valid", "invalid", "received", "approved", "rejected")),
+        )
+        .order_by(Report.created_at)
+    )
+    return (await session.scalars(stmt)).all()
+
+
+async def list_reactions_for_messages(
+    session: AsyncSession, message_ids: Sequence[int]
+) -> Sequence[MessageReaction]:
+    """All stored reactions for a set of messages, in one query.
+
+    Chunked so a wide period cannot exceed SQLite's bound-parameter limit.
+    """
+    if not message_ids:
+        return []
+    rows: list[MessageReaction] = []
+    chunk = 500
+    for offset in range(0, len(message_ids), chunk):
+        part = list(message_ids[offset : offset + chunk])
+        result = await session.scalars(
+            select(MessageReaction)
+            .where(MessageReaction.message_id.in_(part))
+            .order_by(MessageReaction.message_id, MessageReaction.added_at)
+        )
+        rows.extend(result.all())
+    return rows
+
+
+async def put_report_verdict(
+    session: AsyncSession,
+    *,
+    report_id: int,
+    verdict: str,
+    decided_by_user_id: int | None,
+    tier_ordinal: int | None,
+    decided_at: datetime | None,
+    previous_verdict: str | None,
+    reason: str = "reaction",
+) -> None:
+    """Store the report's current verdict, appending history only on a real change.
+
+    History is a log, not a mirror: writing a row per recomputation would bury the
+    meaningful transitions under thousands of no-op entries.
+    """
+    report = await session.get(Report, report_id)
+    if report is None:
+        return
+    changed = report.verdict != verdict
+    report.verdict = verdict
+    report.verdict_by_user_id = decided_by_user_id
+    report.verdict_tier_ordinal = tier_ordinal
+    report.verdict_decided_at = decided_at
+    if changed or previous_verdict != verdict:
+        session.add(
+            ReportVerdictHistory(
+                report_id=report_id,
+                verdict=verdict,
+                decided_by_user_id=decided_by_user_id,
+                tier_ordinal=tier_ordinal,
+                reason=reason,
+            )
+        )
+
+
+async def get_report_by_id(session: AsyncSession, report_id: int) -> Report | None:
+    return await session.get(Report, report_id)
+
+
+async def list_report_verdict_history(
+    session: AsyncSession, report_id: int
+) -> Sequence[ReportVerdictHistory]:
+    return (
+        await session.scalars(
+            select(ReportVerdictHistory)
+            .where(ReportVerdictHistory.report_id == report_id)
+            .order_by(ReportVerdictHistory.recorded_at)
+        )
+    ).all()
+
+
+# --- phase 3: roster and results -------------------------------------------
+
+
+async def replace_roster(
+    session: AsyncSession, ladder_id: int, members: Sequence[dict[str, Any]]
+) -> int:
+    """Replace the roster of one ladder with a freshly scraped one.
+
+    Replacement, not merge: a member who lost the role must disappear, and a stale row
+    would keep them in every future count.
+    """
+    await session.execute(delete(RosterMember).where(RosterMember.ladder_id == ladder_id))
+    for member in members:
+        session.add(
+            RosterMember(
+                ladder_id=ladder_id,
+                user_id=member["user_id"],
+                display_name=member.get("display_name", ""),
+                tier_key=member.get("tier_key"),
+                tier_label=member.get("tier_label"),
+                tier_ordinal=member.get("tier_ordinal"),
+            )
+        )
+    await session.flush()
+    return len(members)
+
+
+async def list_roster(session: AsyncSession, ladder_id: int) -> Sequence[RosterMember]:
+    return (
+        await session.scalars(
+            select(RosterMember)
+            .where(RosterMember.ladder_id == ladder_id)
+            .order_by(RosterMember.tier_ordinal.desc().nulls_last())
+        )
+    ).all()
+
+
+async def get_run_by_period(
+    session: AsyncSession, *, binding_id: int, period_start: datetime, period_end: datetime
+) -> WeeklyRun | None:
+    return await session.scalar(
+        select(WeeklyRun).where(
+            WeeklyRun.binding_id == binding_id,
+            WeeklyRun.period_start == period_start,
+            WeeklyRun.period_end == period_end,
+        )
+    )
+
+
+async def put_run(
+    session: AsyncSession,
+    *,
+    binding_id: int,
+    period_start: datetime,
+    period_end: datetime,
+    status: str,
+    summary: dict[str, Any],
+) -> WeeklyRun:
+    run = await get_run_by_period(
+        session, binding_id=binding_id, period_start=period_start, period_end=period_end
+    )
+    if run is None:
+        run = WeeklyRun(
+            binding_id=binding_id,
+            period_start=period_start,
+            period_end=period_end,
+            status=status,
+            summary=summary,
+        )
+        session.add(run)
+        await session.flush()
+        return run
+    run.status = status
+    run.summary = summary
+    return run
+
+
+async def replace_run_results(
+    session: AsyncSession, run_id: int, results: Sequence[dict[str, Any]]
+) -> None:
+    """Rewrite a run's results. Re-running a period must not duplicate people."""
+    await session.execute(delete(WeeklyResult).where(WeeklyResult.run_id == run_id))
+    for row in results:
+        session.add(WeeklyResult(run_id=run_id, **row))
+    await session.flush()
+
+
+async def list_run_results(session: AsyncSession, run_id: int) -> Sequence[WeeklyResult]:
+    return (
+        await session.scalars(
+            select(WeeklyResult)
+            .where(WeeklyResult.run_id == run_id)
+            .order_by(WeeklyResult.approved_count.desc())
+        )
+    ).all()
+
+
+async def set_run_report_message(
+    session: AsyncSession,
+    run_id: int,
+    *,
+    channel_id: int,
+    message_ids: Sequence[int],
+) -> None:
+    """Remember where a published report lives, so a re-run edits instead of duplicating."""
+    run = await session.get(WeeklyRun, run_id)
+    if run is None:
+        return
+    run.report_channel_id = channel_id
+    run.report_message_id = message_ids[0] if message_ids else None
+    run.published_ids = list(message_ids)
+
+
+async def list_runs_for_binding(
+    session: AsyncSession, binding_id: int, *, limit: int = 12
+) -> Sequence[WeeklyRun]:
+    return (
+        await session.scalars(
+            select(WeeklyRun)
+            .where(WeeklyRun.binding_id == binding_id)
+            .order_by(WeeklyRun.period_start.desc())
+            .limit(limit)
+        )
+    ).all()
+
+
+async def get_binding_by_id(session: AsyncSession, binding_id: int) -> ChannelBinding | None:
+    return await session.get(ChannelBinding, binding_id)
+
+
+async def get_quota_policies(
+    session: AsyncSession, *, ladder_id: int, binding_id: int
+) -> Sequence[QuotaPolicy]:
+    """Requirements that apply to this binding, most specific first.
+
+    A policy with a `binding_id` overrides one with none, so an admin can set a default
+    for the whole ladder and then adjust one channel.
+    """
+    return (
+        await session.scalars(
+            select(QuotaPolicy)
+            .where(
+                QuotaPolicy.ladder_id == ladder_id,
+                (QuotaPolicy.binding_id == binding_id) | (QuotaPolicy.binding_id.is_(None)),
+            )
+            .order_by(QuotaPolicy.binding_id.is_(None))
+        )
+    ).all()
+
+
+async def get_tier_ordinals(session: AsyncSession, ladder_id: int) -> dict[int, int]:
+    """tier id -> ordinal, for joining quota policies onto a roster snapshot."""
+    rows = (
+        await session.execute(
+            select(RankTier.id, RankTier.ordinal).where(RankTier.ladder_id == ladder_id)
+        )
+    ).all()
+    return {int(row[0]): int(row[1]) for row in rows}

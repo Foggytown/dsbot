@@ -69,9 +69,10 @@ class Settings(BaseSettings):
     timezone: str = Field(default="Europe/Moscow")
 
     # Privileged intents, gated on what is actually implemented.
-    # Message Content is required to read reports. Members is only needed once rank
-    # resolution exists, so it stays off until then and avoids a needless portal step.
-    enable_members_intent: bool = Field(default=False)
+    # Message Content is required to read reports. Members is required to know who holds
+    # a role, which is how the count knows who to report on: without it, people with no
+    # reports are missing from the table instead of showing 0.
+    enable_members_intent: bool = Field(default=True)
 
     # How long a report may wait for follow-up photos before being warned about.
     # Operator setting on purpose: it is a deployment-tuning value, not a per-channel
