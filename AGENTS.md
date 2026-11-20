@@ -57,6 +57,11 @@ Prefixes belong to SOB squads, so a prefixed IDN is rejected for any other forma
 (`ARC | 01/0016` is invalid). `lore_prefixes` and `lore_prefix_formations` on the field
 control both.
 
+The slash is part of the identity, not formatting: the first two digits mean something
+else entirely, so `01/0016` and `000016` are different namespaces and must never be
+collapsed. Nobody writes a prefixed IDN without the slash. `canonical` therefore keeps
+the separator: `SOB|01/0016` vs `SOB|0016`.
+
 - `idn_kind` -> `plain` (4-digit) or `prefixed` (`PP/00NN`)
 
 Squads (ALPHA, NULL) are **not** part of the form. They are internal structure of a
