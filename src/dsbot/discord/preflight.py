@@ -26,11 +26,12 @@ REQUIRED_CHANNEL_PERMS: tuple[tuple[str, str], ...] = (
 )
 
 
-def invite_url(client: discord.Client) -> str:
+def invite_url(client: discord.Client | None = None, *, client_id: int | None = None) -> str:
     """Build the OAuth2 URL for exactly the permissions this bot needs.
 
     Requesting a precise permission set means nobody has to reason about which
-    checkbox matters, and the bot cannot be over-privileged by accident.
+    checkbox matters, and the bot cannot be over-privileged by accident. Notably
+    MANAGE_MESSAGES is absent: a bot may delete its own messages without it.
     """
     perms = discord.Permissions(
         view_channel=True,
@@ -38,12 +39,14 @@ def invite_url(client: discord.Client) -> str:
         send_messages=True,
         add_reactions=True,
     )
-    client_id = getattr(client.user, "id", None)
-    if client_id is None:
+    resolved = client_id
+    if resolved is None and client is not None and client.user is not None:
+        resolved = client.user.id
+    if resolved is None:
         return "unavailable (client id unknown)"
     return (
         "https://discord.com/oauth2/authorize"
-        f"?client_id={client_id}&permissions={perms.value}&scope=bot"
+        f"?client_id={resolved}&permissions={perms.value}&scope=bot"
     )
 
 

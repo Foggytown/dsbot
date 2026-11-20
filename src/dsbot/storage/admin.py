@@ -73,6 +73,26 @@ async def ensure_guild_and_channel(
     return channel
 
 
+async def refresh_guild_names(session: AsyncSession, names: dict[int, str]) -> int:
+    """Store real guild names, so `dsbot channels` is readable instead of showing '?'.
+
+    Called by commands that have a live Discord connection. Keeps the DB honest without
+    requiring the operator to type names.
+    """
+    updated = 0
+    for guild_id, name in names.items():
+        if not name:
+            continue
+        guild = await session.get(Guild, guild_id)
+        if guild is None:
+            session.add(Guild(id=guild_id, name=name))
+            updated += 1
+        elif guild.name != name:
+            guild.name = name
+            updated += 1
+    return updated
+
+
 async def bind_channel(
     session: AsyncSession,
     *,

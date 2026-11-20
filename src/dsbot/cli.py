@@ -793,16 +793,77 @@ def form_check(
         raise typer.Exit(code=1)
 
 
+@app.command("channels")
+def channels(
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """List every bound channel, its server, and its form."""
+    settings = _settings(verbose)
+
+    from dsbot.storage import repos
+
+    async def run_list() -> None:
+        db = Database(settings)
+        try:
+            async with db.session() as session:
+                bindings = await repos.list_enabled_bindings(session)
+                rows = []
+                for binding in bindings:
+                    schemas = await repos.get_schemas_for_binding(session, binding.id)
+                    guild = await session.get(
+                        __import__("dsbot.storage.models", fromlist=["Guild"]).Guild,
+                        binding.guild_id,
+                    )
+                    rows.append(
+                        (
+                            binding.channel_id,
+                            binding.guild_id,
+                            getattr(guild, "name", "") or "?",
+                            binding.module_key,
+                            ", ".join(s.key for s in schemas) or "(none)",
+                            binding.locale,
+                        )
+                    )
+        finally:
+            await db.dispose()
+
+        if not rows:
+            typer.echo("no channels bound. Use `dsbot bind` or `dsbot form-apply`.")
+            return
+
+        typer.echo(f"{'channel':>20}  {'server':>20}  {'module':<8} {'form':<20} locale")
+        for channel_id, guild_id, guild_name, module, forms, locale in rows:
+            typer.echo(
+                f"{channel_id:>20}  {guild_id:>20}  {module:<8} {forms:<20} {locale}"
+                f"   [{guild_name}]"
+            )
+
+    asyncio.run(run_list())
+
+
 @app.command("form-apply")
 def form_apply(
     channel: Annotated[int, typer.Option(help="Channel id")],
     file: Annotated[Path, typer.Option("--file", "-f", help="YAML form to apply")],
+    guild: Annotated[
+        int | None,
+        typer.Option(help="Guild id, required when binding a channel in a new server"),
+    ] = None,
+    rank_guild: Annotated[
+        int | None, typer.Option(help="Guild whose rank ladder governs this channel")
+    ] = None,
+    locale: Annotated[str, typer.Option(help="Bot message locale: ru or en")] = "ru",
     force: Annotated[
         bool, typer.Option("--force", help="Apply even if checks report problems")
     ] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Compile a YAML form and make it the channel's form. No code changes."""
+    """Compile a YAML form and make it the channel's form. No code changes.
+
+    To set up a channel in another server, pass both ids:
+
+        dsbot form-apply --channel <id> --file forms/training.yaml --guild <id>
+    """
     settings = _settings(verbose)
 
     from dsbot.modules.reports.authoring import import_forms
@@ -822,19 +883,63 @@ def form_apply(
             typer.echo("not applied. Fix these, or re-run with --force")
             raise typer.Exit(code=1)
 
+        # Resolve the real guild name while we can talk to Discord, so the channels
+        # listing is readable and the binding records where it belongs.
+        guild_name = ""
+        if guild is not None:
+            import discord as _discord
+
+            client = _discord.Client(intents=_discord.Intents.none())
+            runner: asyncio.Task[None] | None = None
+            try:
+                runner = asyncio.create_task(client.start(settings.discord_token))
+                await _wait_until_ready(client, deadline_seconds=60.0, runner=runner)
+                target = client.get_guild(guild)
+                if target is None:
+                    # get_guild() needs the Guilds intent; fetching works without it.
+                    try:
+                        target = await client.fetch_guild(guild)
+                    except Exception as exc:
+                        typer.echo(f"WARNING: fetch_guild failed: {type(exc).__name__}: {exc}")
+                        target = None
+                if target is None:
+                    typer.echo(f"WARNING: bot cannot see guild {guild}; is the invite accepted?")
+                else:
+                    guild_name = target.name
+            except Exception:
+                typer.echo("WARNING: could not reach Discord to confirm the guild name")
+            finally:
+                if not client.is_closed():
+                    await client.close()
+                if runner is not None:
+                    runner.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await runner
+
         db = Database(settings)
         try:
             async with db.write_session() as session:
+                from dsbot.storage import admin
+
+                if guild is not None and guild_name:
+                    await admin.refresh_guild_names(session, {guild: guild_name})
                 result = await import_forms(
                     session,
                     channel_id=channel,
                     payload={"schemas": [schema.model_dump(mode="json")]},
+                    guild_id=guild,
+                    rank_source_guild_id=rank_guild,
+                    locale=locale,
                 )
+        except ValueError as exc:
+            typer.echo(f"FAILED: {exc}")
+            raise typer.Exit(code=1) from None
         finally:
             await db.dispose()
 
+        where = f" in guild {guild}" + (f" ({guild_name})" if guild_name else "")
         typer.echo(
-            f"applied {schema.key} to channel {channel} "
+            f"applied {schema.key} to channel {channel}{where} "
             f"(created={result.created}, updated={result.updated})"
         )
 

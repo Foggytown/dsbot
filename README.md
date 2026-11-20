@@ -284,6 +284,41 @@ see whether a form definition matches reality before trusting it live.
 Note: read the file with a UTF-8 aware editor, or `Get-Content -Encoding UTF8` in
 PowerShell; the default Windows console codepage will mangle Cyrillic.
 
+## Adding a channel in another server
+
+The bot must be invited to that server first, then one command binds the channel and
+applies the form:
+
+```powershell
+uv run dsbot form-apply --channel <channel-id> --file forms/training.yaml --guild <guild-id>
+```
+
+Because the bot needs to be in that guild, the invite URL is:
+
+```
+https://discord.com/oauth2/authorize?client_id=1573038712055537917&permissions=68672&scope=bot
+```
+
+`dsbot doctor` prints the same URL if the bot cannot see a guild.
+
+Copying an existing form to a new channel:
+
+```powershell
+uv run dsbot form-pull  --channel <source-id> --out forms/copy.yaml
+uv run dsbot form-apply --channel <target-id> --file forms/copy.yaml --guild <target-guild-id>
+```
+
+`dsbot channels` lists every bound channel with its server, module, and form, which is
+the quickest way to confirm setup:
+
+```
+             channel                server  module   form                 locale
+ 1573045809774067812   1209516013779943544  reports  training_report      ru   [Сервер Foggytown]
+```
+
+Each channel is independent: the same form in two channels shares one schema row, while
+changing one channel's form never affects the other.
+
 ## Development
 
 ```powershell

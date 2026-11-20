@@ -383,7 +383,100 @@ async def test_invalid_definition_is_rejected_before_writing(db: Database) -> No
     assert count == 0
 
 
-async def test_unbound_channel_import_requires_guild(db: Database) -> None:
+async def test_import_creates_binding_for_a_channel_in_another_server(db: Database) -> None:
+    """Cross-server setup: a new channel in a new guild must bind in one command."""
+    from dsbot.modules.reports.authoring import import_forms
+    from dsbot.modules.reports.yaml_form import parse_form_file
+
+    schema = parse_form_file(Path("forms/training.yaml"))
+    other_guild = 555_000_111
+    other_channel = 555_000_222
+
+    async with db.write_session() as session:
+        result = await import_forms(
+            session,
+            channel_id=other_channel,
+            payload={"schemas": [schema.model_dump(mode="json")]},
+            guild_id=other_guild,
+        )
+
+    assert result.imported == ["training_report"]
+
+    async with db.session() as session:
+        binding = await repos.get_binding_by_channel(session, other_channel)
+        assert binding is not None
+        assert binding.guild_id == other_guild
+        schemas = await repos.get_schemas_for_binding(session, binding.id)
+        assert [s.key for s in schemas] == ["training_report"]
+
+        # The guild row must exist, otherwise the channel FK is dangling.
+        from dsbot.storage.models import Guild
+
+        guild = await session.get(Guild, other_guild)
+        assert guild is not None
+
+
+async def test_two_channels_can_share_one_schema_key(db: Database) -> None:
+    """Same form in two channels: one schema row, two bindings."""
+    from dsbot.modules.reports.authoring import import_forms
+    from dsbot.modules.reports.yaml_form import parse_form_file
+
+    schema = parse_form_file(Path("forms/training.yaml"))
+    payload = {"schemas": [schema.model_dump(mode="json")]}
+
+    async with db.write_session() as session:
+        await import_forms(session, channel_id=111, payload=payload, guild_id=1)
+        await import_forms(session, channel_id=222, payload=payload, guild_id=2)
+
+    async with db.session() as session:
+        from sqlalchemy import func, select
+
+        from dsbot.storage.models import FormSchema
+
+        count = await session.scalar(select(func.count(FormSchema.id)))
+        assert count == 1
+
+        first = await repos.get_binding_by_channel(session, 111)
+        second = await repos.get_binding_by_channel(session, 222)
+        assert first is not None and second is not None
+        assert first.guild_id == 1
+        assert second.guild_id == 2
+
+
+async def test_two_channels_can_differ_in_form(db: Database) -> None:
+    """Channels are independent: changing one form must not affect the other."""
+    from dsbot.modules.reports.authoring import import_forms
+    from dsbot.modules.reports.yaml_form import parse_form_file
+
+    training = parse_form_file(Path("forms/training.yaml"))
+    other = training.model_copy(deep=True)
+    other.key = "other_form"
+    other.fields[1].options = ["ONLY-THIS"]
+
+    async with db.write_session() as session:
+        await import_forms(
+            session,
+            channel_id=111,
+            payload={"schemas": [training.model_dump(mode="json")]},
+            guild_id=1,
+        )
+        await import_forms(
+            session,
+            channel_id=222,
+            payload={"schemas": [other.model_dump(mode="json")]},
+            guild_id=1,
+        )
+
+    async with db.session() as session:
+        first = await repos.get_binding_by_channel(session, 111)
+        second = await repos.get_binding_by_channel(session, 222)
+        assert first is not None and second is not None
+        first_schemas = await repos.get_schemas_for_binding(session, first.id)
+        second_schemas = await repos.get_schemas_for_binding(session, second.id)
+
+    assert [s.key for s in first_schemas] == ["training_report"]
+    assert [s.key for s in second_schemas] == ["other_form"]
+    assert second_schemas[0].definition["fields"][1]["options"] == ["ONLY-THIS"]
     with pytest.raises(ValueError, match="guild"):
         async with db.write_session() as session:
             await import_forms(
