@@ -403,9 +403,9 @@ def parse_identity(
     if is_blank_value(text):
         return FieldResult(value=None, present=False)
 
-    # Keep the configured spelling alongside the lookup key, so a reporter's `501ST`
-    # is stored as the canonical `501st` from the form.
-    canonical = {f.upper(): f for f in (formations or [])}
+    # Formation matching is EXACT: the template spelling is the specification. Keep the
+    # configured values as-is so `GUARD` does not match `Guard`.
+    canonical = {f: f for f in (formations or [])}
     known = set(canonical)
     prefix_formations = {f.upper() for f in (lore_prefix_formations or ["SOB"])}
     allowed_prefixes = [p.zfill(2) for p in (lore_prefixes or ["01", "00"])]
@@ -501,6 +501,9 @@ def _parse_one_soldier(
         return value, issues
 
     # --- formation ------------------------------------------------------------
+    # Exact match only. The template is the specification: `Guard`, `Jedi`, `212th`,
+    # `501st`. All-caps or any other capitalisation is a mistake to be corrected, not a
+    # variant to be folded, because these values are grouped in weekly reports.
     formation_raw = parts[0]
     if len(formation_raw.split()) > 1:
         issues.append(
@@ -510,17 +513,15 @@ def _parse_one_soldier(
                 detail={"raw": formation_raw},
             )
         )
-    formation = normalise_formation(formation_raw)
+    formation = formation_raw.strip()
     if not formation:
         issues.append(
             FieldIssue(code="idn_no_formation", field_id=field_id, detail={"raw": soldier})
         )
         return value, issues
 
-    # Store the spelling from the configured list, not the reporter's capitalisation,
-    # so `501ST` and `501St` are both recorded as `501st`.
-    formation = canonical.get(formation.upper(), formation)
-    if known and formation.upper() not in {k.upper() for k in known}:
+    value["formation"] = formation
+    if known and formation not in known:
         issues.append(
             FieldIssue(
                 code="formation_unknown",
@@ -535,7 +536,8 @@ def _parse_one_soldier(
                 detail={"formations": sorted(known)},
             )
         )
-    value["formation"] = formation
+    else:
+        value["formation"] = canonical.get(formation, formation)
 
     # --- IDN(s) ---------------------------------------------------------------
     idn_part = parts[1]

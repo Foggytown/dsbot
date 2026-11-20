@@ -57,18 +57,29 @@ def test_prefix_00_is_accepted() -> None:
     assert value["prefix"] == "00"
 
 
-def test_formation_case_is_ignored() -> None:
-    for text in ("212th | 6489", "212TH | 6489", "212Th | 6489"):
+def test_formation_case_must_match_the_template() -> None:
+    """The template spelling is the specification: Guard, Jedi, 212th, 501st."""
+    for text in ("Guard | 3280", "Jedi | 1001", "212th | 6489", "501st | 2641"):
         _value, codes = ident(text)
         assert codes == [], text
 
 
-def test_cyrillic_lookalikes_are_folded() -> None:
-    """`СT` with a Cyrillic es is unmistakably CT, so it is not a spelling mistake."""
-    _value, codes = ident("СT | 5553")
-    assert codes == []
-    _value, codes = ident("СТ | 5553")
-    assert codes == []
+def test_all_caps_is_rejected() -> None:
+    """GUARD and JEDI are mistakes, not variants: the report data must be uniform."""
+    for text in ("GUARD | 3280", "JEDI | 1001", "212TH | 6489", "501ST | 2641"):
+        _value, codes = ident(text)
+        assert "formation_unknown" in codes, text
+
+
+def test_lowercase_formation_is_rejected() -> None:
+    for text in ("sob | 0016", "arc | 0042", "ct | 8096"):
+        _value, codes = ident(text)
+        assert "formation_unknown" in codes, text
+
+
+def test_allowed_list_uses_template_spelling() -> None:
+    _value, codes = ident("ZZZ | 0016")
+    assert "list_allowed_formations" in codes
 
 
 # --- everything else is an error ------------------------------------------
@@ -89,7 +100,7 @@ def test_plain_idn_with_second_idn_is_valid() -> None:
 
 def test_two_plain_idns_work_for_every_formation() -> None:
     """`FORMATION | IDN | IDN` is general; only 01/ and 00/ are SOB-specific."""
-    for formation in ("SOB", "ARC", "CT", "JEDI", "212th", "501st"):
+    for formation in ("SOB", "ARC", "CT", "Jedi", "212th", "501st"):
         value, codes = ident(f"{formation} | 0042 | 0043")
         assert codes == [], formation
         assert value["nrp_idn"] == "0043"
@@ -190,11 +201,10 @@ def test_501th_is_not_501st() -> None:
 
 
 def test_501st_is_stored_in_canonical_spelling() -> None:
-    """However the reporter capitalises it, the stored value matches the form."""
-    for text in ("501st | 2641", "501ST | 2641", "501St | 2641"):
-        value, codes = ident(text)
-        assert codes == [], text
-        assert value["formation"] == "501st", text
+    """Written exactly as the template says, it is stored unchanged."""
+    value, codes = ident("501st | 2641")
+    assert codes == []
+    assert value["formation"] == "501st"
 
 
 def test_99th_is_valid() -> None:
