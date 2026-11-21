@@ -1,50 +1,42 @@
 # =============================================================================
-# The quota ladder: WHO OWES REPORTS
+# QUOTA LADDER: who owes reports, and how many per week
 #
-# Copy to forms/ladders/quota.yaml and apply:
+# Answers ONE question: "how many reports must this person file per week?"
+# Grants NO rights. The only data field on a tier here is `required_per_week`;
+# there is no `capabilities` field, and `ladder-check` rejects the file if one
+# appears, because who owes a report must never be able to approve one.
 #
-#   uv run dsbot ladder-check --file forms/ladders/quota.yaml
-#   uv run dsbot ladder-apply --file forms/ladders/quota.yaml
-#   uv run dsbot roster-refresh --channel <id>
-#   uv run dsbot quota-set --channel <id> --tier instructor --count 3
+# Check:  uv run dsbot ladder-check --file forms/ladders/quota.yaml
+# Apply:  startup does this from forms/channels.yaml; this command is for a
+#         running bot without a restart.
 #
-# -----------------------------------------------------------------------------
-# WHY THIS IS SEPARATE FROM review.yaml
-# -----------------------------------------------------------------------------
+# Someone holding several roles here gets the HIGHEST tier's number, never the sum.
 #
-# These tiers carry NO capabilities on purpose. Filing a report does not grant the
-# right to approve one, and the bot enforces that by asking for `review` explicitly
-# when a reaction arrives. A person may appear in both ladders (a senior instructor who
-# both reviews and reports); the two answers are simply independent.
-#
-# The tiers here decide the shape of the weekly table: everyone holding one of these
-# roles is in it, including people with zero reports, who show as 0. That is why
-# `roster-refresh` needs the Members intent.
-#
-# Quieter tiers simply have `capabilities: []` and are never listed in review.yaml.
+# NOTE: `required_per_week` values below are PLACEHOLDERS. Set the real weekly
+# norms before relying on the count.
 # =============================================================================
 
 key: quota
 purpose: quota
 name: Специализации — отчётность
-guild_id: 1274460259661910149
+guild_id: 1274402776696488108
 
 tiers:
-  # Ordinal only orders people in reports and logs; it grants nothing.
-  - key: head_instructor
-    label: Head Instructor
+  # `ordinal` only decides which number wins when someone holds several roles.
+  - key: high
+    label: Старший инс +
     ordinal: 50
-    roles: []
-    capabilities: []
+    roles: [1499842014525788270, 1274452329470361672]
+    required_per_week: 2
 
-  - key: senior_instructor
-    label: Senior Instructor
+  - key: nothing
+    label: Исключение
     ordinal: 30
     roles: []
-    capabilities: []
+    required_per_week: 0
 
   - key: instructor
     label: Instructor
     ordinal: 10
     roles: []
-    capabilities: []
+    required_per_week: 3

@@ -818,13 +818,25 @@ def ladder_check(
         typer.echo(f"INVALID: {exc}")
         raise typer.Exit(code=1) from None
 
-    typer.echo(f"ok: {spec.key} (guild {spec.guild_id}, {len(spec.tiers)} tiers)")
+    typer.echo(
+        f"ok: {spec.key} (guild {spec.guild_id}, {len(spec.tiers)} tiers, purpose {spec.purpose})"
+    )
     for tier in sorted(spec.tiers, key=lambda t: t.ordinal, reverse=True):
-        caps = ", ".join(tier.capabilities) or "-"
         roles = ", ".join(str(r) for r in tier.roles) or "(none)"
-        typer.echo(
-            f"  {tier.ordinal:>4}  {tier.key:<20} {tier.label:<22} roles[{roles}]  caps[{caps}]"
-        )
+        if spec.purpose == "quota":
+            norm = (
+                f"needs[{tier.required_per_week}/week]"
+                if tier.required_per_week is not None
+                else "needs[NOT SET]"
+            )
+            typer.echo(
+                f"  {tier.ordinal:>4}  {tier.key:<20} {tier.label:<22} roles[{roles}]  {norm}"
+            )
+        else:
+            caps = ", ".join(tier.capabilities) or "-"
+            typer.echo(
+                f"  {tier.ordinal:>4}  {tier.key:<20} {tier.label:<22} roles[{roles}]  caps[{caps}]"
+            )
 
     problems = ladder_problems(spec)
     if problems:

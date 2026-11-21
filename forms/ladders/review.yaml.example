@@ -1,34 +1,42 @@
 # =============================================================================
-# REVIEW LADDER: who may approve or reject a report
+# Rank ladders for one guild
 #
-# This file answers ONE question: "whose verdict counts, and who outranks whom?"
-# It says nothing about how many reports anyone must file - that is quota.yaml.
-#
-# Copy to forms/ladders/review.yaml, fill in role ids, then:
+# Copy to forms/ladders/<key>.yaml (git does not track the real ids) and apply:
 #
 #   uv run dsbot ladder-check --file forms/ladders/review.yaml
 #   uv run dsbot ladder-apply --file forms/ladders/review.yaml
 #
 # -----------------------------------------------------------------------------
-# `ordinal` = whose verdict is stronger. Higher wins.
+# WHY THERE ARE TWO FILES, NOT ONE
 # -----------------------------------------------------------------------------
 #
-#   ✅ senior instructor approves a report        -> approved
-#   ❌ head instructor rejects the same report    -> rejected   (higher ordinal wins)
-#   ✅ one senior approves, ❌ another senior rejects -> conflict (never guessed)
+# "Who may approve" and "who owes reports" are DIFFERENT questions about the same
+# people, and they must not be answered by one list. A guild can therefore have
+# several ladders:
 #
-# Two people in the SAME tier who disagree produce `conflict`, and the report is left
-# for a human instead of picking a side.
+#   review.yaml   tiers with `capabilities: [review]`  -> decides verdicts
+#   quota.yaml    tiers with required_per_week         -> decides the weekly table
 #
-# `capabilities` decides what a tier may do. Ordinal never grants anything:
+# The bot asks for `review` when a reaction arrives, and asks for no capability when it
+# counts. A role listed only in a quota ladder can never approve a report, however high
+# its ordinal is. Two people in the same tier who disagree produce a `conflict`, which
+# is never guessed at.
 #
-#   review        may approve or reject a report
-#   admin         may change configuration from Discord
-#   quota_manage  may change weekly requirements
+# Ordinals only order people WITHIN the review question. They are not Discord role
+# positions and they grant nothing by themselves.
 #
-# A reviewer MAY approve their own report: that is normal here, not an error.
-# Everyone who approves is NOT automatically required to file reports; that is a
-# separate file, so a tier here can be absent from quota.yaml.
+# -----------------------------------------------------------------------------
+# WHERE ROLES COME FROM
+# -----------------------------------------------------------------------------
+#
+# `guild_id` is the server that HOLDS the roles, which is normally a specialization
+# server, not the server where reports are read. Each channel's binding points here, so
+# the same person can be a reviewer in one channel's hierarchy and a reporter in
+# another: `uv run dsbot channel-ladder --channel <id> --ladder <key>`.
+#
+# Get a role id: Discord > Server Settings > Roles > right-click > Copy Role ID
+# (needs Developer Mode). An empty `roles: []` is allowed while drafting, but
+# `ladder-check` reports it, because nobody can match that tier until it is filled in.
 # =============================================================================
 
 key: review
@@ -37,6 +45,7 @@ name: Специализации — проверяющие
 guild_id: 1274460259661910149
 
 tiers:
+  # Highest first is only a convention; ordering comes from `ordinal`.
   - key: high_command
     label: High Command
     ordinal: 100
@@ -49,6 +58,7 @@ tiers:
     roles: []
     capabilities: [review, admin, quota_manage]
 
+  # Senior instructor and above may approve. Approving your own report is allowed.
   - key: senior_instructor
     label: Senior Instructor
     ordinal: 30

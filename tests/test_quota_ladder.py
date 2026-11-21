@@ -42,25 +42,41 @@ def test_quota_ladder_cannot_grant_capabilities() -> None:
     assert "quota" in message and "capabilities" in message
 
 
-def test_review_ladder_with_a_requirement_is_flagged() -> None:
-    """A requirement in the review file would be silently ignored, so say so."""
-    spec = LadderSpec(
-        key="review",
-        guild_id=900,
-        purpose="review",
-        tiers=[
+def test_review_ladder_with_a_requirement_is_refused() -> None:
+    """Weekly norms belong in the quota ladder; in the review file they would be ignored."""
+    with pytest.raises(ValueError) as excinfo:
+        LadderSpec(
+            key="review",
+            guild_id=900,
+            purpose="review",
+            tiers=[
+                TierSpec(
+                    key="senior",
+                    label="Senior",
+                    ordinal=30,
+                    roles=[1],
+                    capabilities=["review", "admin"],
+                    required_per_week=2,
+                )
+            ],
+        )
+    assert "required_per_week" in str(excinfo.value)
+
+
+def test_quota_ladder_cannot_even_carry_the_capabilities_field() -> None:
+    """An empty list is still a mistake: a meaningless field gets filled in later."""
+    with pytest.raises(ValueError) as excinfo:
+        quota_ladder(
             TierSpec(
-                key="senior",
-                label="Senior",
-                ordinal=30,
+                key="instructor",
+                label="Instructor",
+                ordinal=10,
                 roles=[1],
-                capabilities=["review", "admin"],
-                required_per_week=2,
+                required_per_week=3,
+                capabilities=[],
             )
-        ],
-    )
-    problems = ladder_problems(spec)
-    assert any("required_per_week" in p for p in problems)
+        )
+    assert "capabilities" in str(excinfo.value)
 
 
 def test_quota_ladder_with_no_requirements_is_flagged() -> None:

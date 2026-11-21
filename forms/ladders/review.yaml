@@ -15,7 +15,7 @@
 # several ladders:
 #
 #   review.yaml   tiers with `capabilities: [review]`  -> decides verdicts
-#   quota.yaml    tiers with no capabilities           -> decides the weekly table
+#   quota.yaml    tiers with required_per_week         -> decides the weekly table
 #
 # The bot asks for `review` when a reaction arrives, and asks for no capability when it
 # counts. A role listed only in a quota ladder can never approve a report, however high

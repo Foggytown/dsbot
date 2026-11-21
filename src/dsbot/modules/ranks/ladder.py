@@ -130,18 +130,30 @@ class LadderSpec(BaseModel):
 
     @model_validator(mode="after")
     def _purpose_matches_fields(self) -> LadderSpec:
-        """A quota tier that grants review would let a reporter approve itself.
+        """Each purpose accepts exactly its own fields, and rejects the other's.
 
-        This is the one thing that must never be ambiguous, so it is an error rather
-        than a warning: the mistake is silent otherwise and corrupts every verdict.
+        `capabilities` in a quota ladder and `required_per_week` in a review ladder are
+        both meaningless, and meaningless fields get filled in by mistake. The dangerous
+        direction is `capabilities` in a quota ladder: it would let everyone who owes a
+        report also approve one. So this is an error even when the list is empty - the
+        field should not be there at all.
         """
         if self.purpose == "quota":
-            offenders = [t.key for t in self.tiers if t.capabilities]
+            offenders = [t.key for t in self.tiers if "capabilities" in t.model_fields_set]
             if offenders:
                 raise ValueError(
-                    f"ladder '{self.key}' has purpose 'quota' but tiers {offenders} list "
-                    "capabilities. Who owes a report must not be able to approve one; "
-                    "put those roles in the review ladder instead."
+                    f"ladder '{self.key}' has purpose 'quota', so tiers {offenders} must not "
+                    "have a 'capabilities' field. Who owes a report cannot approve one; put "
+                    "those roles in the review ladder. A quota tier takes "
+                    "'required_per_week' instead."
+                )
+        if self.purpose == "review":
+            offenders = [t.key for t in self.tiers if "required_per_week" in t.model_fields_set]
+            if offenders:
+                raise ValueError(
+                    f"ladder '{self.key}' has purpose 'review', so tiers {offenders} must not "
+                    "have 'required_per_week'. Weekly norms belong in the quota ladder, and "
+                    "would be ignored here."
                 )
         return self
 
