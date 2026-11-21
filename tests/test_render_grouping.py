@@ -17,7 +17,7 @@ from dsbot.modules.quotas.render import (
     render_message,
 )
 
-CONTEXT = RenderContext(title="Отчёт", period_label="16.11–22.11", timezone="Europe/Moscow")
+CONTEXT = RenderContext(period_label="16.11–22.11", timezone="Europe/Moscow")
 
 
 def summary(*rows: MemberTally, unranked: tuple[MemberTally, ...] = ()) -> CountSummary:
@@ -68,7 +68,6 @@ def test_a_hidden_tier_disappears_from_the_message() -> None:
         MemberTally(user_id=2, display_name="B", tier_label="Исключение", tier_ordinal=30),
     ]
     hidden = RenderContext(
-        title="Отчёт",
         period_label="16.11–22.11",
         timezone="Europe/Moscow",
         hidden_tiers=("Исключение",),
@@ -81,7 +80,6 @@ def test_a_hidden_tier_disappears_from_the_message() -> None:
 def test_hiding_is_case_insensitive() -> None:
     rows = [MemberTally(user_id=1, display_name="A", tier_label="Instructor", tier_ordinal=10)]
     hidden = RenderContext(
-        title="Отчёт",
         period_label="16.11–22.11",
         timezone="Europe/Moscow",
         hidden_tiers=("instructor",),
@@ -93,7 +91,6 @@ def test_hiding_is_case_insensitive() -> None:
 def test_hiding_every_tier_says_so_instead_of_showing_nothing() -> None:
     rows = [MemberTally(user_id=1, display_name="A", tier_label="Instructor", tier_ordinal=10)]
     hidden = RenderContext(
-        title="Отчёт",
         period_label="16.11–22.11",
         timezone="Europe/Moscow",
         hidden_tiers=("Instructor",),
@@ -115,8 +112,8 @@ def test_a_ping_is_shown_even_without_a_stored_name() -> None:
 def test_unknown_approval_is_its_own_category() -> None:
     row = MemberTally(user_id=1, display_name="A", unknown_approval_count=2, required_count=3)
     line = member_line(row)
-    assert "одобрено без прав 2" in line
-    assert "ждёт проверки" not in line
+    assert "без роли 2" in line
+    assert "не проверено" not in line
 
 
 def test_unknown_approval_counts_toward_the_quota() -> None:
@@ -132,12 +129,12 @@ def test_csv_separates_the_unknown_category() -> None:
     assert ",2," in text
 
 
-def test_a_filled_quota_is_not_shown_as_three_out_of_two() -> None:
-    """Overfilling a quota is not extra credit; '3/2' just invites confusion."""
-    row = MemberTally(user_id=1, approved_count=3, required_count=2)
+def test_going_over_the_quota_shows_the_real_total() -> None:
+    """'4/1' says exactly what happened; '1/1 +3' makes the reader add it up."""
+    row = MemberTally(user_id=1, approved_count=4, required_count=1)
     line = member_line(row)
-    assert "2/2" in line
-    assert "+1" in line
+    assert "4/1" in line
+    assert "+" not in line
 
 
 def test_the_total_matches_the_rows_and_ignores_hidden_tiers() -> None:
@@ -146,7 +143,6 @@ def test_the_total_matches_the_rows_and_ignores_hidden_tiers() -> None:
         MemberTally(user_id=2, display_name="B", tier_label="H", tier_ordinal=9, approved_count=1),
     ]
     hidden = RenderContext(
-        title="Отчёт",
         period_label="16.11–22.11",
         timezone="Europe/Moscow",
         hidden_tiers=("H",),

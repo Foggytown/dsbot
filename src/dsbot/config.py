@@ -62,8 +62,12 @@ class Settings(BaseSettings):
     # The form applied to channels bound via AUTO_BIND_CHANNELS.
     auto_bind_form: str = Field(default="forms/training.yaml")
 
-    # The channels configuration file. Read at startup and applied to the database.
-    channels_file: str = Field(default="forms/channels.yaml")
+    # The channels configuration file.
+    #
+    # Defaults to <state dir>/channels.yaml, i.e. the panel's /data volume, so an admin
+    # can edit it on the server and have it applied without a redeploy. The checked-in
+    # `forms/channels.yaml` is only a seed: it is copied to /data once, on first start.
+    channels_file: str = Field(default="")
 
     # Timezone used to interpret cron expressions.
     timezone: str = Field(default="Europe/Moscow")
@@ -81,6 +85,11 @@ class Settings(BaseSettings):
 
     # Human to ping in warnings so reporters can ask about a disputed report.
     contact_user_id: int | None = Field(default=None)
+
+    # Bot developer, pinged at the bottom of every generated report. Only an id: no
+    # name, no links, nothing that could be used to identify or contact anyone off
+    # Discord. Empty means no footer at all.
+    developer_user_id: int | None = Field(default=None)
 
     # DEV ONLY. Accept messages authored by bots, so the live gateway path can be
     # exercised by posting a test message as the bot itself. Never enable in production.
@@ -130,6 +139,21 @@ class Settings(BaseSettings):
         if self.lock_path:
             return Path(self.lock_path)
         return self.state_dir() / f"{self.instance_name}.lock"
+
+    def resolved_channels_file(self) -> Path:
+        """Where the served-channel list is read from: the writable data directory.
+
+        It lives next to the database on purpose. The panel replaces the whole checkout on
+        every upload but keeps /data, so a channel added by hand on the server survives
+        only if the file is there. The copy in `forms/` is a seed, not the live file.
+        """
+        if self.channels_file:
+            return Path(self.channels_file)
+        return self.state_dir() / "channels.yaml"
+
+    def seed_file(self) -> Path:
+        """The checked-in template, copied into the data directory once."""
+        return Path("forms/channels.yaml")
 
     def pid_file(self) -> Path:
         return self.lock_file().with_suffix(".pid")

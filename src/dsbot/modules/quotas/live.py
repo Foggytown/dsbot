@@ -46,6 +46,11 @@ log = structlog.get_logger(__name__)
 # Discord returns at most 100 messages per request.
 PAGE = 100
 
+# How many reaction reads to keep in flight. Each `reaction.users()` is one REST call and
+# they are independent, so doing them sequentially was the entire cost of a scan. This is
+# deliberately modest: fanning out too wide earns 429s, which is slower than being steady.
+CONCURRENT_READS = 8
+
 
 @dataclass(slots=True)
 class LiveScanStats:
@@ -75,6 +80,8 @@ class LiveCountResult:
     problems: list[str] = field(default_factory=list)
     # Tier labels to leave out of the message, so a noisy tier can be hidden per channel.
     hidden_tiers: tuple[str, ...] = ()
+    # When set, only this tier is shown.
+    only_tier: str | None = None
 
 
 class HistoryChannel(Protocol):
@@ -171,10 +178,8 @@ async def count_from_discord(
     groups = group_messages(collected)
     stats.groups = len(groups)
 
-    # Pass 1: parse everything and read the reactions. No rank lookups yet, so this part
-    # costs no network round-trips beyond the message history itself.
-    prepared: list[tuple[Any, list[Reaction], list[int]]] = []
-    reactor_ids: set[int] = set()
+    # Pass 1: parse everything (pure, microseconds).
+    prepared: list[tuple[Any, list[Any]]] = []
     for group in groups:
         candidate = ReportCandidate(messages=[_group_message(m) for m in group])
         attachments = sum(len(m.attachments) for m in group)
@@ -184,19 +189,28 @@ async def count_from_discord(
         stats.matched += 1
         if not parsed.is_valid:
             stats.invalid += 1
+        prepared.append((group, []))
 
-        reactions, reactors = await _read_reactions(group)
+    # Pass 2: read reactions concurrently. This is where essentially all the time goes:
+    # `reaction.users()` is one REST call per emoji per message, so doing it in a loop is
+    # what made a scan take half a minute. Bounded so we stay inside the rate limit.
+    reads = await _gather_bounded(
+        [_read_reactions(group) for group, _ in prepared], limit=CONCURRENT_READS
+    )
+
+    reactor_ids: set[int] = set()
+    all_reactions: list[tuple[list[Reaction], list[int]]] = []
+    for reactions, reactors in reads:
         stats.reactions += len(reactions)
         reactor_ids.update(reactors)
-        prepared.append((group, reactions, reactors))
+        all_reactions.append((reactions, reactors))
 
-    # Pass 2: resolve each distinct reactor once, concurrently. Previously this was one
-    # awaited REST call per reaction, which is what made a busy channel take half a minute.
+    # Pass 3: resolve each distinct reactor once, concurrently.
     resolved = await _resolve_ranks(resolver, rank_guild_id, review_ladder_id, reactor_ids)
     stats.unresolved_reactors = sum(1 for value in resolved.values() if value is None)
 
     outcomes = []
-    for group, reactions, _reactors in prepared:
+    for (group, _), (reactions, _reactors) in zip(prepared, all_reactions, strict=True):
         ranks: dict[int, Rank | None] = {r.user_id: resolved.get(r.user_id) for r in reactions}
         outcomes.append(
             CountedReport(
@@ -213,8 +227,30 @@ async def count_from_discord(
     return summary, stats
 
 
+async def _gather_bounded(coros: list[Any], *, limit: int) -> list[Any]:
+    """Run coroutines with at most `limit` in flight, preserving result order.
+
+    Discord allows a handful of concurrent requests; going wide is how the scan went from
+    tens of seconds to a few. The bound matters more than the ceiling: an unbounded
+    gather over a busy channel would earn 429s and be slower in the end.
+    """
+    import asyncio as _asyncio
+
+    semaphore = _asyncio.Semaphore(limit)
+
+    async def one(coro: Any) -> Any:
+        async with semaphore:
+            return await coro
+
+    return list(await _asyncio.gather(*(one(coro) for coro in coros)))
+
+
 APPROVE = {"\u2705", "\u2714", "\u2611"}
 REJECT = {"\u274c", "\u2716", "\u26d4"}
+
+# Discord sends the count with each reaction. Above this many reactors we still need the
+# list to know who they were, but a single count tells us nothing about identity, so the
+# count is only used to skip emoji we would ignore anyway.
 
 
 async def _read_reactions(group: list[Any]) -> tuple[list[Reaction], list[int]]:
@@ -268,6 +304,7 @@ async def count_channel_from_discord(
     channel_id: int,
     period: Period,
     resolver: Any,
+    only_tier: str | None = None,
 ) -> LiveCountResult:
     """Everything the slash command needs, resolved from stored config but read from Discord.
 
@@ -358,6 +395,7 @@ async def count_channel_from_discord(
         period=period,
         problems=problems,
         hidden_tiers=tuple(hidden),
+        only_tier=only_tier,
     )
 
 

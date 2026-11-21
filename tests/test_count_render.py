@@ -9,9 +9,7 @@ from __future__ import annotations
 from dsbot.modules.quotas.counting import CountSummary, MemberTally
 from dsbot.modules.quotas.render import RenderContext, member_line, render_csv, render_message
 
-CONTEXT = RenderContext(
-    title="Недельные нормы", period_label="16.11–22.11", timezone="Europe/Moscow"
-)
+CONTEXT = RenderContext(period_label="16.11–22.11", timezone="Europe/Moscow")
 
 
 def summary(*rows: MemberTally, unranked: tuple[MemberTally, ...] = ()) -> CountSummary:
@@ -31,7 +29,7 @@ def test_line_shows_total_first_then_name() -> None:
     )
     line = member_line(row)
     assert line.index("3/3") < line.index("Ann")
-    assert "ждёт проверки 1" in line
+    assert "не проверено 1" in line
 
 
 def test_zero_reports_is_shown_explicitly() -> None:

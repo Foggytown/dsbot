@@ -26,7 +26,7 @@ soldier-to-instructor assignment, dashboards.
 | Messages, reports, reactions, verdicts, weekly results | server database | change constantly, server only |
 | Forms | `forms/*.yaml` | configuration, reviewed in git |
 | Rank ladders | `forms/ladders/*.yaml` | configuration, one file per ladder |
-| Served channels | `forms/channels.yaml` | configuration |
+| Served channels | `<state dir>/channels.yaml` | edited on the server, applies live |
 | Token and deployment settings | `.env` on the server | secret, never committed |
 
 Config is applied at startup, so a locally configured channel is deployed by pushing.
@@ -46,6 +46,14 @@ hand on the server is lost or duplicated on the next upload.
 `review_ladder` and `quota_ladder` per channel, and startup applies all of them, every
 time (not only when the database is empty). `ladder-apply` is therefore optional, for
 applying a file to a running bot without a restart.
+
+**The live channels file is in the data directory, not the checkout.** Because the
+checkout is replaced on each deploy, a channel list inside it would reset every time.
+`forms/channels.yaml` is only a seed, copied to `<state dir>/channels.yaml` once; after
+that the file in `/data` is authoritative and is never overwritten. The bot polls its
+modification time and re-applies it within seconds, so an admin can add or remove a
+channel on the server without a restart or a redeploy. A broken edit is logged and
+ignored: the previous configuration keeps running.
 
 Because sync runs on every start, an **unchanged ladder must not be rebuilt**: deleting
 its row would cascade-delete `roster_members`, and the weekly report would claim nobody

@@ -66,7 +66,11 @@ class CountOutcome:
         return render_message(self.summary, self.context)
 
     def csv(self) -> str:
-        return render_csv(self.summary)
+        return render_csv(
+            self.summary,
+            hidden_tiers=self.context.hidden_tiers,
+            only_tier=self.context.only_tier,
+        )
 
     @property
     def ok(self) -> bool:
@@ -74,9 +78,18 @@ class CountOutcome:
 
 
 class CountingService:
-    def __init__(self, db: Database, reply: ReplySink | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        reply: ReplySink | None = None,
+        *,
+        developer_user_id: int | None = None,
+    ) -> None:
         self._db = db
         self._reply = reply
+        # Footer credit, from settings. Kept here rather than in the renderer so the
+        # renderer stays pure and testable with no configuration at all.
+        self._developer_user_id = developer_user_id
 
     async def count(
         self,
@@ -84,10 +97,10 @@ class CountingService:
         *,
         ladders: GuildLadders | None = None,
         quota_ladder_id: int | None = None,
-        title: str = "Отчёт по рапортам",
         scope: str = "",
         persist: bool = False,
         hidden_tiers: tuple[str, ...] = (),
+        only_tier: str | None = None,
     ) -> CountOutcome:
         """Count one period for one binding.
 
@@ -116,12 +129,13 @@ class CountingService:
         summary = tally(outcomes, roster)
 
         context = RenderContext(
-            title=title,
             period_label=request.period.describe(request.timezone),
             timezone=request.timezone,
             generated_at=datetime.now(UTC),
             scope=scope,
             hidden_tiers=hidden_tiers,
+            only_tier=only_tier,
+            developer_user_id=self._developer_user_id,
         )
         outcome = CountOutcome(
             summary=summary,

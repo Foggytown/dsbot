@@ -31,6 +31,36 @@ from pydantic import BaseModel, Field, model_validator
 DEFAULT_CHANNELS_FILE = Path("forms/channels.yaml")
 
 
+def seed_channels_file(target: Path, template: Path = DEFAULT_CHANNELS_FILE) -> bool:
+    """Copy the checked-in template into the data directory, once.
+
+    The live file must live where the panel preserves data (/data), because the checkout
+    is replaced on every deploy. Seeding only when the target is missing means an admin's
+    edits are never overwritten by a redeploy: `forms/channels.yaml` is a starting point,
+    not the source of truth once deployed.
+    """
+    if target.exists():
+        return False
+    if not template.is_file():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(template.read_text(encoding="utf-8-sig"), encoding="utf-8")
+    return True
+
+
+def file_signature(path: Path) -> tuple[int, int] | None:
+    """Cheap change detector: (mtime, size). None when the file is gone.
+
+    Used to notice an edit without polling the whole file or trusting a filesystem
+    watcher, which behaves differently on Windows and inside a container.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (int(stat.st_mtime_ns), stat.st_size)
+
+
 class ChannelSpec(BaseModel):
     """One channel to serve, and everything that governs it."""
 

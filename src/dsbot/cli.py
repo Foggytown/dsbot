@@ -1013,12 +1013,19 @@ def channels_check(
     _settings(verbose)
 
     from dsbot.modules.reports.channels import (
-        DEFAULT_CHANNELS_FILE,
         channels_problems,
         load_channels_file,
+        seed_channels_file,
     )
 
-    path = file or DEFAULT_CHANNELS_FILE
+    settings = get_settings()
+    path = file or settings.resolved_channels_file()
+    if file is None:
+        try:
+            if seed_channels_file(path, settings.seed_file()):
+                typer.echo(f"seeded {path} from {settings.seed_file()}")
+        except Exception as exc:
+            typer.echo(f"could not seed {path}: {exc}", err=True)
     try:
         spec = load_channels_file(path)
     except Exception as exc:
@@ -1066,10 +1073,15 @@ def channels_apply(
     """
     settings = _settings(verbose)
 
-    from dsbot.modules.reports.channels import DEFAULT_CHANNELS_FILE, load_channels_file
+    from dsbot.modules.reports.channels import load_channels_file, seed_channels_file
     from dsbot.modules.reports.channels_sync import sync_channels
 
-    path = file or Path(settings.channels_file) or DEFAULT_CHANNELS_FILE
+    path = file or settings.resolved_channels_file()
+    if file is None:
+        try:
+            seed_channels_file(path, settings.seed_file())
+        except Exception as exc:
+            typer.echo(f"could not seed {path}: {exc}", err=True)
 
     async def run_apply() -> None:
         try:
@@ -1725,7 +1737,10 @@ def count_command(
 
             if publish is None:
                 # Counting is a pure database read; no Discord connection needed.
-                outcome = await CountingService(db).count(
+                outcome = await CountingService(
+                    db,
+                    developer_user_id=settings.developer_user_id,
+                ).count(
                     request,
                     scope=f"Канал: <#{channel}>",
                     persist=persist,
@@ -1737,7 +1752,11 @@ def count_command(
             target_channel = publish
 
             async def work(client: Any) -> Any:
-                service = CountingService(db, DiscordReplySink(client))
+                service = CountingService(
+                    db,
+                    DiscordReplySink(client),
+                    developer_user_id=settings.developer_user_id,
+                )
                 counted = await service.count(
                     request,
                     scope=f"Канал: <#{channel}>",
@@ -1778,7 +1797,6 @@ def _print_outcome(outcome: Any, csv_out: Path | None) -> None:
 @app.command("report-format")
 def report_format(
     channel: Annotated[int, typer.Option(help="Report channel id")],
-    title: Annotated[str | None, typer.Option(help="Heading shown in the report")] = None,
     publish_to: Annotated[
         int | None,
         typer.Option(
@@ -1793,7 +1811,7 @@ def report_format(
     show: Annotated[bool, typer.Option("--show", help="Only show the current setting")] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Set where, under what title, and in which timezone the report is produced.
+    """Set where and in which timezone the report is produced.
 
     The destination lives in the binding, not in code: an admin decides it per channel,
     which is what "publish it to another channel set by them" means in practice. The
@@ -1814,15 +1832,12 @@ def report_format(
                 raise typer.Exit(code=1)
 
             config = dict(binding.config or {})
-            if show or (title is None and publish_to is None and timezone is None):
+            if show or (publish_to is None and timezone is None):
                 typer.echo(f"channel {channel}")
-                typer.echo(f"  title:      {config.get('report_title') or '(default)'}")
                 typer.echo(f"  publish_to: {config.get('report_channel_id') or '(ephemeral only)'}")
                 typer.echo(f"  timezone:   {config.get('timezone') or settings.default_timezone}")
                 return
 
-            if title is not None:
-                config["report_title"] = title
             if publish_to is not None:
                 config["report_channel_id"] = None if publish_to == 0 else publish_to
             if timezone is not None:

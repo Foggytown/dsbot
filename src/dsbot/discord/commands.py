@@ -313,13 +313,11 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
     )
     @app_commands.describe(
         channel="Channel to publish into, or leave empty to only answer privately",
-        title="Heading shown in the report",
     )
     async def report_target(
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel | None = None,
-        title: str | None = None,
     ) -> None:
         """Where the periodic report goes. Empty channel means ephemeral only."""
         if not await _require_admin(interaction):
@@ -332,7 +330,6 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
             self._db,
             channel_id,
             publish_to=channel.id if channel is not None else 0,
-            title=title,
         )
         if channel is None:
             await interaction.followup.send(
@@ -496,17 +493,19 @@ async def set_report_target(
     channel_id: int,
     *,
     publish_to: int,
-    title: str | None,
 ) -> None:
-    """Store where the report is published and what it is called."""
+    """Store where the report is published.
+
+    Persisted in the binding row, which lives in the database on the panel's /data
+    volume, so a setting made from Discord survives a redeploy.
+    """
     async with db.write_session() as session:
         binding = await repos.get_binding_by_channel(session, channel_id)
         if binding is None:
             raise ValueError("this channel is not bound to a report form")
         config = dict(binding.config or {})
         config["report_channel_id"] = None if publish_to == 0 else publish_to
-        if title is not None:
-            config["report_title"] = title
+        config.pop("report_title", None)
         binding.config = config
 
 

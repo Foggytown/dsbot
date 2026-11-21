@@ -14,7 +14,6 @@ import contextlib
 import signal
 import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import discord
@@ -44,6 +43,10 @@ from dsbot.storage import repos
 from dsbot.storage.db import Database
 
 log = structlog.get_logger(__name__)
+
+# How often the channels file is checked for edits. One `stat` per interval: frequent
+# enough that an admin sees their change within a few seconds, cheap enough to ignore.
+CHANNELS_POLL_SECONDS = 5.0
 
 # Intents come from settings so the required portal toggles match what is implemented.
 # Message Content is always on (reports are text). Members is opt-in until ranks exist.
@@ -110,7 +113,13 @@ class Bot(discord.ext.commands.Bot):
 
         from dsbot.discord.count_commands import register_count_commands
 
-        await register_count_commands(self, self.db, self.resolver, self.settings.default_timezone)
+        await register_count_commands(
+            self,
+            self.db,
+            self.resolver,
+            self.settings.default_timezone,
+            developer_user_id=self.settings.developer_user_id,
+        )
 
         # Reports are warned about immediately now, but older rows may still carry the
         # retired "deferred" status from before that change. Resolve them on start so a
@@ -142,10 +151,11 @@ class Bot(discord.ext.commands.Bot):
             # the user sees nothing, and there is no clue why. Say it plainly.
             log.error(
                 "no_channel_bindings",
+                path=str(self.settings.resolved_channels_file()),
                 hint=(
-                    "No channel is bound, so every message is ignored. Add one to "
-                    "forms/channels.yaml and redeploy, or run "
-                    "`dsbot channels-apply` with that file present."
+                    "No channel is bound, so every message is ignored. Add one to the "
+                    "channels file on the server (the path above) and it is applied "
+                    "within a few seconds."
                 ),
             )
         else:
@@ -163,34 +173,77 @@ class Bot(discord.ext.commands.Bot):
             database=self.settings.resolved_database_url,
             intents=str(self.intents),
             bindings=len(bindings),
+            channels_file=str(self.settings.resolved_channels_file()),
             group_window_seconds=self.settings.report_group_window_seconds,
         )
+        self._spawn(self._watch_channels_file())
 
     async def _load_bindings(self) -> list[Any]:
         async with self.db.session() as session:
             return list(await repos.list_enabled_bindings(session))
 
-    async def _auto_bind(self) -> list[Any]:
-        """Make the database match `forms/channels.yaml`, then reload.
+    async def _watch_channels_file(self) -> None:
+        """Apply an edit to channels.yaml while the bot is running.
 
-        The channels file is configuration and lives in git, so a channel set up locally
-        is deployed by pushing. Idempotent: an existing binding keeps its state, including
-        a deliberate pause, unless the file says otherwise.
+        Editing the file on the server and waiting for a restart is workable but feels
+        broken: the change is live in the file and not in the bot. This polls the
+        modification time, which is one `stat` every few seconds and behaves the same on
+        Windows and in a container, and re-applies only when it actually changed.
+
+        A broken edit is logged and ignored: the previous configuration keeps running,
+        because dropping every channel on a YAML typo would be worse than being stale.
         """
-        from dsbot.modules.reports.channels import load_channels_file
+        from dsbot.modules.reports.channels import file_signature
+
+        path = self.settings.resolved_channels_file()
+        last = file_signature(path)
+        while True:
+            await asyncio.sleep(CHANNELS_POLL_SECONDS)
+            if self.is_closed():
+                return
+            current = file_signature(path)
+            if current is None or current == last:
+                continue
+            last = current
+            log.info("channels_file_changed", path=str(path))
+            try:
+                await self._auto_bind()
+            except Exception:
+                log.exception("channels_reload_failed", path=str(path))
+
+    async def _auto_bind(self) -> list[Any]:
+        """Make the database match the channels file, then reload.
+
+        The live file lives in the data directory (the panel's /data), not in the
+        checkout, so an admin can edit it on the server without a redeploy. The checked-in
+        `forms/channels.yaml` is copied there once, on first start, and never again:
+        otherwise a redeploy would overwrite the admin's edits.
+
+        Idempotent: an existing binding keeps its state, including a deliberate pause,
+        unless the file says otherwise.
+        """
+        from dsbot.modules.reports.channels import load_channels_file, seed_channels_file
         from dsbot.modules.reports.channels_sync import sync_channels
 
+        path = self.settings.resolved_channels_file()
         try:
-            spec = load_channels_file(Path(self.settings.channels_file))
+            if seed_channels_file(path, self.settings.seed_file()):
+                log.info("channels_file_seeded", path=str(path))
         except Exception:
-            log.exception("channels_file_unreadable", path=self.settings.channels_file)
+            log.exception("channels_seed_failed", path=str(path))
+
+        try:
+            spec = load_channels_file(path)
+        except Exception:
+            log.exception("channels_file_unreadable", path=str(path))
             return await self._load_bindings()
 
         if not spec.channels:
             log.error(
                 "channels_file_empty",
-                path=self.settings.channels_file,
-                hint="Add channels to that file, or set DSBOT_AUTO_BIND_CHANNELS.",
+                path=str(path),
+                hint="Add channels to that file on the server, or to forms/channels.yaml "
+                "before the first start.",
             )
             return await self._load_bindings()
 

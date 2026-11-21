@@ -31,8 +31,6 @@ from dsbot.storage.db import Database
 
 log = structlog.get_logger(__name__)
 
-DEFAULT_TITLE = "Отчёт по рапортам"
-
 # Discord allows at most 25 choices per option.
 PERIOD_CHOICES = [
     app_commands.Choice(name="Текущая неделя", value="current"),
@@ -48,7 +46,14 @@ SOURCE_CHOICES = [
 class CountCommands(app_commands.Group, name="reports", description="Подсчёт рапортов"):
     """Counting, restricted to people who could already approve reports."""
 
-    def __init__(self, db: Database, resolver: Any = None, timezone: str = "Europe/Moscow") -> None:
+    def __init__(
+        self,
+        db: Database,
+        resolver: Any = None,
+        timezone: str = "Europe/Moscow",
+        *,
+        developer_user_id: int | None = None,
+    ) -> None:
         super().__init__()
         self._db = db
         self._resolver = resolver
@@ -56,6 +61,7 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         # settings rather than hardcoded, so a slash count and a CLI count of the same
         # period cannot land on different week boundaries.
         self._timezone = timezone
+        self._developer_user_id = developer_user_id
 
     async def _is_reviewer(self, interaction: discord.Interaction) -> bool:
         """True when the caller holds a tier with the `review` capability.
@@ -103,6 +109,43 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         config = binding.config or {}
         return config.get("timezone") or self._timezone
 
+    async def tier_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Suggest the tiers that actually have people in them.
+
+        Built from the roster, so the list matches the report rather than a hardcoded set
+        of names that could drift from the ladder.
+        """
+        channel_id = interaction.channel_id
+        if channel_id is None:
+            return []
+        try:
+            async with self._db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel_id)
+                if binding is None:
+                    return []
+                from dsbot.storage import ranks_repo
+
+                ladders = await ranks_repo.load_all_ladders(session)
+                guild_id = binding.rank_source_guild_id or binding.guild_id
+                group = ladders.get(guild_id)
+                if group is None or group.quota_ladder_id is None:
+                    return []
+                roster = await repos.list_roster(session, group.quota_ladder_id)
+        except Exception:
+            return []
+        labels: list[str] = []
+        for row in roster:
+            if row.tier_label and row.tier_label not in labels:
+                labels.append(row.tier_label)
+        needle = current.lower()
+        return [
+            app_commands.Choice(name=label, value=label)
+            for label in labels
+            if needle in label.lower()
+        ][:25]
+
     def _window(
         self,
         binding: Any,
@@ -137,8 +180,10 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         start="Или: начало периода, ДД.ММ.ГГГГ или ГГГГ-ММ-ДД",
         end="Конец периода, включительно (указывать вместе с start)",
         source="Откуда читать: история Discord (по умолчанию) или база бота",
+        tier="Показать только один тир, например Instructor",
     )
     @app_commands.choices(period=PERIOD_CHOICES, source=SOURCE_CHOICES)
+    @app_commands.autocomplete(tier=tier_autocomplete)
     async def count(
         self,
         interaction: discord.Interaction,
@@ -148,6 +193,7 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         start: str | None = None,
         end: str | None = None,
         source: app_commands.Choice[str] | None = None,
+        tier: str | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         channel_id = interaction.channel_id
@@ -180,8 +226,8 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
 
         chosen_source = source.value if source is not None else "discord"
         config = binding.config or {}
-        title = config.get("report_title") or DEFAULT_TITLE
         timezone = self._timezone_for(binding)
+        only_tier = (tier or "").strip() or None
 
         try:
             if chosen_source == "discord":
@@ -189,12 +235,12 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
                     interaction=interaction,
                     channel_id=channel_id,
                     window=window,
-                    title=title,
                     timezone=timezone,
+                    only_tier=only_tier,
                 )
             else:
                 pages, problems, counted = await self._db_report(
-                    channel_id, binding, window, title, timezone
+                    channel_id, binding, window, timezone, only_tier
                 )
         except Exception:
             log.exception("count_command_failed", channel_id=channel_id)
@@ -239,8 +285,8 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         interaction: discord.Interaction,
         channel_id: int,
         window: Period,
-        title: str,
         timezone: str,
+        only_tier: str | None,
     ) -> tuple[list[str], list[str], bool]:
         """Read the real channel history and count it.
 
@@ -262,11 +308,12 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             resolver=self._resolver,
         )
         context = RenderContext(
-            title=title,
             period_label=result.period.describe(timezone),
             timezone=timezone,
             scope=f"Канал: <#{channel_id}> · история Discord",
             hidden_tiers=result.hidden_tiers,
+            only_tier=only_tier,
+            developer_user_id=self._developer_user_id,
         )
         pages = render_message(result.summary, context)
         problems = list(result.problems)
@@ -283,8 +330,8 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         channel_id: int,
         binding: Any,
         window: Period,
-        title: str,
         timezone: str,
+        only_tier: str | None = None,
     ) -> tuple[list[str], list[str], bool]:
         """Count from what the bot stored. Faster, but only covers uptime."""
         service = CountingService(self._db)
@@ -296,9 +343,9 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         )
         outcome = await service.count(
             request,
-            title=title,
             scope=f"Канал: <#{channel_id}> · база бота",
             persist=False,
+            only_tier=only_tier,
         )
         context_hidden = tuple(
             str(value) for value in ((binding.config or {}).get("hidden_tiers") or [])
@@ -307,11 +354,12 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             from dsbot.modules.quotas.render import RenderContext, render_message
 
             context = RenderContext(
-                title=title,
                 period_label=window.describe(timezone),
                 timezone=timezone,
                 scope=f"Канал: <#{channel_id}> · база бота",
                 hidden_tiers=context_hidden,
+                only_tier=only_tier,
+                developer_user_id=self._developer_user_id,
             )
             pages = render_message(outcome.summary, context)
             return pages, list(outcome.problems), bool(outcome.summary.tallies)
@@ -345,8 +393,10 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         start="Или: начало периода, ДД.ММ.ГГГГ",
         end="Конец периода, включительно",
         source="Откуда читать: история Discord или база бота",
+        tier="Только один тир, например Instructor",
     )
     @app_commands.choices(period=PERIOD_CHOICES, source=SOURCE_CHOICES)
+    @app_commands.autocomplete(tier=tier_autocomplete)
     async def csv(
         self,
         interaction: discord.Interaction,
@@ -356,6 +406,7 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         start: str | None = None,
         end: str | None = None,
         source: app_commands.Choice[str] | None = None,
+        tier: str | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         channel_id = interaction.channel_id
@@ -378,8 +429,8 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
 
         from dsbot.modules.quotas.render import render_csv
 
-        config = binding.config or {}
         chosen_source = source.value if source is not None else "discord"
+        only_tier = (tier or "").strip() or None
 
         if chosen_source == "discord":
             from dsbot.modules.quotas.live import count_channel_from_discord
@@ -390,6 +441,7 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
                 channel_id=channel_id,
                 period=window,
                 resolver=self._resolver,
+                only_tier=only_tier,
             )
             payload_text = render_csv(result.summary)
         else:
@@ -400,9 +452,7 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
                 period=window,
                 timezone=self._timezone_for(binding),
             )
-            outcome = await service.count(
-                request, title=config.get("report_title") or DEFAULT_TITLE
-            )
+            outcome = await service.count(request, only_tier=only_tier)
             payload_text = outcome.csv()
 
         file = discord.File(
@@ -413,9 +463,21 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
 
 
 async def register_count_commands(
-    bot: Any, db: Database, resolver: Any = None, timezone: str = "Europe/Moscow"
+    bot: Any,
+    db: Database,
+    resolver: Any = None,
+    timezone: str = "Europe/Moscow",
+    *,
+    developer_user_id: int | None = None,
 ) -> None:
-    bot.tree.add_command(CountCommands(db, resolver, timezone))
+    bot.tree.add_command(
+        CountCommands(
+            db,
+            resolver,
+            timezone,
+            developer_user_id=developer_user_id,
+        )
+    )
     log.info("count_commands_registered")
 
 

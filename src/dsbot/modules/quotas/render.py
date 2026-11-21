@@ -35,7 +35,8 @@ NO_TIER = "Без тира"
 class RenderContext:
     """Everything the text needs that is not a number."""
 
-    title: str
+    # No title: the heading is derived from the period, so there is one less setting to
+    # configure and one less place for a report to be labelled wrongly.
     period_label: str
     timezone: str
     generated_at: datetime | None = None
@@ -43,6 +44,23 @@ class RenderContext:
     scope: str = ""
     # Tier labels or keys excluded from the message. Case-insensitive.
     hidden_tiers: tuple[str, ...] = ()
+    # When set, only this tier is shown or counted.
+    only_tier: str | None = None
+    # Footer: who wrote the bot, as a Discord ping and nothing else. No name, no link,
+    # because a report is read by a whole server and must not expose the developer.
+    developer_user_id: int | None = None
+
+
+def _footer(context: RenderContext) -> str:
+    """A single short line crediting the developer, when configured.
+
+    Deliberately only a ping. A name or an external link here would be visible to every
+    member of the report server, so the credit stays inside Discord and points at an
+    account rather than at a person.
+    """
+    if not context.developer_user_id:
+        return ""
+    return f"-# Бот: <@{context.developer_user_id}>"
 
 
 def member_line(tally: MemberTally, *, show_quota: bool = True) -> str:
@@ -51,24 +69,22 @@ def member_line(tally: MemberTally, *, show_quota: bool = True) -> str:
     The ping is the way to reach someone from the report, so the name is always
     `<@id>` rather than a stale nickname with no link back to the account.
 
-    With a quota, the total is clamped to the requirement: "3/2" invites the question
-    "out of what?", and overfilling a quota is not extra credit.
+    The total is the real total and is not clamped: "4/1" says exactly what happened,
+    while "1/1 +3" makes the reader add numbers up. Anything unusual (unreviewed,
+    approved by someone whose rights cannot be confirmed) goes in brackets afterwards.
     """
     total = tally.credited_total
     parts: list[str] = []
     if show_quota and tally.required_count > 0:
-        shown = min(total, tally.required_count)
-        parts.append(f"{_mark(tally)} {shown}/{tally.required_count}")
-        if total > tally.required_count:
-            parts.append(f"+{total - tally.required_count}")
+        parts.append(f"{_mark(tally)} {total}/{tally.required_count}")
     else:
         parts.append(f"{_mark(tally)} {total}")
 
     details: list[str] = []
     if tally.pending_count:
-        details.append(f"ждёт проверки {tally.pending_count}")
+        details.append(f"не проверено {tally.pending_count}")
     if tally.unknown_approval_count:
-        details.append(f"одобрено без прав {tally.unknown_approval_count}")
+        details.append(f"без роли {tally.unknown_approval_count}")
     if tally.rejected_count:
         details.append(f"отклонено {tally.rejected_count}")
     if tally.conflict_count:
@@ -122,28 +138,48 @@ def _row_sort_key(tally: MemberTally) -> tuple[int, int, str]:
     )
 
 
+def visible_rows(
+    summary: CountSummary, *, hidden_tiers: tuple[str, ...] = (), only_tier: str | None = None
+) -> list[MemberTally]:
+    """The rows a reader should see, after the per-channel hiding and tier filter.
+
+    Shared by the message and the CSV so a filtered report and its file cannot disagree.
+    """
+    hidden = {t.strip().lower() for t in hidden_tiers if t.strip()}
+    only = (only_tier or "").strip().lower()
+    return [
+        row
+        for row in summary.everyone()
+        if _tier_key(row).strip().lower() not in hidden
+        and (not only or _tier_key(row).strip().lower() == only)
+    ]
+
+
 def render_message(summary: CountSummary, context: RenderContext) -> list[str]:
     """Render pages of a Discord message, ready to post in order.
 
     An empty roster is called out explicitly. A silent empty table looks like success,
     and the actual cause (no ladder, or the Members intent off) would stay invisible.
     """
-    header: list[str] = [f"**{context.title}**"]
-    header.append(f"Период: {context.period_label} ({context.timezone})")
+    header: list[str] = [f"**Рапорты за {context.period_label}**"]
+    header.append(context.timezone)
     if context.scope:
         header.append(context.scope)
 
     hidden = {t.strip().lower() for t in context.hidden_tiers if t.strip()}
-    rows = [row for row in summary.everyone() if _tier_key(row).strip().lower() not in hidden]
+    only = (context.only_tier or "").strip().lower()
+    rows = visible_rows(summary, hidden_tiers=context.hidden_tiers, only_tier=context.only_tier)
     total = sum(row.credited_total for row in rows)
     pending = sum(row.pending_count for row in rows)
     header.append(
-        f"Рапортов учтено: **{total}**" + (f", из них ждут проверки: {pending}" if pending else "")
+        f"Рапортов учтено: **{total}**" + (f", из них не проверено: {pending}" if pending else "")
     )
 
     if not rows:
         header.append("")
-        if hidden and summary.everyone():
+        if only:
+            header.append(f"Тир «{context.only_tier}» не найден среди считаемых.")
+        elif hidden and summary.everyone():
             header.append("Все тиры скрыты в настройках этого канала.")
         else:
             header.append("Никого с настроенной ролью не найдено — считать не для кого.")
@@ -158,7 +194,7 @@ def render_message(summary: CountSummary, context: RenderContext) -> list[str]:
     unknown = sum(r.unknown_approval_count for r in rows)
     if unknown:
         header.append(
-            f"ℹ️ Рапортов, одобренных без подтверждённых прав: **{unknown}** "
+            f"ℹ️ Одобрено людьми без подтверждённых прав: **{unknown}** "
             "— зачтены, но проверьте, кто это сделал."
         )
 
@@ -204,6 +240,10 @@ def render_message(summary: CountSummary, context: RenderContext) -> list[str]:
             + (" и др." if len(unranked) > 10 else "")
         )
         pages[-1] += "\nПроверьте, что у этих людей выдана нужная роль."
+
+    credit = _footer(context)
+    if credit:
+        pages[-1] += "\n\n" + credit
     return pages
 
 
@@ -229,12 +269,21 @@ def _met_cell(tally: MemberTally) -> str:
     return "yes" if tally.met else "no"
 
 
-def render_csv(summary: CountSummary) -> str:
-    """A CSV with a BOM, so Excel opens Cyrillic names correctly on Windows."""
+def render_csv(
+    summary: CountSummary,
+    *,
+    hidden_tiers: tuple[str, ...] = (),
+    only_tier: str | None = None,
+) -> str:
+    """A CSV with a BOM, so Excel opens Cyrillic names correctly on Windows.
+
+    Applies the same filters as the message: a file that silently contained rows the
+    report hid would be a second, disagreeing answer.
+    """
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS)
     writer.writeheader()
-    for row in summary.everyone():
+    for row in visible_rows(summary, hidden_tiers=hidden_tiers, only_tier=only_tier):
         writer.writerow(
             {
                 "user_id": row.user_id,
