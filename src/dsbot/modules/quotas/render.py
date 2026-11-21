@@ -88,7 +88,7 @@ def member_line(tally: MemberTally, *, show_quota: bool = True) -> str:
     if tally.rejected_count:
         details.append(f"отклонено {tally.rejected_count}")
     if tally.conflict_count:
-        details.append(f"конфликт {tally.conflict_count}")
+        details.append(f"отклонён конфликт {tally.conflict_count}")
     if details:
         parts.append(f"({', '.join(details)})")
 
@@ -188,8 +188,8 @@ def render_message(summary: CountSummary, context: RenderContext) -> list[str]:
     blocked = [r for r in rows if r.conflict_count]
     if blocked:
         header.append(
-            f"⚠️ Рапортов с конфликтом вердиктов: **{sum(r.conflict_count for r in blocked)}** "
-            "— они не зачтены."
+            f"Отклонено из-за конфликта вердиктов: "
+            f"**{sum(r.conflict_count for r in blocked)}** — одинаковый тир не договорился."
         )
     unknown = sum(r.unknown_approval_count for r in rows)
     if unknown:

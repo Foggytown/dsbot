@@ -80,7 +80,7 @@ class Bot(discord.ext.commands.Bot):
             {},
         )
         self.roster = RosterService(self.db, DiscordRosterSource(self))
-        self.verdicts = VerdictService(self.db, self.resolver, self.reply)
+        self.verdicts = VerdictService(self.db, self.resolver)
         self._tasks: set[asyncio.Task[Any]] = set()
         self._ladders: dict[int, GuildLadders] = {}
 

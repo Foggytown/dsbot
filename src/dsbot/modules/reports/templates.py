@@ -219,12 +219,6 @@ REPORT_FIXED: Final[dict[str, str]] = {
     "en": "Report form corrected.",
 }
 
-# Shown to staff in a log channel when an approval is ambiguous.
-VERDICT_CONFLICT: Final[dict[str, str]] = {
-    "ru": ("Конфликт вердиктов у рапорта {link}: одинаковый уровень у {users}. Решите вручную."),
-    "en": ("Verdict conflict on report {link}: equal tier from {users}. Resolve manually."),
-}
-
 
 def issue_line(code: str, locale: str, **context: str) -> str:
     table = ISSUE_LINES.get(code)

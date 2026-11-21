@@ -12,21 +12,15 @@ on every subsequent recomputation.
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
 
 import structlog
 
 from dsbot.modules.ranks.resolver import RankResolver
-from dsbot.modules.reports.templates import DEFAULT_LOCALE, VERDICT_CONFLICT
 from dsbot.modules.verdict.engine import Rank, Reaction, compute_verdict
 from dsbot.storage import repos
 from dsbot.storage.db import Database
-
-if TYPE_CHECKING:
-    from dsbot.discord.reply import ReplySink
 
 log = structlog.get_logger(__name__)
 
@@ -50,16 +44,9 @@ class VerdictService:
         self,
         db: Database,
         resolver: RankResolver | None = None,
-        reply: ReplySink | None = None,
     ) -> None:
         self._db = db
         self._resolver = resolver
-        self._reply = reply
-        # Reports whose conflict has already been announced. Bounded: a long-running bot
-        # would otherwise remember every conflicted report forever, and the oldest
-        # entries are the least likely to matter again.
-        self._announced: OrderedDict[tuple[int, str], None] = OrderedDict()
-        self._announced_limit = 500
 
     async def on_reaction(self, message_id: int) -> VerdictUpdate | None:
         """Recompute the verdict of the report on `message_id`, if it is a report."""
@@ -99,8 +86,6 @@ class VerdictService:
             conflicted_users=tuple(result.conflicted_users),
             changed=previous != result.verdict,
         )
-        key_marker = (report_id, "conflict")
-
         if degraded:
             # Counting depends on knowing who may review, so say it out loud instead of
             # quietly producing a smaller number.
@@ -124,12 +109,17 @@ class VerdictService:
             )
 
         if result.verdict == "conflict":
-            await self._announce_conflict(update)
-        elif update.changed:
-            # The conflict was resolved (or replaced by another verdict). Forget it, so a
-            # fresh disagreement on the same report is announced again instead of being
-            # swallowed by the earlier notice.
-            self._announced.pop(key_marker, None)
+            # Logged, never posted. A same-tier disagreement is a staff problem, and the
+            # report channel is not the place to debate it: an automatic weekly run must
+            # be able to finish without producing noise, and the count already records the
+            # report as not credited. Silence here is deliberate.
+            log.warning(
+                "verdict_conflict",
+                report_id=report_id,
+                channel_id=channel_id,
+                users=list(result.conflicted_users),
+                hint="same-tier reviewers disagree; the report does not count",
+            )
         return update
 
     async def resolve_ranks(
@@ -154,43 +144,6 @@ class VerdictService:
                 tier_label=resolved.tier_label,
             )
         return ranks
-
-    async def _announce_conflict(self, update: VerdictUpdate) -> None:
-        key = (update.report_id, "conflict")
-        if key in self._announced:
-            return
-        self._announced[key] = None
-        while len(self._announced) > self._announced_limit:
-            self._announced.popitem(last=False)
-        if self._reply is None:
-            log.warning(
-                "verdict_conflict_unannounced",
-                report_id=update.report_id,
-                users=update.conflicted_users,
-                hint="no reply sink configured",
-            )
-            return
-
-        users = ", ".join(f"<@{uid}>" for uid in update.conflicted_users) or "-"
-        template = VERDICT_CONFLICT.get(DEFAULT_LOCALE, "")
-        link = f"https://discord.com/channels/{update.channel_id}/{update.message_id}"
-        body = template.format(link=link, users=users)
-        posted = await self._reply.send(update.channel_id, body)
-        if posted is None:
-            log.error(
-                "verdict_conflict_not_posted",
-                report_id=update.report_id,
-                channel_id=update.channel_id,
-            )
-            # Let the next recomputation try again rather than silently never retrying.
-            self._announced.pop(key, None)
-            return
-        log.info(
-            "verdict_conflict_announced",
-            report_id=update.report_id,
-            channel_id=update.channel_id,
-            message_id=posted,
-        )
 
 
 @dataclass(frozen=True, slots=True)

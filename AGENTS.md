@@ -235,7 +235,7 @@ The rules are deliberate and were agreed explicitly:
 | still `pending` at count time | **yes**, reported separately | reviewers' backlog is not the reporter's fault |
 | `approved_unknown` | **yes**, in its own category | a human approved it; only their role changed since |
 | `rejected` | no | staff decided against it |
-| `conflict` | no | guessing a side produces a wrong number |
+| `conflict` | no, counted as declined | same-tier disagreement; logged, never announced |
 
 `approved_unknown` is the fourth case and the subtle one. Discord only knows *current*
 roles, so an approver who has since lost the role is indistinguishable from a stranger.
@@ -519,9 +519,10 @@ These were deliberately left to the community. Do not invent an answer to them.
    its own evidence rather than only a cache) is undecided.
 2. **Jedi identity.** JEDI reports identify soldiers by name, not IDN. No such reports
    arrive today, so the IDN field is correct for now. Do not force a name into an IDN.
-3. **Conflict notification target.** A same-tier disagreement is announced in the report
-   channel. Whether it should go to a dedicated channel, or ping specific people, is
-   undecided.
+3. ~~Conflict notification.~~ **Settled: never announce.** A same-tier disagreement is
+   silent — logged only, never posted. The report is recorded as `conflict`, counted as
+   declined, and the weekly run proceeds without channel noise. An automatic run must be
+   able to finish unattended, so nothing about a conflict can require a human in-channel.
 4. **Reports with form errors.** They currently count toward quotas if approved, on the
    grounds that a human approved them. Whether a report that was never fixed should count
    is a policy question.

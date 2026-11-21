@@ -261,7 +261,103 @@ async def test_reaction_without_a_known_rank_is_kept_but_marked_unknown(db: Data
     assert update.decided_by_user_id is None, "nobody verified it, so nobody is named"
 
 
-async def test_roster_scrape_keeps_only_people_on_the_ladder(db: Database) -> None:
+async def test_a_conflict_counts_as_declined_and_says_nothing(db: Database) -> None:
+    """A same-tier disagreement must not announce anything; it simply does not count.
+
+    An automatic weekly run has to finish without producing channel noise, so the report
+    is recorded as a conflict, logged, and left out of the credited total.
+    """
+    from dsbot.modules.quotas.counting import CountedReport, evaluate_reports, tally
+    from dsbot.modules.ranks.ladder import LadderSpec, TierSpec
+    from dsbot.modules.reports.schema import FormSchemaDef
+    from dsbot.modules.reports.yaml_form import parse_form_file
+    from dsbot.storage import admin, ranks_repo
+    from dsbot.storage import repos as repos_mod
+
+    schema: FormSchemaDef = parse_form_file(Path("forms/training.yaml"))
+    async with db.write_session() as session:
+        await admin.ensure_schema_seed(session, [schema])
+        binding = await admin.bind_channel(
+            session,
+            guild_id=REPORT_GUILD,
+            channel_id=CHANNEL,
+            module_key="reports",
+            schema_key=schema.key,
+            rank_source_guild_id=REPORT_GUILD,
+        )
+        await ranks_repo.replace_ladder(
+            session,
+            LadderSpec(
+                key="review",
+                guild_id=REPORT_GUILD,
+                purpose="review",
+                tiers=[
+                    TierSpec(
+                        key="senior",
+                        label="Senior",
+                        ordinal=30,
+                        roles=[20],
+                        capabilities=["review"],
+                    )
+                ],
+            ),
+        )
+        report = await repos_mod.upsert_report(
+            session,
+            channel_id=CHANNEL,
+            message_id=1,
+            guild_id=REPORT_GUILD,
+            author_user_id=AUTHOR,
+            created_at=PERIOD.start,
+            binding_id=binding.id,
+        )
+        report.status = "valid"
+        report_id = report.id
+
+        # Two reviewers of the SAME tier disagree.
+        for user_id in (501, 502):
+            await repos_mod.add_reaction(
+                session,
+                message_id=1,
+                channel_id=CHANNEL,
+                guild_id=REPORT_GUILD,
+                emoji_key="unicode:\u2705" if user_id == 501 else "unicode:\u274c",
+                emoji_id=None,
+                emoji_name="\u2705" if user_id == 501 else "\u274c",
+                user_id=user_id,
+                tier_ordinal=30,
+                tier_label="Senior",
+                can_review=True,
+            )
+
+    # The verdict service must not raise or post; it has no reply sink at all now.
+    update = await VerdictService(db).on_reaction(1)
+    assert update is not None
+    assert update.verdict == "conflict"
+
+    async with db.session() as session:
+        rows = await repos_mod.list_reactions(session, 1)
+    from dsbot.modules.verdict.engine import Rank, Reaction
+
+    reactions = tuple(Reaction(user_id=r.user_id, emoji_name=r.emoji_name) for r in rows)
+    ranks = {r.user_id: Rank(user_id=r.user_id, ordinal=30, tier_label="Senior") for r in rows}
+    outcomes = evaluate_reports(
+        [
+            CountedReport(
+                report_id=report_id,
+                author_user_id=AUTHOR,
+                created_at=PERIOD.start,
+                reactions=reactions,
+                ranks=ranks,
+            )
+        ]
+    )
+    summary = tally(outcomes, [])
+    assert summary.credited_total() == 0, "a conflict must not credit anybody"
+
+    credited = [t for t in summary.tallies + summary.unranked if t.credited_total]
+    assert credited == []
+
     _, ladder_id = await setup_binding(db)
 
     class Member:
@@ -371,3 +467,35 @@ async def test_republishing_edits_the_same_messages(db: Database) -> None:
     # One send, then an edit: no second copy of the report.
     assert len(reply.sent) == 1
     assert len(reply.edited) == 1
+
+
+async def test_roster_scrape_keeps_only_people_on_the_ladder(db: Database) -> None:
+    _, ladder_id = await setup_binding(db)
+
+    class Member:
+        def __init__(self, user_id: int, roles: list[int], name: str = "") -> None:
+            self.id = user_id
+            self.roles = [type("Role", (), {"id": r})() for r in roles]
+            self.display_name = name or f"user{user_id}"
+
+    source = StaticRosterSource(
+        {
+            REPORT_GUILD: [
+                Member(AUTHOR, [SENIOR_ROLE], "Ann"),
+                Member(700, [], "NoRoles"),
+                Member(701, [999], "UnknownRole"),
+            ]
+        }
+    )
+    ladder = guild_ladders(ladder_id)
+    ladder.indexes[0].by_role.update(
+        {
+            SENIOR_ROLE: ("senior", "Senior Instructor", 30, frozenset({"review"})),
+            30: ("instructor", "Instructor", 10, frozenset()),
+        }
+    )
+    service = RosterService(db, source)
+    result = await service.refresh(REPORT_GUILD, ladder, ladder_id=ladder_id)
+
+    assert result.ok
+    assert [row["user_id"] for row in result.members] == [AUTHOR]
