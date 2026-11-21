@@ -1584,7 +1584,7 @@ def roster_refresh(
             if ladder is None or ladder.quota_ladder_id is None:
                 typer.echo(
                     f"no ladder for guild {guild_id}. Apply one first: "
-                    "uv run dsbot ladder-apply --file forms/ladders/instructors.yaml"
+                    "uv run dsbot ladder-apply --file forms/ladders/review.yaml"
                 )
                 raise typer.Exit(code=1)
 
@@ -1781,7 +1781,7 @@ def _print_outcome(outcome: Any, csv_out: Path | None) -> None:
     if outcome.roster_missing:
         typer.echo(
             "Подсказка: роли ещё не заданы, поэтому список людей для подсчёта неизвестен.\n"
-            "  uv run dsbot ladder-apply --file forms/ladders/instructors.yaml\n"
+            "  uv run dsbot ladder-apply --file forms/ladders/review.yaml\n"
             "  uv run dsbot roster-refresh --channel <id>",
             err=True,
         )

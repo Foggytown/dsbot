@@ -242,7 +242,7 @@ roles, so an approver who has since lost the role is indistinguishable from a st
 Their approval is neither a verified approval nor an absence of one. Reverting it to
 `pending` would blame the reporter for someone else's promotion, and treating it as normal
 would hide that the reviewer's authority is unverifiable, so it gets its own category:
-counted, shown as «одобрено без прав», and listed in the header.
+counted, shown as «без роли», and listed in the header.
 
 ### Report presentation
 

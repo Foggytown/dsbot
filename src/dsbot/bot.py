@@ -576,7 +576,7 @@ class Bot(discord.ext.commands.Bot):
             log.warning(
                 "no_rank_ladders",
                 hint="No ladder is loaded, so no reaction can approve anything. "
-                "Run `dsbot ladder-apply --file forms/ladders/instructors.yaml`.",
+                "Add the ladders to forms/ladders/ and name them in channels.yaml.",
             )
             return
         for guild_id, group in ladders.items():

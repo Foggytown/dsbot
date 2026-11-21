@@ -1,14 +1,14 @@
-"""Form authoring: export/import a channel's schema as JSON.
+"""Form authoring: apply a YAML form to a channel.
 
-The admin workflow this enables, today from the CLI and later from a slash command:
+The admin workflow, which matches how ladders and channels already work:
 
-    1. dsbot form-export --channel <id>          -> forms/ch-<id>.json
-    2. edit the JSON (add fields, change labels, required-ness, options)
-    3. dsbot form-import --channel <id> --file forms/ch-<id>.json
-    4. dsbot parse --file sample.txt             -> verify
+    1. edit forms/<name>.yaml  (fields, labels, required-ness, options)
+    2. uv run dsbot form-check --file forms/<name>.yaml
+    3. uv run dsbot form-apply --channel <id> --file forms/<name>.yaml
+    4. uv run dsbot parse --file sample.txt --channel <id>
 
 Nothing here is channel-specific. A second channel with a different form is a second
-JSON file, not code.
+YAML file, not code.
 """
 
 from __future__ import annotations
