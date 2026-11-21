@@ -123,9 +123,6 @@ class CountSummary:
     def pending_total(self) -> int:
         return sum(1 for o in self.outcomes if o.verdict == "pending")
 
-    def unknown_approval_total(self) -> int:
-        return sum(1 for o in self.outcomes if o.verdict == APPROVED_UNKNOWN)
-
     def conflict_total(self) -> int:
         return sum(1 for o in self.outcomes if o.verdict == CONFLICT)
 

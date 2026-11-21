@@ -74,10 +74,6 @@ class ReportCandidate:
     def total_attachments(self) -> int:
         return sum(m.attachment_count for m in self.messages)
 
-    @property
-    def combined_content(self) -> str:
-        return "\n".join(m.content for m in self.messages)
-
 
 @dataclass(slots=True)
 class BoundField:

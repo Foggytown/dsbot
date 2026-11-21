@@ -7,9 +7,9 @@ makes the SQLite -> Postgres move a single-file concern.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -25,10 +25,8 @@ from dsbot.core.events import (
 )
 from dsbot.storage.models import (
     BindingSchema,
-    Channel,
     ChannelBinding,
     FormSchema,
-    Guild,
     Message,
     MessageReaction,
     QuotaPolicy,
@@ -98,48 +96,6 @@ def _jsonable(value: Any) -> Any:
 # --- guilds / channels -----------------------------------------------------
 
 
-async def upsert_guild(
-    session: AsyncSession, guild_id: int, name: str = "", *, is_report_guild: bool | None = None
-) -> None:
-    guild = await session.get(Guild, guild_id)
-    if guild is None:
-        guild = Guild(
-            id=guild_id,
-            name=name,
-            is_report_guild=bool(is_report_guild),
-            is_rank_source=False,
-        )
-        session.add(guild)
-        return
-    if name and guild.name != name:
-        guild.name = name
-    if is_report_guild is not None:
-        guild.is_report_guild = is_report_guild
-
-
-async def upsert_channel(
-    session: AsyncSession,
-    channel_id: int,
-    guild_id: int,
-    name: str = "",
-    *,
-    parent_id: int | None = None,
-    kind: str = "text",
-) -> None:
-    channel = await session.get(Channel, channel_id)
-    if channel is None:
-        session.add(
-            Channel(id=channel_id, guild_id=guild_id, name=name, parent_id=parent_id, kind=kind)
-        )
-        return
-    if name and channel.name != name:
-        channel.name = name
-    if parent_id is not None and channel.parent_id != parent_id:
-        channel.parent_id = parent_id
-    if kind and channel.kind != kind:
-        channel.kind = kind
-
-
 async def get_binding_by_channel(session: AsyncSession, channel_id: int) -> ChannelBinding | None:
     return await session.scalar(
         select(ChannelBinding).where(
@@ -171,10 +127,6 @@ async def get_message(session: AsyncSession, channel_id: int, message_id: int) -
     return await session.scalar(
         select(Message).where(Message.channel_id == channel_id, Message.message_id == message_id)
     )
-
-
-async def get_message_by_id(session: AsyncSession, message_id: int) -> Message | None:
-    return await session.scalar(select(Message).where(Message.message_id == message_id))
 
 
 async def upsert_message(session: AsyncSession, snapshot: Any) -> Message:
@@ -211,14 +163,6 @@ async def upsert_message(session: AsyncSession, snapshot: Any) -> Message:
     message.embeds = embeds
     message.referenced_message_id = snapshot.referenced_message_id
     return message
-
-
-async def mark_message_deleted(
-    session: AsyncSession, channel_id: int, message_id: int, when: datetime | None = None
-) -> None:
-    message = await get_message(session, channel_id, message_id)
-    if message is not None:
-        message.deleted_at = when or datetime.now(UTC)
 
 
 async def list_messages_between(
@@ -371,28 +315,6 @@ async def upsert_report(
     return report
 
 
-async def delete_report(session: AsyncSession, report_id: int) -> None:
-    await session.execute(delete(Report).where(Report.id == report_id))
-
-
-async def count_reports(
-    session: AsyncSession,
-    *,
-    channel_id: int,
-    start: datetime,
-    end: datetime,
-    statuses: Iterable[str] | None = None,
-) -> int:
-    stmt = select(func.count(Report.id)).where(
-        Report.channel_id == channel_id,
-        Report.created_at >= start,
-        Report.created_at < end,
-    )
-    if statuses is not None:
-        stmt = stmt.where(Report.status.in_(list(statuses)))
-    return int(await session.scalar(stmt) or 0)
-
-
 async def list_pending_reports(
     session: AsyncSession,
     *,
@@ -489,10 +411,6 @@ async def delete_validation_message(
     )
 
 
-async def get_form_schema_by_key(session: AsyncSession, key: str) -> FormSchema | None:
-    return await session.scalar(select(FormSchema).where(FormSchema.key == key))
-
-
 async def get_schemas_for_binding(session: AsyncSession, binding_id: int) -> Sequence[FormSchema]:
     stmt = (
         select(FormSchema)
@@ -501,44 +419,6 @@ async def get_schemas_for_binding(session: AsyncSession, binding_id: int) -> Seq
         .order_by(BindingSchema.priority)
     )
     return (await session.scalars(stmt)).all()
-
-
-async def put_cached_rank(
-    session: AsyncSession,
-    *,
-    guild_id: int,
-    user_id: int,
-    ladder_id: int | None,
-    tier_id: int | None,
-    tier_ordinal: int | None,
-    source: str = "gateway",
-) -> None:
-    row = await get_cached_rank(session, guild_id, user_id)
-    if row is None:
-        session.add(
-            UserRankCache(
-                guild_id=guild_id,
-                user_id=user_id,
-                ladder_id=ladder_id,
-                tier_id=tier_id,
-                tier_ordinal=tier_ordinal,
-                source=source,
-            )
-        )
-        return
-    row.ladder_id = ladder_id
-    row.tier_id = tier_id
-    row.tier_ordinal = tier_ordinal
-    row.source = source
-    row.resolved_at = datetime.now(UTC)
-
-
-# --- phase 3: counting -----------------------------------------------------
-#
-# Counting is a read-only sweep over stored state. Nothing here writes, so a count can
-# run inside the live bot while it keeps ingesting: the database hands out a consistent
-# snapshot per transaction, and a report approved a second later is simply picked up by
-# the next run.
 
 
 async def list_reports_for_binding_between(
@@ -622,10 +502,6 @@ async def put_report_verdict(
                 reason=reason,
             )
         )
-
-
-async def get_report_by_id(session: AsyncSession, report_id: int) -> Report | None:
-    return await session.get(Report, report_id)
 
 
 async def list_report_verdict_history(

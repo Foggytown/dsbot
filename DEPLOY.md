@@ -130,8 +130,8 @@ DSBOT_REPORT_GROUP_WINDOW_SECONDS=120
 DSBOT_ENABLE_MEMBERS_INTENT=true
 ```
 
-`DSBOT_AUTO_BIND_CHANNELS` больше не нужен: каналы берутся из `forms/channels.yaml`,
-который лежит в git и применяется при каждом старте.
+DSBOT_AUTO_BIND_CHANNELS больше не нужен: каналы берутся из channels.yaml в папке
+данных (/data), который копируется из orms/channels.yaml при первом старте.
 
 Путь к БД **относительный** (`./var`), поэтому рабочий каталог процесса должен быть
 корнем проекта. Панель так и делает.

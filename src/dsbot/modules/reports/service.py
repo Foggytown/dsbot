@@ -491,14 +491,6 @@ def _field_hint(field_id: str | None, parsed: ParseOutput) -> str:
     return field_id
 
 
-def _status_for(parsed: ParseOutput) -> str:
-    if not parsed.matched:
-        return "ignored"
-    if parsed.is_valid:
-        return "valid"
-    return "invalid"
-
-
 def _locale(value: str | None) -> str:
     if value and value in SUPPORTED_LOCALES:
         return value

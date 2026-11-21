@@ -1510,13 +1510,6 @@ def _require_scrape_settings(settings: Settings) -> None:
         )
 
 
-def _new_lookup_client() -> Any:
-    """A Discord client with exactly the intents a roster scrape needs."""
-    import discord
-
-    return discord.Client(intents=_lookup_intents())
-
-
 def _lookup_intents() -> Any:
     """Guilds plus Members, nothing else.
 

@@ -12,9 +12,15 @@ Deployed phases:
 
 - Phase 1 (done): capture -> parse -> validate -> warnings -> export.
 - **Phase 2 (done):** cross-server rank resolution, verdict engine from reactions.
-- **Phase 3 (done):** approved-report counting per person per week, roster scraping,
-  slash command, CSV and optional publication.
-- **Next:** scheduled weekly posting, dashboards.
+- **Phase 3 (done):** counting reports per person for any period, read from Discord
+  history; roster and quota ladders; slash commands; CSV and optional publication.
+- **Next (not started):** scheduled weekly posting. Possible later: ingesting reactions
+  as they happen so recent scans need no API calls; dashboards.
+
+**Where things stand at the end of phase 3.** The counting feature works end to end and
+has been run against a real channel. The known open points are listed at the end of this
+file under "Open questions" — read them before starting new work, several are decisions
+waiting on the community rather than code.
 
 Explicitly out of scope for now: role assignment, soldier progression tiers,
 soldier-to-instructor assignment, dashboards.
@@ -349,6 +355,11 @@ the form, not of the qualification.
 - **Never rewrite source files with PowerShell.** `Get-Content`/`Set-Content` mangles
   UTF-8 Cyrillic and has corrupted source and tests repeatedly. Use the edit tool or a
   Python script. When reading command output set `$env:PYTHONIOENCODING="utf-8"`.
+- **Scripts, not assertions, for anything involving cost or persistence.** Claims like
+  "this is fast" or "this survives a redeploy" are proven by a `scripts/e2e-*.py` that
+  measures or exercises it. Several bugs in this project were invisible to unit tests and
+  obvious to a 20-line script.
+- Time-dependent tests must not depend on the current date. Use an explicit `now=`.
 
 ## Mistake log — do not repeat these
 
@@ -414,6 +425,14 @@ Each of these shipped and had to be found by a live run or a user report.
     fine locally and was slower in production, because each 429 costs seconds. The real
     fix is fewer requests: skip messages with no ✓/✗, and reuse stored reactors when the
     counts have not changed.
+19. **A cache keyed on counts cannot see a swap.** One person removing a check while
+    another adds one leaves the count identical while the *people* change - and who
+    reacted is what decides authority. Freshness is therefore judged by period: a closed
+    period is historical fact and is reused freely, a recent message only for two minutes.
+20. **Personal details in a committed script.** A preview script carried the author's
+    username and a repository URL, which would have shipped in every deployment. The
+    developer credit is a Discord ping only, read from settings; nothing name-like is
+    hardcoded, and never add a name or external link to user-visible output.
 
 ## Verification
 
@@ -436,3 +455,71 @@ uv run dsbot analyze --dump backfill-out/ch.jsonl
 
 `unmatched` samples are the most valuable output: they show which real-world formats
 the schema does not yet cover.
+
+## Phase 3 in one page
+
+Four moving parts, and knowing which owns what prevents most mistakes.
+
+| Piece | Lives in | Answers |
+|---|---|---|
+| review ladder | `forms/ladders/review.yaml` | who may approve, and who outranks whom |
+| quota ladder | `forms/ladders/quota.yaml` | who owes reports, and how many per week |
+| roster | `roster_members` table | who was on those roles when the roster was scraped |
+| counting | `modules/quotas/` | how many reports each person filed in a period |
+
+**Flow when someone runs `/reports count`:**
+
+1. the period is resolved (`period.py`) — any dates, or a named week
+2. the channel's binding supplies the form, the ladders, and the hidden tiers
+3. `live.py` reads the channel's history for that window (not the archive)
+4. messages are grouped into reports, parsed, and filtered by tier
+5. reactors are read from Discord, or reused from the cache when provably unchanged
+6. the verdict engine computes approved / rejected / conflict / approved-unknown
+7. `counting.py` tallies per person, `render.py` groups by tier and renders
+
+**Design decisions worth not re-litigating:**
+
+- History comes from Discord; the database holds configuration, the roster, and audit.
+- An unreviewed report still counts as pending; only a rejection or conflict removes it.
+- `approved_unknown` exists because Discord only knows *current* roles.
+- A quota ladder cannot carry `capabilities`; a review ladder cannot carry quotas.
+- Rows are grouped by tier, people are pings, and the footer is a ping only.
+
+**Scripts that prove it still works** (run the relevant one after touching this area):
+
+```
+scripts/e2e-counting.py        count a fixture period end to end
+scripts/e2e-live.py           read from Discord-shaped history, group photos
+scripts/e2e-quota.py          highest quota tier wins, review roles owe nothing
+scripts/e2e-ladders.py        review and quota ladders stay separate
+scripts/e2e-deploy.py         a redeploy rebuilds config and keeps the roster
+scripts/e2e-channels-file.py  channels.yaml lives in /data and survives deploys
+scripts/e2e-settings.py       Discord-side settings survive restart and sync
+scripts/e2e-reaction-cache.py cached reactors reused, changes refetch
+scripts/check-commands.py     the slash command tree is valid
+scripts/preview-report.py     print the exact message staff would see
+scripts/profile-*.py          where the time goes, measured
+```
+
+## Open questions — decisions, not bugs
+
+These were deliberately left to the community. Do not invent an answer to them.
+
+1. **Reaction ingestion.** Reactions are currently read from Discord on demand, which
+   costs ~1 request per reviewed report. Ingesting reaction events as they arrive would
+   make recent scans free and give the bot its own record, but stores more data. Not
+   approved yet.
+2. **Jedi identity.** JEDI reports identify soldiers by name, not IDN. No such reports
+   arrive today, so the IDN field is correct for now. Do not force a name into an IDN.
+3. **Conflict notification target.** A same-tier disagreement is announced in the report
+   channel. Whether it should go to a dedicated channel, or ping specific people, is
+   undecided.
+4. **Reports with form errors.** They currently count toward quotas if approved, on the
+   grounds that a human approved them. Whether a report that was never fixed should count
+   is a policy question.
+5. **Ladders and forms stay in git.** Channels moved to `/data` because they change
+   operationally; ladders and forms are reviewed, so they still need a push. Making them
+   editable from Discord is future work.
+6. **Historical rosters.** A count for a past period uses *today's* roster, because
+   Discord cannot report who held a role last month. The output says so. Recording
+   membership over time would fix it, and is not implemented.

@@ -94,10 +94,6 @@ class Item:
     def is_blank(self) -> bool:
         return is_blank_value(self.value)
 
-    @property
-    def is_unumbered_label(self) -> bool:
-        return self.path == () and self.marker == ""
-
 
 @dataclass(frozen=True, slots=True)
 class Tokenized:

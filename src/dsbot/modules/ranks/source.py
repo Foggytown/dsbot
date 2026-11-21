@@ -12,8 +12,6 @@ intent, which is a privileged intent and an extra portal step.
 
 from __future__ import annotations
 
-from typing import Any
-
 import discord
 import structlog
 
@@ -63,31 +61,3 @@ class StaticRankSource:
     async def role_ids_for(self, guild_id: int, user_id: int) -> frozenset[int] | None:
         self.calls.append((guild_id, user_id))
         return self._mapping.get((guild_id, user_id))
-
-
-def ladder_index_from_specs(specs: list[Any]) -> dict[int, Any]:
-    """Build guild -> LadderIndex from loaded ladder specs.
-
-    Imported lazily to avoid a cycle between the resolver and the schema module.
-    """
-    from dsbot.modules.ranks.resolver import LadderIndex
-
-    by_guild: dict[int, LadderIndex] = {}
-    for spec in specs:
-        index = LadderIndex(
-            ladder_id=getattr(spec, "id", None),
-            guild_id=spec.guild_id,
-            key=spec.key,
-            by_role={
-                role_id: (
-                    tier.key,
-                    tier.label or tier.key,
-                    tier.ordinal,
-                    frozenset(tier.capabilities),
-                )
-                for tier in spec.tiers
-                for role_id in tier.roles
-            },
-        )
-        by_guild[spec.guild_id] = index
-    return by_guild

@@ -113,11 +113,6 @@ class RosterService:
         self._db = db
         self._source = source
 
-    async def has_roster(self, ladder_id: int) -> bool:
-        """Whether a roster has ever been scraped. Used to explain an empty report."""
-        async with self._db.session() as session:
-            return bool(await repos.list_roster(session, ladder_id))
-
     async def scrape(
         self,
         guild_id: int,

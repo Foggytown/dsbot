@@ -15,13 +15,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dsbot.modules.reports.schema import FormSchemaDef, from_definition
+from dsbot.modules.reports.schema import FormSchemaDef
 from dsbot.storage import admin
 from dsbot.storage.models import BindingSchema, ChannelBinding, FormSchema
 
@@ -164,20 +163,6 @@ async def import_forms(
             link.priority = priority
 
     return ImportResult(imported=[d.key for d in definitions], created=created, updated=updated)
-
-
-def load_definition_file(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError("form file must contain a JSON object")
-    return data
-
-
-def validate_definition(payload: dict[str, Any]) -> list[FormSchemaDef]:
-    """Parse without writing. Used by `form-check` and by import pre-flight."""
-    raw = payload.get("schemas")
-    items = raw if isinstance(raw, list) else [payload]
-    return [from_definition(item) for item in items]
 
 
 async def edit_field_values(

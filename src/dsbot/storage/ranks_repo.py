@@ -232,10 +232,3 @@ async def ladder_for_guild(session: AsyncSession, guild_id: int) -> RankLadder |
         if has_review is not None:
             return ladder
     return candidates[0]
-
-
-async def ladder_ids_for_guild(session: AsyncSession, guild_id: int) -> Sequence[int]:
-    """Ids of every ladder in a guild. Diagnostics and future admin tooling."""
-    return list(
-        (await session.scalars(select(RankLadder.id).where(RankLadder.guild_id == guild_id))).all()
-    )

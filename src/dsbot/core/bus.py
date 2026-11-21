@@ -50,17 +50,6 @@ class EventBus:
     def subscribe(self, kind: str, handler: Handler) -> None:
         self._subscribers.setdefault(kind, []).append(handler)
 
-    def subscribe_all(self, handler: Handler) -> None:
-        for kind in (
-            "message_created",
-            "message_edited",
-            "message_deleted",
-            "reaction_added",
-            "reaction_removed",
-            "reaction_cleared",
-        ):
-            self.subscribe(kind, handler)
-
     async def publish(self, event: Event) -> None:
         if self._closed:
             raise RuntimeError("event bus is closed")

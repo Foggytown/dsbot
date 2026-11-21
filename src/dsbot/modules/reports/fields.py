@@ -354,15 +354,6 @@ _CYRILLIC_FOLD = str.maketrans(
 )
 
 
-def normalise_formation(token: str) -> str:
-    """Upper-case a formation and fold Cyrillic look-alikes to Latin.
-
-    `РЎT` (Cyrillic es) and `CT` are the same formation to a human, so they must not be
-    treated as different. This is the only tolerance kept: misspellings still fail.
-    """
-    return token.upper().translate(_CYRILLIC_FOLD)
-
-
 def parse_identity(
     raw: str,
     field_id: str,

@@ -149,8 +149,8 @@ roster, quota norms, and a record of invalid reports and their warnings.
 | Situation | Counted? | Why |
 |---|---|---|
 | approved by a tier with `review` | yes | normal case |
-| still undecided at count time | yes, shown as `ждёт проверки` | an unreviewed report is the reviewers' backlog, not the instructor's fault |
-| approved, but the reviewer's role cannot be confirmed | yes, shown as `одобрено без прав` | a human did approve it; only their role changed since |
+| still undecided at count time | yes, shown as `не проверено` | an unreviewed report is the reviewers' backlog, not the instructor's fault |
+| approved, but the reviewer's role cannot be confirmed | yes, shown as `без роли` | a human did approve it; only their role changed since |
 | rejected | no | staff decided against it |
 | `conflict` (two equal tiers disagree) | no | guessing a side would produce a wrong number |
 

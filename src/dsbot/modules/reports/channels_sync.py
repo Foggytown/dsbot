@@ -18,10 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from dsbot.modules.ranks.ladder import LadderSpec, ladder_problems, load_ladder
 from dsbot.modules.reports.authoring import import_forms
 from dsbot.modules.reports.channels import (
-    DEFAULT_CHANNELS_FILE,
     ChannelsFile,
     ChannelsSyncResult,
-    load_channels_file,
 )
 from dsbot.modules.reports.yaml_form import parse_form_file
 from dsbot.storage import admin, ranks_repo
@@ -193,12 +191,6 @@ async def _store_ladder_choice(session: AsyncSession, entry: object, review_id: 
         binding.config = config
         changed = True
     return changed
-
-
-async def load_channels_from_file(
-    path: Path = DEFAULT_CHANNELS_FILE,
-) -> ChannelsFile:
-    return load_channels_file(path)
 
 
 def _form_path(form_key: str, forms_dir: Path) -> Path:
