@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 import structlog
@@ -54,6 +55,15 @@ PAGE = 100
 # rate-limit headers Discord sends back.
 DEFAULT_REACTION_INTERVAL = 0.05
 
+# How long a cached reactor list is trusted for a message that is still recent. Short on
+# purpose: the point is to make an immediate re-scan cheap, not to persist verdicts.
+REACTION_CACHE_MAX_AGE = timedelta(minutes=2)
+
+# A message older than this belongs to a closed period: its reactions are historical fact
+# by then, so the cached list can be trusted without an age limit. This is what makes
+# re-running "last week" free, which is the common case.
+REACTION_FREEZE_AGE = timedelta(days=2)
+
 
 @dataclass(slots=True)
 class LiveScanStats:
@@ -63,6 +73,9 @@ class LiveScanStats:
     invalid: int = 0
     reactions: int = 0
     unresolved_reactors: int = 0
+    # Reports recognised but skipped because their author is in a tier that is filtered
+    # out: no request was made for them.
+    skipped_hidden: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -72,6 +85,7 @@ class LiveScanStats:
             "invalid": self.invalid,
             "reactions": self.reactions,
             "unresolved_reactors": self.unresolved_reactors,
+            "skipped_hidden": self.skipped_hidden,
         }
 
 
@@ -165,6 +179,7 @@ async def count_from_discord(
     reaction_interval: float = DEFAULT_REACTION_INTERVAL,
     cached: Callable[[list[Any]], Any] | None = None,
     remember: Callable[[list[Any], list[Any], list[int]], Any] | None = None,
+    skip_authors: frozenset[int] = frozenset(),
 ) -> tuple[CountSummary, LiveScanStats]:
     """Parse live history for one period and count approved reports per person.
 
@@ -184,7 +199,8 @@ async def count_from_discord(
     groups = group_messages(collected)
     stats.groups = len(groups)
 
-    # Pass 1: parse everything (pure, microseconds).
+    # Pass 1: parse everything (pure, microseconds). Reports by an author outside the
+    # requested view are dropped here, before any request is made for them.
     prepared: list[tuple[Any, list[Any]]] = []
     for group in groups:
         candidate = ReportCandidate(messages=[_group_message(m) for m in group])
@@ -195,6 +211,9 @@ async def count_from_discord(
         stats.matched += 1
         if not parsed.is_valid:
             stats.invalid += 1
+        if group[0].author.id in skip_authors:
+            stats.skipped_hidden += 1
+            continue
         prepared.append((group, []))
 
     # Pass 2: read reactions. Stored ones are reused when the counts still match, so a
@@ -253,11 +272,16 @@ async def _gather_bounded(coros: list[Any], *, limit: int) -> list[Any]:
 
 
 async def _cached_reactions(db: Any, group: list[Any]) -> tuple[list[Reaction], list[int]] | None:
-    """Stored reactors for a report, if the stored counts still match Discord's.
+    """Stored reactors for a report, if they still describe what is on the message.
 
-    Discord puts the reaction counts on every message it returns, so a comparison is free
-    and a mismatch means somebody reacted or un-reacted since: the entry is then ignored
-    and refetched. This is what makes a second scan of the same period nearly free.
+    Safe to reuse only when nothing about the reaction set can have changed. Discord gives
+    the counts on every message, so a mismatch is caught for free; but a swap (A removes
+    their check while B adds one) leaves the counts identical while the *people* changed.
+    Since who reacted decides who has authority, that case must not be served from cache.
+
+    Freshness is therefore judged by time as well: an entry is only trusted if it was
+    written after the message was last edited. An approval requires a new reaction, which
+    after the last edit means the entry is stale and is refetched.
     """
     from dsbot.storage import repos
 
@@ -271,11 +295,40 @@ async def _cached_reactions(db: Any, group: list[Any]) -> tuple[list[Reaction], 
         if stored_counts != live_counts:
             return None
         cached = await repos.list_cached_reactions(session, head.id)
+        if not cached:
+            return None
+        cached_at = await repos.get_reaction_cache_time(session, head.id)
 
-    if not cached:
-        return None
+    # A swap keeps the counts but changes the people, so the counts alone cannot prove the
+    # set is unchanged. Two things make reuse safe anyway:
+    #
+    #  * a message in a closed period is historical fact - its reactions will not change,
+    #    so the stored list is authoritative;
+    #  * a recent message is only trusted for a couple of minutes, which covers an
+    #    immediate re-scan without hiding a new approval for long.
+    #
+    # Being wrong here means reporting a stale verdict, which is worse than one extra
+    # request, so the recent window is deliberately short.
+    created = _as_utc(getattr(head, "created_at", None))
+    edited = _as_utc(getattr(head, "edited_at", None))
+    cached_at = _as_utc(cached_at)
+    now = datetime.now(UTC)
+
+    is_closed = created is not None and (now - created) > REACTION_FREEZE_AGE
+    if not is_closed:
+        if edited is not None and (cached_at is None or cached_at < edited):
+            return None
+        if cached_at is None or (now - cached_at) > REACTION_CACHE_MAX_AGE:
+            return None
+
     reactions = [Reaction(user_id=row.user_id, emoji_name=row.emoji_name) for row in cached]
     return reactions, [row.user_id for row in cached]
+
+
+def _as_utc(value: Any) -> Any:
+    if value is None:
+        return None
+    return value.astimezone(UTC) if getattr(value, "tzinfo", None) else value.replace(tzinfo=UTC)
 
 
 def _live_counts(group: list[Any]) -> dict[str, int]:
@@ -327,6 +380,27 @@ async def _remember_reactions(
             )
     except Exception:
         log.exception("reaction_cache_write_failed", message_id=head.id)
+
+
+def _hidden_authors(
+    roster: list[RosterEntry], *, hidden_tiers: list[str], only_tier: str | None
+) -> frozenset[int]:
+    """Authors whose reports cannot affect the requested view.
+
+    If a tier is hidden and nobody in it is visible, their reports only matter for the
+    "unranked" note, which is not shown for a hidden tier anyway. Skipping them avoids
+    their reaction reads entirely - the expensive part of a scan.
+    """
+    hidden = {name.strip().lower() for name in hidden_tiers if name.strip()}
+    only = (only_tier or "").strip().lower()
+    skip: set[int] = set()
+    for entry in roster:
+        label = (entry.tier_label or "").strip().lower()
+        outside_only = bool(only) and label != only
+        in_hidden = not only and label in hidden
+        if outside_only or in_hidden:
+            skip.add(entry.user_id)
+    return frozenset(skip)
 
 
 async def _read_all_reactions(
@@ -449,12 +523,18 @@ async def count_channel_from_discord(
     period: Period,
     resolver: Any,
     only_tier: str | None = None,
+    hidden_tiers: tuple[str, ...] = (),
+    use_cache: bool = True,
 ) -> LiveCountResult:
     """Everything the slash command needs, resolved from stored config but read from Discord.
 
     Stored config (the form, the ladder, the roster) is configuration, not history, so it
     is read from the database. The reports themselves are read from Discord, because the
     database only knows what the bot happened to capture.
+
+    `hidden_tiers` is not only a display filter when combined with a roster: a report whose
+    author is in a hidden tier is skipped before its reactions are read, so hiding a noisy
+    tier also makes the scan cheaper. That is the whole point of hiding it.
     """
     from dsbot.modules.ranks.resolver import GuildLadders
     from dsbot.storage import ranks_repo, repos
@@ -532,9 +612,14 @@ async def count_channel_from_discord(
         resolver=resolver,
         rank_guild_id=guild_id,
         review_ladder_id=review_ladder_id,
-        cached=lambda group: _cached_reactions(db, group),
-        remember=lambda group, reactions, reactors: _remember_reactions(
-            db, channel_id, channel, group, reactions
+        skip_authors=_hidden_authors(roster, hidden_tiers=hidden, only_tier=only_tier),
+        cached=(lambda group: _cached_reactions(db, group)) if use_cache else None,
+        remember=(
+            lambda group, reactions, reactors: (
+                _remember_reactions(db, channel_id, channel, group, reactions)
+                if use_cache
+                else None
+            )
         ),
     )
     return LiveCountResult(

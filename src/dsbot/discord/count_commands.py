@@ -53,6 +53,7 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         timezone: str = "Europe/Moscow",
         *,
         developer_user_id: int | None = None,
+        reaction_cache: bool = True,
     ) -> None:
         super().__init__()
         self._db = db
@@ -62,6 +63,7 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         # period cannot land on different week boundaries.
         self._timezone = timezone
         self._developer_user_id = developer_user_id
+        self._reaction_cache = reaction_cache
 
     async def _is_reviewer(self, interaction: discord.Interaction) -> bool:
         """True when the caller holds a tier with the `review` capability.
@@ -103,6 +105,11 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         if binding is None:
             return None
         return binding.rank_source_guild_id or binding.guild_id
+
+    def _hidden_for(self, binding: Any) -> tuple[str, ...]:
+        """Tiers this channel hides, so their reports are never even fetched."""
+        config = binding.config or {}
+        return tuple(str(v) for v in (config.get("hidden_tiers") or []))
 
     def _timezone_for(self, binding: Any) -> str:
         """Channel override first, then the deployment setting."""
@@ -442,6 +449,8 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
                 period=window,
                 resolver=self._resolver,
                 only_tier=only_tier,
+                hidden_tiers=self._hidden_for(binding),
+                use_cache=self._reaction_cache,
             )
             payload_text = render_csv(result.summary)
         else:

@@ -53,10 +53,22 @@ class ReactionOnMessage:
 
 
 class Message:
-    def __init__(self, reactions: list[ReactionOnMessage], mid: int = MESSAGE) -> None:
+    def __init__(
+        self,
+        reactions: list[ReactionOnMessage],
+        mid: int = MESSAGE,
+        *,
+        created_at: object = None,
+    ) -> None:
         self.id = mid
         self.reactions = reactions
+        self.created_at = created_at
+        self.edited_at = None
         self.guild = type("G", (), {"id": GUILD})()
+
+
+def _message(name: str, count: int, *, created_at: object = None) -> Message:
+    return Message([ReactionOnMessage(name, count)], created_at=created_at)
 
 
 def test_live_counts_reads_only_verdict_emoji() -> None:
@@ -115,3 +127,65 @@ async def test_remembering_replaces_rather_than_appends(db: Database) -> None:
     async with db.session() as session:
         rows = await repos.list_cached_reactions(session, MESSAGE)
     assert [row.user_id for row in rows] == [8]
+
+
+async def test_a_swap_on_a_closed_period_is_trusted(db: Database) -> None:
+    """A month-old report cannot change any more, so re-running the week is free."""
+    from datetime import UTC, datetime, timedelta
+
+    closed = datetime.now(UTC) - timedelta(days=30)
+    group = [_message("\u2705", 1, created_at=closed)]
+    await _remember_reactions(db, CHANNEL, None, group, [Reaction(user_id=7, emoji_name="\u2705")])
+    assert await _cached_reactions(db, group) is not None
+
+
+async def test_a_recent_message_is_only_trusted_briefly(db: Database) -> None:
+    """On a live week a swap is plausible, so the entry must expire fast."""
+    from datetime import UTC, datetime
+
+    from dsbot.modules.quotas import live as live_module
+
+    age = live_module.REACTION_CACHE_MAX_AGE * 2
+    recent = datetime.now(UTC) - age
+    group = [_message("\u2705", 1, created_at=recent)]
+    await _remember_reactions(db, CHANNEL, None, group, [Reaction(user_id=7, emoji_name="\u2705")])
+
+    # Backdate the stored rows: the entry was written long ago, the message is recent.
+    from sqlalchemy import update
+
+    from dsbot.storage.models import MessageReaction
+
+    async with db.write_session() as session:
+        await session.execute(
+            update(MessageReaction)
+            .where(MessageReaction.message_id == MESSAGE)
+            .values(added_at=datetime.now(UTC) - age)
+        )
+
+    hit = await _cached_reactions(db, group)
+    assert hit is None, "an old entry on a recent message must be refetched"
+
+
+def test_hidden_tiers_skip_their_authors() -> None:
+    """Hiding a tier must also skip its reports, not merely hide the rows."""
+    from dsbot.modules.quotas.counting import RosterEntry
+    from dsbot.modules.quotas.live import _hidden_authors
+
+    roster = [
+        RosterEntry(user_id=1, tier_label="Senior"),
+        RosterEntry(user_id=2, tier_label="Junior"),
+        RosterEntry(user_id=3, tier_label="Исключение"),
+    ]
+    skipped = _hidden_authors(roster, hidden_tiers=["Junior", "исключение"], only_tier=None)
+    assert skipped == frozenset({2, 3})
+
+
+def test_selecting_one_tier_skips_everyone_else() -> None:
+    from dsbot.modules.quotas.counting import RosterEntry
+    from dsbot.modules.quotas.live import _hidden_authors
+
+    roster = [
+        RosterEntry(user_id=1, tier_label="Senior"),
+        RosterEntry(user_id=2, tier_label="Junior"),
+    ]
+    assert _hidden_authors(roster, hidden_tiers=[], only_tier="Senior") == frozenset({2})

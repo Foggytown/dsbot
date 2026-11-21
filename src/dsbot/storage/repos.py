@@ -830,6 +830,17 @@ async def get_reaction_counts(session: AsyncSession, message_id: int) -> dict[st
     return {str(key): int(count) for key, count in rows}
 
 
+async def get_reaction_cache_time(session: AsyncSession, message_id: int) -> datetime | None:
+    """When the reactor list for this message was last stored by a scan.
+
+    Used to decide whether the cache can describe what is on the message right now: an
+    entry written before the message was last edited cannot account for a change.
+    """
+    return await session.scalar(
+        select(func.max(MessageReaction.added_at)).where(MessageReaction.message_id == message_id)
+    )
+
+
 async def list_cached_reactions(session: AsyncSession, message_id: int) -> list[CachedReaction]:
     rows = (
         await session.scalars(

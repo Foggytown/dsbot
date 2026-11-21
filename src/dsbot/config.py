@@ -94,7 +94,12 @@ class Settings(BaseSettings):
     # Minimum gap between Discord requests that read *who reacted*. Discord limits this
     # per channel while discord.py tracks it per message, so it must be paced by hand.
     # Lower it only if you never see 429s; a 429 costs several seconds.
-    reaction_read_interval: float = Field(default=0.35)
+    reaction_read_interval: float = Field(default=0.05)
+
+    # Reuse stored reactors when the reaction set provably has not changed. On by default:
+    # without it a repeat scan re-reads every report. Turn it off if a count ever looks
+    # stale, and please report it.
+    reaction_cache: bool = Field(default=True)
 
     # DEV ONLY. Accept messages authored by bots, so the live gateway path can be
     # exercised by posting a test message as the bot itself. Never enable in production.
