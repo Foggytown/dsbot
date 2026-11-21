@@ -87,6 +87,7 @@ class CountingService:
         title: str = "Отчёт по рапортам",
         scope: str = "",
         persist: bool = False,
+        hidden_tiers: tuple[str, ...] = (),
     ) -> CountOutcome:
         """Count one period for one binding.
 
@@ -120,6 +121,7 @@ class CountingService:
             timezone=request.timezone,
             generated_at=datetime.now(UTC),
             scope=scope,
+            hidden_tiers=hidden_tiers,
         )
         outcome = CountOutcome(
             summary=summary,

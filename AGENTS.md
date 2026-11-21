@@ -194,8 +194,7 @@ another. Never infer the hierarchy from Discord's role position ordering.
 
 ### What counting counts
 
-Counting answers one question: how many approved reports did this person file in the
-period.
+Counting answers one question: how many reports did this person file in the period.
 
 **Reports come from Discord history, not from the database.** The archive only contains
 what the bot happened to see while running: ask it for last week when the bot started
@@ -220,12 +219,24 @@ The rules are deliberate and were agreed explicitly:
 |---|---|---|
 | `approved` | yes | normal case |
 | still `pending` at count time | **yes**, reported separately | reviewers' backlog is not the reporter's fault |
+| `approved_unknown` | **yes**, in its own category | a human approved it; only their role changed since |
 | `rejected` | no | staff decided against it |
 | `conflict` | no | guessing a side produces a wrong number |
 
-That second row is the important one: a report nobody reviewed yet **counts**, because
-the alternative punishes an instructor for someone else's delay. It is still surfaced as
-`ждёт проверки` so a full backlog stays visible instead of hiding inside the total.
+`approved_unknown` is the fourth case and the subtle one. Discord only knows *current*
+roles, so an approver who has since lost the role is indistinguishable from a stranger.
+Their approval is neither a verified approval nor an absence of one. Reverting it to
+`pending` would blame the reporter for someone else's promotion, and treating it as normal
+would hide that the reviewer's authority is unverifiable, so it gets its own category:
+counted, shown as «одобрено без прав», and listed in the header.
+
+### Report presentation
+
+- **Grouped by tier**, highest first, so the report reads like the hierarchy.
+- **People are pings** (`<@id>`), not nicknames: a ping is how staff actually reach them.
+- **A tier can be hidden per channel** (`/dsbot hide-tier`) without changing who is
+  counted. Stored as `hidden_tiers` in the binding config.
+- A quota is shown clamped (`2/2 +1`), because `3/2` invites the question "out of what?".
 
 ### Who is counted
 
@@ -351,6 +362,18 @@ Each of these shipped and had to be found by a live run or a user report.
     a property of the rank, so it is `required_per_week` on the tier, in the quota YAML,
     frozen onto the roster when scraped. `quota_policies` is now an override for the
     exception only.
+14. **Counting the archive instead of the channel.** The database only holds what the bot
+    saw while running, so "last week" returned 5 rows when 30 reports existed, and that is
+    indistinguishable from "only 5 people reported". History is read from Discord now; the
+    database keeps configuration, the roster, and the audit trail.
+15. **A verification rule turned into a wrong number.** Requiring rank to prove an approval
+    is right; treating an unprovable approval as "no approval" is not. Discord only knows
+    *current* roles, so a reviewer who lost the role later made a valid report look
+    unreviewed. It is `approved_unknown` now and still counts.
+16. **Per-reaction rank lookups made a scan take half a minute.** One awaited REST call per
+    reaction. Distinct reactors are resolved once each, concurrently.
+17. **A row must not overfill its own quota.** `3/2` invited "out of what?". Display is
+    clamped with a `+N` remainder.
 
 ## Verification
 

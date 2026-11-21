@@ -1674,6 +1674,10 @@ def count_command(
     csv_out: Annotated[
         Path | None, typer.Option("--csv", help="Write the result to this CSV file")
     ] = None,
+    hide_tiers: Annotated[
+        str | None,
+        typer.Option("--hide-tiers", help="Comma-separated tiers to leave out of the message"),
+    ] = None,
     save: Annotated[bool, typer.Option(help="Store this run so a re-run updates it")] = False,
     publish: Annotated[int | None, typer.Option(help="Channel id to post the report to")] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
@@ -1711,10 +1715,21 @@ def count_command(
                 timezone=timezone,
             )
 
+            # --hide-tiers on the command line beats whatever the channel stores, so an
+            # operator can look at one report without changing configuration.
+            hidden = (
+                tuple(t.strip() for t in hide_tiers.split(",") if t.strip())
+                if hide_tiers
+                else tuple(str(v) for v in (config.get("hidden_tiers") or []))
+            )
+
             if publish is None:
                 # Counting is a pure database read; no Discord connection needed.
                 outcome = await CountingService(db).count(
-                    request, scope=f"Канал: <#{channel}>", persist=persist
+                    request,
+                    scope=f"Канал: <#{channel}>",
+                    persist=persist,
+                    hidden_tiers=hidden,
                 )
                 _print_outcome(outcome, csv_out)
                 return
@@ -1724,7 +1739,10 @@ def count_command(
             async def work(client: Any) -> Any:
                 service = CountingService(db, DiscordReplySink(client))
                 counted = await service.count(
-                    request, scope=f"Канал: <#{channel}>", persist=persist
+                    request,
+                    scope=f"Канал: <#{channel}>",
+                    persist=persist,
+                    hidden_tiers=hidden,
                 )
                 _print_outcome(counted, csv_out)
                 posted = await service.publish(request, counted, target_channel_id=target_channel)

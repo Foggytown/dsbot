@@ -210,6 +210,80 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
     # --- quotas and reporting format --------------------------------------
 
     @app_commands.command(
+        name="hide-tier",
+        description="Hide a tier from this channel's report (or bring it back)",
+    )
+    @app_commands.describe(
+        tier="Tier label or key to hide or show, e.g. Instructor",
+        mode="hide to stop showing it, show to bring it back",
+    )
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="Скрыть", value="hide"),
+            app_commands.Choice(name="Показать снова", value="show"),
+        ]
+    )
+    async def hide_tier(
+        self,
+        interaction: discord.Interaction,
+        tier: str,
+        mode: app_commands.Choice[str] | None = None,
+    ) -> None:
+        """Declutter the report without changing who is counted."""
+        if not await _require_admin(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        channel_id = interaction.channel_id
+        assert channel_id is not None
+
+        chosen = mode.value if mode is not None else "hide"
+        try:
+            detail = await set_hidden_tiers(
+                self._db,
+                channel_id,
+                hide=[tier] if chosen == "hide" else [],
+                show=[tier] if chosen == "show" else [],
+            )
+        except ValueError as exc:
+            await interaction.followup.send(f"Rejected: {exc}", ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"{detail}\nНа подсчёт это не влияет — только на то, что видно в отчёте.",
+            ephemeral=True,
+        )
+
+    @hide_tier.autocomplete("tier")
+    async def _tier_label_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        channel_id = interaction.channel_id
+        if channel_id is None:
+            return []
+        try:
+            async with self._db.session() as session:
+                binding = await repos.get_binding_by_channel(session, channel_id)
+                if binding is None:
+                    return []
+                roster = []
+                guild_id = binding.rank_source_guild_id or binding.guild_id
+                ladders = await ranks_repo.load_all_ladders(session)
+                group = ladders.get(guild_id)
+                if group is not None and group.quota_ladder_id is not None:
+                    roster = list(await repos.list_roster(session, group.quota_ladder_id))
+        except Exception:
+            return []
+        labels: list[str] = []
+        for row in roster:
+            if row.tier_label and row.tier_label not in labels:
+                labels.append(row.tier_label)
+        needle = current.lower()
+        return [
+            app_commands.Choice(name=label, value=label)
+            for label in labels
+            if needle in label.lower()
+        ][:MAX_CHOICES]
+
+    @app_commands.command(
         name="quota-set",
         description="Override a tier's weekly requirement for this channel",
     )
@@ -332,6 +406,39 @@ def _tier_keys(index: Any) -> list[str]:
     return keys
 
 
+async def set_hidden_tiers(
+    db: Database, channel_id: int, *, hide: list[str], show: list[str]
+) -> str:
+    """Hide or show tiers in this channel's report.
+
+    Stored per channel because "too cluttered" is a per-channel judgement: one channel may
+    want only the instructors, another everything. Matching is case-insensitive so a typo
+    in capitalisation does not silently do nothing.
+    """
+    async with db.write_session() as session:
+        binding = await repos.get_binding_by_channel(session, channel_id)
+        if binding is None:
+            raise ValueError("this channel is not bound to a report form")
+        config = dict(binding.config or {})
+        current = [str(value) for value in (config.get("hidden_tiers") or [])]
+
+        lowered_hide = {h.strip().lower() for h in hide if h.strip()}
+        lowered_show = {s.strip().lower() for s in show if s.strip()}
+        kept = [t for t in current if t.strip().lower() not in lowered_show]
+        for name in hide:
+            cleaned = name.strip()
+            if cleaned and cleaned.lower() not in {k.lower() for k in kept}:
+                kept.append(cleaned)
+
+        config["hidden_tiers"] = kept
+        binding.config = config
+        _ = lowered_hide
+
+    if not kept:
+        return "Все тиры снова показываются."
+    return "Скрыто из отчёта: " + ", ".join(kept)
+
+
 def _split(raw: str) -> list[str]:
     import re
 
@@ -446,6 +553,7 @@ __all__ = [
     "AdminCommands",
     "pin_channel_ladder",
     "register_commands",
+    "set_hidden_tiers",
     "set_quota_for_channel",
     "set_report_target",
 ]

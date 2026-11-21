@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
-Verdict = Literal["pending", "approved", "rejected", "conflict"]
+Verdict = Literal["pending", "approved", "rejected", "conflict", "approved_unknown"]
 
 # Which emoji mean what. Unicode codepoints, so they are stable regardless of the
 # client; a custom emoji is matched by id in the store, not here.
@@ -70,6 +70,10 @@ class VerdictResult:
     ignored: list[tuple[int, str]] = field(default_factory=list)
     # Set when two reactors of the same top rank disagree.
     conflicted_users: tuple[int, ...] = ()
+    # Set when the only approvals came from reactors whose rank is unknown. The report is
+    # approved by a human, but nobody can prove they had the right to; kept separate so
+    # the count can show it without pretending it was a normal approval.
+    unknown_approvals: tuple[int, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -80,6 +84,7 @@ class VerdictResult:
             "counted": [r.user_id for r in self.counted],
             "ignored": [{"user_id": u, "reason": r} for u, r in self.ignored],
             "conflicted_users": list(self.conflicted_users),
+            "unknown_approvals": list(self.unknown_approvals),
         }
 
 
@@ -93,16 +98,27 @@ def compute_verdict(
       * a reaction only counts if its author has a rank that may review
       * the highest ordinal decides
       * two authors at the same top ordinal who disagree produce `conflict`
-      * no counting reactions means `pending`
+      * no counting reactions means `pending`, unless the only reactions are approvals
+        from people whose rank cannot be resolved - see below
     """
     counted: list[Rank] = []
     ignored: list[tuple[int, str]] = []
     approvals: list[Rank] = []
     rejections: list[Rank] = []
+    unknown_approvals: list[int] = []
+    unknown_rejections: list[int] = []
 
     for reaction in reactions:
         rank = ranks.get(reaction.user_id)
         if rank is None:
+            # Rank unknown. This is not necessarily a stranger: someone who approved last
+            # month and has since lost the role is indistinguishable from one, because
+            # Discord only knows current roles. Record which side they were on so the
+            # caller can decide what to do with an otherwise undecided report.
+            if reaction.is_approval:
+                unknown_approvals.append(reaction.user_id)
+            elif reaction.is_rejection:
+                unknown_rejections.append(reaction.user_id)
             ignored.append((reaction.user_id, "rank_unknown"))
             continue
         if not (reaction.is_approval or reaction.is_rejection):
@@ -115,6 +131,18 @@ def compute_verdict(
             rejections.append(rank)
 
     if not counted:
+        if unknown_approvals:
+            # Nobody we can verify approved it, but somebody did. Dropping it would report
+            # a report nobody reviewed, which is worse: it hides that a human approved it
+            # and only their role changed since. `unknown_approvals` lets the caller show
+            # it in its own category rather than as a normal approval.
+            counted_set = tuple(sorted(unknown_approvals, key=str))
+            return VerdictResult(
+                verdict="approved_unknown",
+                counted=counted,
+                ignored=ignored,
+                unknown_approvals=counted_set,
+            )
         return VerdictResult(verdict="pending", ignored=ignored)
 
     counted.sort(key=lambda r: r.ordinal, reverse=True)

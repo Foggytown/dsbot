@@ -150,8 +150,13 @@ roster, quota norms, and a record of invalid reports and their warnings.
 |---|---|---|
 | approved by a tier with `review` | yes | normal case |
 | still undecided at count time | yes, shown as `ждёт проверки` | an unreviewed report is the reviewers' backlog, not the instructor's fault |
+| approved, but the reviewer's role cannot be confirmed | yes, shown as `одобрено без прав` | a human did approve it; only their role changed since |
 | rejected | no | staff decided against it |
 | `conflict` (two equal tiers disagree) | no | guessing a side would produce a wrong number |
+
+Rows are **grouped by tier** and people are shown as **pings**. A tier can be hidden from
+the message per channel with `/dsbot hide-tier`, which changes what you read, not what is
+counted.
 
 **Approving and reporting are different roles.** A guild has two ladders, told apart by
 `purpose:` in the YAML:

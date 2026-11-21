@@ -266,6 +266,7 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             period_label=result.period.describe(timezone),
             timezone=timezone,
             scope=f"Канал: <#{channel_id}> · история Discord",
+            hidden_tiers=result.hidden_tiers,
         )
         pages = render_message(result.summary, context)
         problems = list(result.problems)
@@ -299,6 +300,21 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             scope=f"Канал: <#{channel_id}> · база бота",
             persist=False,
         )
+        context_hidden = tuple(
+            str(value) for value in ((binding.config or {}).get("hidden_tiers") or [])
+        )
+        if context_hidden:
+            from dsbot.modules.quotas.render import RenderContext, render_message
+
+            context = RenderContext(
+                title=title,
+                period_label=window.describe(timezone),
+                timezone=timezone,
+                scope=f"Канал: <#{channel_id}> · база бота",
+                hidden_tiers=context_hidden,
+            )
+            pages = render_message(outcome.summary, context)
+            return pages, list(outcome.problems), bool(outcome.summary.tallies)
         return outcome.messages(), list(outcome.problems), bool(outcome.summary.tallies)
 
     async def _send_to(self, interaction: discord.Interaction, target: int, content: str) -> bool:

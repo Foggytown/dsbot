@@ -98,10 +98,32 @@ def test_removing_all_reactions_returns_to_pending() -> None:
     assert compute_verdict([], RANKS).verdict == "pending"
 
 
-def test_unknown_rank_is_ignored_not_guessed() -> None:
+def test_unknown_rank_does_not_decide_but_is_remembered() -> None:
+    """Someone who lost the role since approving: not a normal approval, not ignored.
+
+    Discord only knows current roles, so an approver whose role was removed is
+    indistinguishable from a stranger. The report is kept as `approved_unknown` rather
+    than silently reverting to `pending`, because a human did approve it.
+    """
     result = compute_verdict([approval(99)], RANKS)
+    assert result.verdict == "approved_unknown"
+    assert result.unknown_approvals == (99,)
+    assert result.by_user_id is None
+    assert (99, "rank_unknown") in result.ignored
+
+
+def test_unknown_rank_rejection_does_not_reject() -> None:
+    """A rejection we cannot verify must not deny someone their report."""
+    result = compute_verdict([rejection(99)], RANKS)
     assert result.verdict == "pending"
     assert (99, "rank_unknown") in result.ignored
+
+
+def test_a_verified_approval_outranks_an_unknown_one() -> None:
+    result = compute_verdict([approval(99), approval(3)], RANKS)
+    assert result.verdict == "approved"
+    assert result.by_user_id == 3
+    assert result.unknown_approvals == ()
 
 
 def test_unrelated_emoji_is_ignored() -> None:

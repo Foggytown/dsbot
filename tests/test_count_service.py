@@ -236,11 +236,12 @@ async def test_removing_the_approval_reaction_reverts_the_count(db: Database) ->
     assert [row.verdict for row in history] == ["approved", "pending"]
 
 
-async def test_reaction_without_a_known_rank_does_not_approve(db: Database) -> None:
-    """An unresolvable reactor is stored, but must never decide a verdict.
+async def test_reaction_without_a_known_rank_is_kept_but_marked_unknown(db: Database) -> None:
+    """An unresolvable reactor must never be treated as a verified reviewer.
 
-    This is the security-relevant case: if a NULL capability counted as a reviewer, any
-    stranger's check mark would approve a report.
+    If a NULL capability counted as a reviewer, any stranger's check mark would approve a
+    report. But the reaction is still evidence that someone approved, which matters when
+    the approver has simply lost the role since, so it is kept in its own category.
     """
     binding_id, _ = await setup_binding(db)
     await add_report(
@@ -256,8 +257,8 @@ async def test_reaction_without_a_known_rank_does_not_approve(db: Database) -> N
 
     update = await VerdictService(db).on_reaction(1)
     assert update is not None
-    assert update.verdict == "pending"
-    assert update.decided_by_user_id is None
+    assert update.verdict == "approved_unknown"
+    assert update.decided_by_user_id is None, "nobody verified it, so nobody is named"
 
 
 async def test_roster_scrape_keeps_only_people_on_the_ladder(db: Database) -> None:

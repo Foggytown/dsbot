@@ -73,9 +73,8 @@ class LiveCountResult:
     stats: LiveScanStats
     period: Period
     problems: list[str] = field(default_factory=list)
-
-    def messages(self) -> list[str]:
-        return []
+    # Tier labels to leave out of the message, so a noisy tier can be hidden per channel.
+    hidden_tiers: tuple[str, ...] = ()
 
 
 class HistoryChannel(Protocol):
@@ -169,9 +168,14 @@ async def count_from_discord(
             continue
         collected.append(message)
 
-    outcomes = []
-    for group in group_messages(collected):
-        stats.groups += 1
+    groups = group_messages(collected)
+    stats.groups = len(groups)
+
+    # Pass 1: parse everything and read the reactions. No rank lookups yet, so this part
+    # costs no network round-trips beyond the message history itself.
+    prepared: list[tuple[Any, list[Reaction], list[int]]] = []
+    reactor_ids: set[int] = set()
+    for group in groups:
         candidate = ReportCandidate(messages=[_group_message(m) for m in group])
         attachments = sum(len(m.attachments) for m in group)
         parsed = parse_report(schemas, candidate, attachment_count=attachments)
@@ -181,10 +185,19 @@ async def count_from_discord(
         if not parsed.is_valid:
             stats.invalid += 1
 
-        reactions, ranks = await _reactions_for(group, resolver, rank_guild_id, review_ladder_id)
+        reactions, reactors = await _read_reactions(group)
         stats.reactions += len(reactions)
-        stats.unresolved_reactors += sum(1 for r in ranks.values() if r is None)
+        reactor_ids.update(reactors)
+        prepared.append((group, reactions, reactors))
 
+    # Pass 2: resolve each distinct reactor once, concurrently. Previously this was one
+    # awaited REST call per reaction, which is what made a busy channel take half a minute.
+    resolved = await _resolve_ranks(resolver, rank_guild_id, review_ladder_id, reactor_ids)
+    stats.unresolved_reactors = sum(1 for value in resolved.values() if value is None)
+
+    outcomes = []
+    for group, reactions, _reactors in prepared:
+        ranks: dict[int, Rank | None] = {r.user_id: resolved.get(r.user_id) for r in reactions}
         outcomes.append(
             CountedReport(
                 report_id=group[0].id,
@@ -202,6 +215,50 @@ async def count_from_discord(
 
 APPROVE = {"\u2705", "\u2714", "\u2611"}
 REJECT = {"\u274c", "\u2716", "\u26d4"}
+
+
+async def _read_reactions(group: list[Any]) -> tuple[list[Reaction], list[int]]:
+    """Collect approve/reject reactions on a report's messages. No rank lookups here.
+
+    Separated from rank resolution so all the rank calls can be batched and run together.
+    """
+    reactions: list[Reaction] = []
+    reactor_ids: list[int] = []
+
+    for message in group:
+        for reaction in message.reactions:
+            name = getattr(reaction.emoji, "name", None) or str(reaction.emoji)
+            if name not in APPROVE and name not in REJECT:
+                continue
+            async for user in reaction.users(limit=100):
+                if getattr(user, "bot", False):
+                    continue
+                reactions.append(Reaction(user_id=user.id, emoji_name=name))
+                reactor_ids.append(user.id)
+    return reactions, reactor_ids
+
+
+async def _resolve_ranks(
+    resolver: Any,
+    guild_id: int,
+    ladder_id: int | None,
+    user_ids: set[int],
+) -> dict[int, Rank | None]:
+    """Resolve every distinct reactor's review authority, concurrently.
+
+    The resolver caches per user, so repeat runs over overlapping periods cost nothing.
+    `gather` is safe: one failure marks that reactor unknown instead of failing the report.
+    """
+    if resolver is None or not user_ids:
+        return {uid: None for uid in user_ids}
+
+    import asyncio as _asyncio
+
+    async def one(user_id: int) -> tuple[int, Rank | None]:
+        return user_id, await _rank_of(resolver, guild_id, user_id, ladder_id)
+
+    results = await _asyncio.gather(*(one(uid) for uid in user_ids))
+    return dict(results)
 
 
 async def count_channel_from_discord(
@@ -281,6 +338,11 @@ async def count_channel_from_discord(
                 "weekly norms to compare against. Reports are still counted."
             )
 
+        # Rows grouped by tier are only useful if the tier is the quota one; a review
+        # ladder's ordinals would mislabel people who owe reports.
+        hidden = [str(value) for value in (config.get("hidden_tiers") or [])]
+        review_ladder_id = binding.rank_ladder_id
+
     summary, stats = await count_from_discord(
         channel=channel,
         schemas=schemas,
@@ -288,9 +350,15 @@ async def count_channel_from_discord(
         roster=roster,
         resolver=resolver,
         rank_guild_id=guild_id,
-        review_ladder_id=binding.rank_ladder_id,
+        review_ladder_id=review_ladder_id,
     )
-    return LiveCountResult(summary=summary, stats=stats, period=period, problems=problems)
+    return LiveCountResult(
+        summary=summary,
+        stats=stats,
+        period=period,
+        problems=problems,
+        hidden_tiers=tuple(hidden),
+    )
 
 
 def _quota_ladder_id(group: Any, config: dict[str, Any]) -> int | None:
@@ -303,31 +371,6 @@ def _required_by_tier(policies: Any, tiers: dict[int, int] | None = None) -> dic
     from dsbot.modules.quotas.service import _required_by_tier as shared
 
     return shared(policies, tiers)
-
-
-async def _reactions_for(
-    group: list[Any],
-    resolver: Any,
-    rank_guild_id: int,
-    review_ladder_id: int | None,
-) -> tuple[list[Reaction], dict[int, Rank | None]]:
-    """Read the reactions on a report's messages and resolve each reactor's rank."""
-    reactions: list[Reaction] = []
-    ranks: dict[int, Rank | None] = {}
-
-    for message in group:
-        for reaction in message.reactions:
-            name = getattr(reaction.emoji, "name", None) or str(reaction.emoji)
-            if name not in APPROVE and name not in REJECT:
-                continue
-            async for user in reaction.users(limit=100):
-                if getattr(user, "bot", False):
-                    continue
-                reactions.append(Reaction(user_id=user.id, emoji_name=name))
-                if user.id in ranks:
-                    continue
-                ranks[user.id] = await _rank_of(resolver, rank_guild_id, user.id, review_ladder_id)
-    return reactions, ranks
 
 
 async def _rank_of(

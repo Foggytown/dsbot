@@ -27,10 +27,13 @@ from datetime import datetime
 
 from dsbot.modules.verdict.engine import Rank, Reaction, VerdictResult, compute_verdict
 
-# Verdicts that credit the author with an approval.
-CREDITED_VERDICTS: frozenset[str] = frozenset({"approved", "pending"})
+# Verdicts that credit the author with a report. `approved_unknown` counts because a human
+# approved it; only their role changed since, and punishing the reporter for that would be
+# wrong. It is surfaced separately so the difference stays visible.
+CREDITED_VERDICTS: frozenset[str] = frozenset({"approved", "pending", "approved_unknown"})
 REJECTED = "rejected"
 CONFLICT = "conflict"
+APPROVED_UNKNOWN = "approved_unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +67,10 @@ class VerdictOutcome:
     def credited(self) -> bool:
         return self.verdict in CREDITED_VERDICTS
 
+    @property
+    def approved_unknown(self) -> bool:
+        return self.verdict == APPROVED_UNKNOWN
+
 
 @dataclass(slots=True)
 class MemberTally:
@@ -77,7 +84,16 @@ class MemberTally:
     pending_count: int = 0
     rejected_count: int = 0
     conflict_count: int = 0
+    # Approved, but by someone whose reviewing rights cannot be confirmed any more. Shown
+    # apart from a normal approval so the ambiguity stays visible, but still counted:
+    # a human approved it, and only their role changed since.
+    unknown_approval_count: int = 0
     required_count: int = 0
+
+    @property
+    def credited_total(self) -> int:
+        """Everything that counts toward the quota, including the uncertain ones."""
+        return self.approved_count + self.pending_count + self.unknown_approval_count
 
     @property
     def met(self) -> bool:
@@ -86,10 +102,7 @@ class MemberTally:
         With no quota configured this is False, not True: "0 of 0" must never render as
         a satisfied requirement, or every untracked tier would look like a pass.
         """
-        return (
-            self.required_count > 0
-            and (self.approved_count + self.pending_count) >= self.required_count
-        )
+        return self.required_count > 0 and self.credited_total >= self.required_count
 
 
 @dataclass(slots=True)
@@ -109,6 +122,9 @@ class CountSummary:
 
     def pending_total(self) -> int:
         return sum(1 for o in self.outcomes if o.verdict == "pending")
+
+    def unknown_approval_total(self) -> int:
+        return sum(1 for o in self.outcomes if o.verdict == APPROVED_UNKNOWN)
 
     def conflict_total(self) -> int:
         return sum(1 for o in self.outcomes if o.verdict == CONFLICT)
@@ -197,6 +213,8 @@ def tally(
             case "pending":
                 # Counted, but shown separately so a backlog is visible.
                 row.pending_count += 1
+            case "approved_unknown":
+                row.unknown_approval_count += 1
             case "rejected":
                 row.rejected_count += 1
             case "conflict":
@@ -210,6 +228,7 @@ def tally(
 
 
 __all__ = [
+    "APPROVED_UNKNOWN",
     "CONFLICT",
     "CREDITED_VERDICTS",
     "REJECTED",
