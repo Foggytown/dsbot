@@ -412,12 +412,17 @@ async def _read_all_reactions(
 ) -> list[tuple[list[Reaction], list[int]]]:
     """Read every report's reactions, reusing what was fetched on an earlier scan.
 
-    Cheap for three reasons, in order of importance:
+    The order of these checks is the whole optimisation, cheapest first:
 
-    * a report with no ✓/✗ needs no request at all - the message already carries counts;
-    * a report whose reaction counts match the stored ones is served from storage, since
-      the same people are still the ones who reacted;
-    * only genuinely unknown reports hit the API, spaced by `interval`.
+    1. **no ✓/✗ on the message** -> return immediately. No request, no database read, no
+       cache lookup. The counts arrive with the message payload, so this is free, and it
+       means a period where nobody reacted costs only the history read.
+    2. **counts match what is stored** -> serve the stored reactors. See
+       `_cached_reactions` for why that is safe, and for the swap hole it closes.
+    3. **otherwise** -> one request, then store it.
+
+    Step 1 staying first and staying free is load-bearing: it is what makes an unreviewed
+    period cheap, and unreviewed is the common case.
 
     Discord rate limits this per channel and asks clients to honour the response headers
     rather than hardcode timing, which discord.py already does. So the lever is making

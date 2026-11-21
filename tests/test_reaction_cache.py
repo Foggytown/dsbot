@@ -166,6 +166,58 @@ async def test_a_recent_message_is_only_trusted_briefly(db: Database) -> None:
     assert hit is None, "an old entry on a recent message must be refetched"
 
 
+async def test_a_message_without_verdict_reactions_touches_nothing(db: Database) -> None:
+    """The unreviewed case must stay free: no request, no cache lookup, no DB read.
+
+    This is the guarantee that makes a period where nobody reacted cheap. If a database
+    round-trip or an API call creeps in here, a 1000-report week becomes 1000 queries for
+    nothing.
+    """
+    from dsbot.modules.quotas.live import _read_all_reactions
+
+    called = {"cached": 0, "remember": 0}
+
+    async def cached(group: object) -> None:
+        called["cached"] += 1
+        return None
+
+    async def remember(group: object, reactions: object, reactors: object) -> None:
+        called["remember"] += 1
+
+    groups = [[Message([])] for _ in range(5)]
+    results = await _read_all_reactions(groups, cached=cached, remember=remember)
+
+    assert results == [([], [])] * 5
+    assert called == {"cached": 0, "remember": 0}, "the free path did extra work"
+
+
+async def test_a_thumb_only_reaction_is_also_free(db: Database) -> None:
+    """A 👍 is not a verdict, so it must not trigger a fetch either."""
+    from dsbot.modules.quotas.live import _read_all_reactions
+
+    called = {"cached": 0}
+
+    async def cached(group: object) -> None:
+        called["cached"] += 1
+        return None
+
+    groups = [[Message([ReactionOnMessage("\U0001f44d", 3)])]]
+    await _read_all_reactions(groups, cached=cached, remember=None)
+    assert called["cached"] == 0
+
+    """Hiding a tier must also skip its reports, not merely hide the rows."""
+    from dsbot.modules.quotas.counting import RosterEntry
+    from dsbot.modules.quotas.live import _hidden_authors
+
+    roster = [
+        RosterEntry(user_id=1, tier_label="Senior"),
+        RosterEntry(user_id=2, tier_label="Junior"),
+        RosterEntry(user_id=3, tier_label="Исключение"),
+    ]
+    skipped = _hidden_authors(roster, hidden_tiers=["Junior", "исключение"], only_tier=None)
+    assert skipped == frozenset({2, 3})
+
+
 def test_hidden_tiers_skip_their_authors() -> None:
     """Hiding a tier must also skip its reports, not merely hide the rows."""
     from dsbot.modules.quotas.counting import RosterEntry
