@@ -211,14 +211,14 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
 
     @app_commands.command(
         name="quota-set",
-        description="Set how many reports a tier must file per week",
+        description="Override a tier's weekly requirement for this channel",
     )
     @app_commands.describe(
         tier="Tier key from the quota ladder, e.g. instructor",
-        count="Reports required per week (0 removes the requirement)",
+        count="Reports required per week for THIS channel (0 removes the requirement)",
     )
     async def quota_set(self, interaction: discord.Interaction, tier: str, count: int) -> None:
-        """Weekly requirement for one tier, editable without touching a file."""
+        """Per-channel override. The normal number lives in the quota ladder file."""
         if not await _require_admin(interaction):
             return
         await interaction.response.defer(ephemeral=True)
@@ -377,8 +377,11 @@ async def set_quota_for_channel(db: Database, channel_id: int, tier: str, count:
         )
     label = match.label or match.key
     if count <= 0:
-        return f"{label}: требование снято (0 в неделю)."
-    return f"{label}: {count} рапорт(ов) в неделю. В силе со следующего подсчёта."
+        return f"{label}: требование снято для этого канала (0 в неделю)."
+    note = ""
+    if match.required_per_week not in (None, count):
+        note = f" (в лестнице указано {match.required_per_week}; там не меняется)"
+    return f"{label}: {count} рапорт(ов) в неделю для этого канала{note}."
 
 
 async def set_report_target(

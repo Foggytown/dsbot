@@ -38,6 +38,7 @@ async def replace_ladder(session: AsyncSession, spec: LadderSpec) -> RankLadder:
             key=tier_spec.key,
             label=tier_spec.label or tier_spec.key,
             ordinal=tier_spec.ordinal,
+            required_per_week=tier_spec.required_per_week,
         )
         session.add(tier)
         await session.flush()
@@ -83,6 +84,7 @@ async def list_ladders(
                     "ordinal": tier.ordinal,
                     "roles": list(roles),
                     "capabilities": list(caps),
+                    "required_per_week": tier.required_per_week,
                 }
             )
         result.append((ladder, rows))
@@ -107,6 +109,7 @@ async def load_all_ladders(session: AsyncSession) -> dict[int, GuildLadders]:
             await session.scalars(select(RankTier).where(RankTier.ladder_id == ladder.id))
         ).all()
         by_role: dict[int, tuple[str, str, int, frozenset[str]]] = {}
+        quota_by_role: dict[int, int] = {}
         for tier in tiers:
             roles = (
                 await session.scalars(
@@ -122,6 +125,8 @@ async def load_all_ladders(session: AsyncSession) -> dict[int, GuildLadders]:
             )
             for role_id in roles:
                 by_role[role_id] = (tier.key, tier.label or tier.key, tier.ordinal, caps)
+                if tier.required_per_week is not None:
+                    quota_by_role[role_id] = tier.required_per_week
         group = by_guild.setdefault(ladder.guild_id, GuildLadders(guild_id=ladder.guild_id))
         group.add(
             LadderIndex(
@@ -130,6 +135,7 @@ async def load_all_ladders(session: AsyncSession) -> dict[int, GuildLadders]:
                 key=ladder.key,
                 by_role=by_role,
                 purpose=ladder.purpose,
+                quota_by_role=quota_by_role,
             )
         )
     return by_guild

@@ -231,16 +231,21 @@ class CountingService:
     async def _roster_entries(
         self, ladder_id: int | None, ladders: GuildLadders | None, binding_id: int
     ) -> tuple[list[RosterEntry], str | None]:
-        """Stored roster plus quotas, or a problem explaining why it is empty."""
+        """Stored roster plus requirements, or a problem explaining why it is empty.
+
+        The requirement comes from the quota ladder and was frozen onto the roster row at
+        scrape time. A per-channel override in `quota_policies` wins when present, which
+        is the only reason that table still exists.
+        """
         if ladder_id is None:
             return [], (
-                "no rank ladder is configured for this channel's rank source guild, "
+                "no quota ladder is configured for this channel's rank source guild, "
                 "so the list of people to count is unknown"
             )
 
         async with self._db.session() as session:
             stored = await repos.list_roster(session, ladder_id)
-            policies = await repos.get_quota_policies(
+            overrides = await repos.get_quota_policies(
                 session, ladder_id=ladder_id, binding_id=binding_id
             )
             tier_ordinals = await repos.get_tier_ordinals(session, ladder_id)
@@ -252,14 +257,16 @@ class CountingService:
                 "configured role. Run `dsbot roster-refresh --channel <id>` to scrape it."
             )
 
-        required = _required_by_tier(policies, tier_ordinals)
+        override_by_ordinal = _required_by_tier(overrides, tier_ordinals)
         entries = [
             RosterEntry(
                 user_id=row.user_id,
                 display_name=row.display_name,
                 tier_label=row.tier_label,
                 tier_ordinal=row.tier_ordinal,
-                required_count=required.get(row.tier_ordinal, 0),
+                required_count=override_by_ordinal.get(
+                    row.tier_ordinal, row.required_per_week or 0
+                ),
             )
             for row in stored
         ]

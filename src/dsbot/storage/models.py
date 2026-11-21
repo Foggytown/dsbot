@@ -195,6 +195,10 @@ class RankTier(Base):
     key: Mapped[str] = mapped_column(String(80))
     label: Mapped[str] = mapped_column(String(200), default="")
     ordinal: Mapped[int] = mapped_column(Integer, index=True)
+    # Reports this tier must file each week, from the quota ladder. NULL means the tier
+    # is not a quota tier. Kept on the tier because it is a property of the rank, so an
+    # admin edits one place and the YAML file stays the source of truth.
+    required_per_week: Mapped[int | None] = mapped_column(Integer)
 
     ladder: Mapped[RankLadder] = relationship(back_populates="tiers")
     roles: Mapped[list[RankTierRole]] = relationship(
@@ -434,7 +438,13 @@ class Character(Base):
 
 
 class QuotaPolicy(Base):
-    """Required approvals per tier per period. One row per tier, freely editable."""
+    """Optional per-channel override of a tier's weekly requirement.
+
+    The requirement itself lives on the rank tier, in the quota ladder file, because it
+    is a property of the rank: "an instructor files three reports a week". This table
+    exists only for the exception - one channel needing a different number - so an admin
+    does not have to fork the whole ladder to tune a single channel.
+    """
 
     __tablename__ = "quota_policies"
     __table_args__ = (UniqueConstraint("ladder_id", "tier_id", "binding_id"),)
@@ -477,6 +487,9 @@ class RosterMember(Base):
     tier_key: Mapped[str | None] = mapped_column(String(80))
     tier_label: Mapped[str | None] = mapped_column(String(200))
     tier_ordinal: Mapped[int | None] = mapped_column(Integer)
+    # The weekly requirement that applied when this roster was taken. Stored rather than
+    # re-read later, so changing a quota tomorrow does not rewrite last week's result.
+    required_per_week: Mapped[int] = mapped_column(Integer, default=0)
     captured_at: Mapped[datetime] = _ts()
 
 

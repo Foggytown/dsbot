@@ -1,27 +1,39 @@
 # =============================================================================
-# The quota ladder: WHO OWES REPORTS
+# QUOTA LADDER: who owes reports, and how many per week
 #
-# Copy to forms/ladders/quota.yaml and apply:
+# This file answers ONE question: "how many reports must this person file?"
+# It grants NO rights. Nobody listed here can approve anything, by construction:
+# `ladder-check` refuses a quota ladder that lists `capabilities`.
+#
+# Copy to forms/ladders/quota.yaml, fill in role ids, then:
 #
 #   uv run dsbot ladder-check --file forms/ladders/quota.yaml
 #   uv run dsbot ladder-apply --file forms/ladders/quota.yaml
 #   uv run dsbot roster-refresh --channel <id>
-#   uv run dsbot quota-set --channel <id> --tier instructor --count 3
+#   uv run dsbot count --channel <id>
 #
 # -----------------------------------------------------------------------------
-# WHY THIS IS SEPARATE FROM review.yaml
+# `required_per_week` is the number of reports filed per week.
 # -----------------------------------------------------------------------------
 #
-# These tiers carry NO capabilities on purpose. Filing a report does not grant the
-# right to approve one, and the bot enforces that by asking for `review` explicitly
-# when a reaction arrives. A person may appear in both ladders (a senior instructor who
-# both reviews and reports); the two answers are simply independent.
+# A person who holds SEVERAL roles from this file gets the requirement of the HIGHEST
+# tier (largest `ordinal`), not the sum. So a Senior Instructor who still has their old
+# Instructor role is asked for 4, not 7:
 #
-# The tiers here decide the shape of the weekly table: everyone holding one of these
-# roles is in it, including people with zero reports, who show as 0. That is why
-# `roster-refresh` needs the Members intent.
+#   roles: [senior_role, instructor_role]  ->  required_per_week: 4
 #
-# Quieter tiers simply have `capabilities: []` and are never listed in review.yaml.
+# That is deliberate: a promotion must not silently double someone's duty.
+#
+# -----------------------------------------------------------------------------
+# PER-CHANNEL OVERRIDE
+# -----------------------------------------------------------------------------
+#
+# Rarely, one channel needs a different number than the ladder says. Override just that
+# channel without touching this file:
+#
+#   uv run dsbot quota-set --channel <id> --tier instructor --count 5
+#
+# The override wins for that channel only; everywhere else this file's number applies.
 # =============================================================================
 
 key: quota
@@ -30,21 +42,21 @@ name: Специализации — отчётность
 guild_id: 1274460259661910149
 
 tiers:
-  # Ordinal only orders people in reports and logs; it grants nothing.
+  # `ordinal` only decides which requirement wins when someone holds several roles.
   - key: head_instructor
     label: Head Instructor
     ordinal: 50
     roles: []
-    capabilities: []
+    required_per_week: 2
 
   - key: senior_instructor
     label: Senior Instructor
     ordinal: 30
     roles: []
-    capabilities: []
+    required_per_week: 4
 
   - key: instructor
     label: Instructor
     ordinal: 10
     roles: []
-    capabilities: []
+    required_per_week: 3

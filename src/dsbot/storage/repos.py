@@ -660,6 +660,7 @@ async def replace_roster(
                 tier_key=member.get("tier_key"),
                 tier_label=member.get("tier_label"),
                 tier_ordinal=member.get("tier_ordinal"),
+                required_per_week=member.get("required_per_week", 0),
             )
         )
     await session.flush()

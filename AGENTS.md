@@ -139,16 +139,26 @@ This is the correction that matters most:
 
 So a guild has several ladders, distinguished by a declared `purpose`:
 
-| `purpose` | Contains | Used for | Capabilities |
+| `purpose` | Contains | Carries | Used for |
 |---|---|---|---|
-| `review` | who may approve | verdicts, `/reports count` permission | `review`, `admin` |
-| `quota` | who owes reports | the weekly table, `quota-set` | none, on purpose |
+| `review` | who may approve | `capabilities` | verdicts, `/reports count` permission |
+| `quota` | who owes reports | `required_per_week` | the weekly table |
 
-A quota ladder must never grant `review`; `ladder-check` rejects it. The reactor path
-asks the resolver for `requires={"review"}`, so a quota role physically cannot decide a
-verdict however high its ordinal is. Do not collapse these into one ladder: doing so
-either lets everyone who reports approve themselves, or drops non-purpose roles out of
-the count.
+A quota tier sets `required_per_week` and **must not** list `capabilities`;
+`ladder-check` rejects it, and a review tier that sets `required_per_week` is flagged
+because the number would be silently ignored. The reactor path asks the resolver for
+`requires={"review"}`, so a quota role physically cannot decide a verdict however high
+its ordinal is. Do not collapse these into one ladder: doing so either lets everyone who
+reports approve themselves, or drops the reporting roles out of the count.
+
+**One requirement per person, not a sum.** Someone holding several quota roles gets the
+requirement of the highest `ordinal`. A promotion must not stack a second requirement on
+top of the first, and a leftover junior role must not drag the duty back down. This is
+implemented by `GuildLadders.required_for_roles` and frozen onto the roster row.
+
+`required_per_week` lives on the tier (and in the YAML file) because it is a property of
+the rank. `quota_policies` exists only for the exception: one channel needing a different
+number than the ladder says. Never require an admin to retype every number per channel.
 
 ### Hierarchy is per channel, roles are cross-server
 
@@ -298,6 +308,13 @@ Each of these shipped and had to be found by a live run or a user report.
     timestamp, so un-reacting and re-adding looked like a duplicate delivery and was
     dropped: the verdict never came back. Clears had the same bug and left stale
     reactions that counted as approvals. Both now carry the moment they happened.
+13. **The weekly requirement was stored in the wrong place.** It lived in
+    `quota_policies`, retyped per channel, while the ladder only listed roles. That made
+    the ladder look like it had no numbers, forced the same figure to be entered again
+    for every channel, and let a channel silently disagree with the ladder. The number is
+    a property of the rank, so it is `required_per_week` on the tier, in the quota YAML,
+    frozen onto the roster when scraped. `quota_policies` is now an override for the
+    exception only.
 
 ## Verification
 

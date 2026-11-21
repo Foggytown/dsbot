@@ -55,6 +55,11 @@ ADDITIONS: tuple[_Addition, ...] = (
     _Addition("weekly_runs", "published_ids", "JSON"),
     # A ladder declares whether it orders reviewers or lists who owes reports.
     _Addition("rank_ladders", "purpose", "VARCHAR(20) NOT NULL DEFAULT 'review'"),
+    # The weekly requirement is a property of the rank, so it lives on the tier and comes
+    # from the quota ladder file rather than being retyped per channel.
+    _Addition("rank_tiers", "required_per_week", "INTEGER"),
+    # Frozen onto the roster so changing a quota later cannot rewrite last week.
+    _Addition("roster_members", "required_per_week", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 

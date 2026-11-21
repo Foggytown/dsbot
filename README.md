@@ -107,12 +107,13 @@ uv run dsbot analyze --dump backfill-out/reports.jsonl
 uv run dsbot export --channel <channel> --out backfill-out/reports.csv
 
 # counting: who filed how many approved reports
-uv run dsbot roster-refresh --channel <channel>   # scrape role membership once
-uv run dsbot roster --channel <channel>           # who is counted
-uv run dsbot channel-ladder --channel <channel> --ladder quota   # pin the hierarchy
-uv run dsbot quota-set --channel <channel> --tier instructor --count 3
-uv run dsbot quota-show --channel <channel>
-uv run dsbot count --channel <channel>            # current week
+uv run dsbot ladder-apply --file forms/ladders/quota.yaml   # numbers live here
+uv run dsbot roster-refresh --channel <channel>            # scrape role membership
+uv run dsbot roster --channel <channel>                    # who is counted, and owes what
+uv run dsbot channel-ladder --channel <channel> --ladder review   # pin the hierarchy
+uv run dsbot quota-show --channel <channel>                # requirements in effect
+uv run dsbot quota-set --channel <channel> --tier instructor --count 5   # override one channel
+uv run dsbot count --channel <channel>                     # current week
 uv run dsbot count --channel <channel> --week last --csv out.csv
 uv run dsbot count --channel <channel> --from 2026-11-01 --to 2026-11-17
 uv run dsbot count --channel <channel> --publish 123456789   # post it somewhere
@@ -120,8 +121,9 @@ uv run dsbot report-format --channel <channel> --publish-to 123456789 --title "�
 ```
 
 Two ladder files are shipped as a starting point: `forms/ladders/review.yaml.example`
-(who may approve) and `forms/ladders/quota.yaml.example` (who owes reports). Copy them,
-fill in real role ids, and apply each with `dsbot ladder-apply`.
+(who may approve, `capabilities`) and `forms/ladders/quota.yaml.example` (who owes
+reports, `required_per_week`). Copy them, fill in real role ids, and apply each with
+`dsbot ladder-apply`.
 
 `backfill --to-db` writes to the database in the same pass. `--since` accepts an
 ISO date or a relative duration (`14d`, `36h`).
@@ -145,12 +147,18 @@ period. The rules that were agreed explicitly, and why:
 **Approving and reporting are different roles.** A guild has two ladders, told apart by
 `purpose:` in the YAML:
 
-- `purpose: review` — the tiers that may approve or reject, with `capabilities: [review]`
-- `purpose: quota`  — the roles that owe reports, with **no** capabilities
+- `purpose: review` — who may approve or reject, with `capabilities: [review]`
+- `purpose: quota`  — who owes reports, with `required_per_week: 3`
 
-A role that only owes reports can never approve one, whatever its ordinal is. Two
-reviewers of the *same* tier who disagree produce a conflict instead of an arbitrary
-winner.
+They are separate files because they answer separate questions. A quota ladder that
+lists `capabilities` is rejected: nobody who owes a report may approve one.
+
+**One number per person.** Someone holding two quota roles gets the requirement of the
+highest `ordinal`, not the sum — a promotion must not double the duty, and a leftover
+junior role must not drag it back down.
+
+The number lives in the ladder because it is a property of the rank. `quota-set` exists
+only to override it for a single channel that genuinely differs.
 
 **Who is counted** is everyone holding a role in the quota ladder, scraped into the
 database by `roster-refresh`. That is why the **Members intent must be enabled** in the

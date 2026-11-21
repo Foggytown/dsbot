@@ -898,13 +898,19 @@ def ladder_show(
             typer.echo("no ladders configured. Use `dsbot ladder-apply`.")
             return
         for ladder, tiers in ladders:
-            typer.echo(f"\n[{ladder.key}] {ladder.name or '-'} (guild {ladder.guild_id})")
+            typer.echo(
+                f"\n[{ladder.key}] {ladder.name or '-'} "
+                f"(guild {ladder.guild_id}, purpose {ladder.purpose})"
+            )
             for tier in tiers:
                 roles = ", ".join(str(r) for r in tier["roles"]) or "(none)"
                 caps = ", ".join(tier["capabilities"]) or "-"
+                extra = ""
+                if tier.get("required_per_week") is not None:
+                    extra = f"  needs[{tier['required_per_week']}/week]"
                 typer.echo(
                     f"  {tier['ordinal']:>4}  {tier['key']:<20} {tier['label']:<22} "
-                    f"roles[{roles}] caps[{caps}]"
+                    f"roles[{roles}] caps[{caps}]{extra}"
                 )
 
     asyncio.run(run_show())
@@ -1549,8 +1555,9 @@ def roster_show(
         typer.echo(f"{len(rows)} person(s) counted for (guild {guild_id})")
         for row in rows:
             ordinal = row.tier_ordinal if row.tier_ordinal is not None else "-"
+            needs = f"{row.required_per_week}/week" if row.required_per_week else "no quota"
             typer.echo(
-                f"  {ordinal!s:>4}  {row.tier_label or '-':<22} "
+                f"  {ordinal!s:>4}  {row.tier_label or '-':<22} {needs:<10} "
                 f"{row.user_id:<20} {row.display_name}"
             )
 
@@ -1797,11 +1804,16 @@ def channel_ladder(
 @app.command("quota-set")
 def quota_set(
     channel: Annotated[int, typer.Option(help="Report channel id")],
-    tier: Annotated[str, typer.Option(help="Tier key from the ladder, e.g. instructor")],
-    count: Annotated[int, typer.Option(help="Reports required per week")],
+    tier: Annotated[str, typer.Option(help="Tier key from the quota ladder, e.g. instructor")],
+    count: Annotated[int, typer.Option(help="Reports required per week for THIS channel")],
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Set how many reports a tier must produce per week."""
+    """Override a tier's weekly requirement for one channel.
+
+    The number normally lives in the quota ladder file (`required_per_week`), because it
+    is a property of the rank. Use this only for the exception where one channel differs;
+    it affects this channel alone and leaves the ladder untouched.
+    """
     settings = _settings(verbose)
 
     async def run() -> None:
@@ -1821,7 +1833,10 @@ def quota_set(
                 ladders = await ranks_repo.load_all_ladders(session)
                 group = ladders.get(guild_id)
                 if group is None or group.quota_ladder_id is None:
-                    typer.echo(f"no ladder for guild {guild_id}")
+                    typer.echo(
+                        f"no quota ladder for guild {guild_id}. Apply one first:\n"
+                        "  uv run dsbot ladder-apply --file forms/ladders/quota.yaml"
+                    )
                     raise typer.Exit(code=1)
                 ladder_id = group.quota_ladder_id
                 tiers = (
@@ -1842,7 +1857,14 @@ def quota_set(
                     binding_id=binding.id,
                     required_count=count,
                 )
-            typer.echo(f"quota: {match.label or match.key} -> {count} per week")
+            typer.echo(
+                f"override for channel {channel}: {match.label or match.key} -> {count}/week"
+            )
+            if match.required_per_week not in (None, count):
+                typer.echo(
+                    f"(the ladder itself says {match.required_per_week}; "
+                    "that still applies to other channels)"
+                )
         finally:
             await db.dispose()
 
@@ -1858,7 +1880,10 @@ def quota_show(
     settings = _settings(verbose)
 
     async def run() -> None:
+        from sqlalchemy import select
+
         from dsbot.storage import ranks_repo
+        from dsbot.storage.models import RankTier
 
         db = Database(settings)
         try:
@@ -1871,41 +1896,46 @@ def quota_show(
                 ladders = await ranks_repo.load_all_ladders(session)
                 group = ladders.get(guild_id)
                 if group is None or group.quota_ladder_id is None:
-                    typer.echo(f"no ladder for guild {guild_id}")
+                    typer.echo(
+                        f"no quota ladder for guild {guild_id}. Apply one first:\n"
+                        "  uv run dsbot ladder-apply --file forms/ladders/quota.yaml"
+                    )
                     raise typer.Exit(code=1)
                 ladder_id = group.quota_ladder_id
-                policies = await repos.get_quota_policies(
+                overrides = await repos.get_quota_policies(
                     session, ladder_id=ladder_id, binding_id=binding.id
                 )
-                ordinals = await repos.get_tier_ordinals(session, ladder_id)
-                tiers = {
-                    tier.id: tier for tier in (await session.scalars(_all_tiers(ladder_id))).all()
-                }
+                tiers = (
+                    await session.scalars(
+                        select(RankTier)
+                        .where(RankTier.ladder_id == ladder_id)
+                        .order_by(RankTier.ordinal.desc())
+                    )
+                ).all()
         finally:
             await db.dispose()
 
-        if not policies:
-            typer.echo("no quotas configured. Set one with:")
-            typer.echo(f"  uv run dsbot quota-set --channel {channel} --tier instructor --count 3")
-            return
-        for policy in policies:
-            tier = tiers.get(policy.tier_id) if policy.tier_id else None
-            scope = "this channel" if policy.binding_id else "whole ladder"
-            label = (tier.label or tier.key) if tier else "(any tier)"
-            ordinal = ordinals.get(policy.tier_id, "-") if policy.tier_id else "-"
-            typer.echo(
-                f"  {label:<24} {policy.required_count:>3}/week  [{scope}] ordinal={ordinal}"
-            )
+        override_by_tier = {p.tier_id: p.required_count for p in overrides if p.tier_id}
+
+        typer.echo(f"Weekly requirements for channel {channel} (guild {guild_id}):")
+        for tier in tiers:
+            label = tier.label or tier.key
+            base = tier.required_per_week
+            override = override_by_tier.get(tier.id)
+            if override is not None and override != base:
+                ladder_says = base if base is not None else "-"
+                shown = f"{override}/week  (override; ladder says {ladder_says})"
+            elif base is None:
+                shown = "-"
+            else:
+                shown = f"{base}/week"
+            typer.echo(f"  {tier.ordinal:>4}  {label:<24} {shown}")
+
+        if not any(t.required_per_week is not None for t in tiers):
+            typer.echo("")
+            typer.echo("No tier in the ladder sets required_per_week, so nothing is demanded.")
 
     asyncio.run(run())
-
-
-def _all_tiers(ladder_id: int) -> Any:
-    from sqlalchemy import select
-
-    from dsbot.storage.models import RankTier
-
-    return select(RankTier).where(RankTier.ladder_id == ladder_id)
 
 
 def main() -> None:

@@ -70,6 +70,8 @@ class LadderIndex:
     by_role: dict[int, tuple[str, str, int, frozenset[str]]]
     # "review" or "quota", declared by the admin rather than inferred.
     purpose: str = "review"
+    # role id -> reports per week, from the quota ladder only.
+    quota_by_role: dict[int, int] = field(default_factory=dict)
 
     def resolve_roles(
         self,
@@ -152,6 +154,31 @@ class GuildLadders:
             if index.purpose == "quota":
                 return index.ladder_id
         return None
+
+    def required_for_roles(self, role_ids: frozenset[int]) -> tuple[int, str | None, int | None]:
+        """Weekly requirement for someone holding these roles, and which tier set it.
+
+        Highest ordinal wins, so a person holding several quota roles is asked for the
+        senior amount, never the sum: a promotion must not double the duty, and a leftover
+        junior role must not drag it back down.
+
+        Returns (required, tier_label, tier_ordinal). `required` is 0 when the person is
+        on no quota ladder at all.
+        """
+        best: tuple[int, str | None, int | None] | None = None
+        for index in self.indexes:
+            if index.purpose != "quota":
+                continue
+            for role_id in role_ids:
+                requirement = index.quota_by_role.get(role_id)
+                if requirement is None:
+                    continue
+                entry = index.by_role.get(role_id)
+                ordinal = entry[2] if entry else 0
+                label = entry[1] if entry else None
+                if best is None or ordinal > (best[2] or 0):
+                    best = (requirement, label, ordinal)
+        return best if best is not None else (0, None, None)
 
     def resolve(
         self,

@@ -148,12 +148,16 @@ class RosterService:
             )
             if resolved is None:
                 continue
+            # Highest quota tier wins: a promotion must not sum two requirements, and a
+            # leftover junior role must not drag the duty back down.
+            required, quota_label, quota_ordinal = ladder.required_for_roles(role_ids)
             rows[resolved.user_id] = {
                 "user_id": resolved.user_id,
                 "display_name": _display_name(member),
                 "tier_key": resolved.tier_key,
-                "tier_label": resolved.tier_label,
-                "tier_ordinal": resolved.ordinal,
+                "tier_label": quota_label or resolved.tier_label or resolved.tier_key,
+                "tier_ordinal": quota_ordinal if quota_ordinal is not None else resolved.ordinal,
+                "required_per_week": required,
             }
 
         log.info(
@@ -191,6 +195,7 @@ class RosterService:
                     "display_name": row.display_name,
                     "tier_label": row.tier_label,
                     "tier_ordinal": row.tier_ordinal,
+                    "required_per_week": row.required_per_week,
                     "captured_at": row.captured_at,
                 }
                 for row in rows
