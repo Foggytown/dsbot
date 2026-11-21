@@ -23,7 +23,7 @@ the roster is scraped now and counted as it stands, which is stated in the outpu
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -46,10 +46,13 @@ log = structlog.get_logger(__name__)
 # Discord returns at most 100 messages per request.
 PAGE = 100
 
-# How many reaction reads to keep in flight. Each `reaction.users()` is one REST call and
-# they are independent, so doing them sequentially was the entire cost of a scan. This is
-# deliberately modest: fanning out too wide earns 429s, which is slower than being steady.
-CONCURRENT_READS = 8
+# Reading WHO reacted is one request per emoji per message, and Discord rate limits it per
+# channel. The way to make a scan cheap is therefore not to space requests out but to not
+# make them: what has been fetched is stored, and a report whose reaction counts still
+# match what is stored costs nothing on the next scan. This interval only applies to the
+# genuinely new ones, and is deliberately small because discord.py already honours the
+# rate-limit headers Discord sends back.
+DEFAULT_REACTION_INTERVAL = 0.05
 
 
 @dataclass(slots=True)
@@ -159,6 +162,9 @@ async def count_from_discord(
     rank_guild_id: int,
     review_ladder_id: int | None = None,
     stats_out: LiveScanStats | None = None,
+    reaction_interval: float = DEFAULT_REACTION_INTERVAL,
+    cached: Callable[[list[Any]], Any] | None = None,
+    remember: Callable[[list[Any], list[Any], list[int]], Any] | None = None,
 ) -> tuple[CountSummary, LiveScanStats]:
     """Parse live history for one period and count approved reports per person.
 
@@ -191,11 +197,13 @@ async def count_from_discord(
             stats.invalid += 1
         prepared.append((group, []))
 
-    # Pass 2: read reactions concurrently. This is where essentially all the time goes:
-    # `reaction.users()` is one REST call per emoji per message, so doing it in a loop is
-    # what made a scan take half a minute. Bounded so we stay inside the rate limit.
-    reads = await _gather_bounded(
-        [_read_reactions(group) for group, _ in prepared], limit=CONCURRENT_READS
+    # Pass 2: read reactions. Stored ones are reused when the counts still match, so a
+    # repeat scan costs almost nothing; see _read_all_reactions.
+    reads = await _read_all_reactions(
+        [group for group, _ in prepared],
+        interval=reaction_interval,
+        cached=cached,
+        remember=remember,
     )
 
     reactor_ids: set[int] = set()
@@ -230,9 +238,8 @@ async def count_from_discord(
 async def _gather_bounded(coros: list[Any], *, limit: int) -> list[Any]:
     """Run coroutines with at most `limit` in flight, preserving result order.
 
-    Discord allows a handful of concurrent requests; going wide is how the scan went from
-    tens of seconds to a few. The bound matters more than the ceiling: an unbounded
-    gather over a busy channel would earn 429s and be slower in the end.
+    Kept for genuinely independent work. NOT used for reaction reads: those are limited
+    per channel by Discord, which discord.py cannot see, so they are paced instead.
     """
     import asyncio as _asyncio
 
@@ -243,6 +250,143 @@ async def _gather_bounded(coros: list[Any], *, limit: int) -> list[Any]:
             return await coro
 
     return list(await _asyncio.gather(*(one(coro) for coro in coros)))
+
+
+async def _cached_reactions(db: Any, group: list[Any]) -> tuple[list[Reaction], list[int]] | None:
+    """Stored reactors for a report, if the stored counts still match Discord's.
+
+    Discord puts the reaction counts on every message it returns, so a comparison is free
+    and a mismatch means somebody reacted or un-reacted since: the entry is then ignored
+    and refetched. This is what makes a second scan of the same period nearly free.
+    """
+    from dsbot.storage import repos
+
+    head = group[0]
+    live_counts = _live_counts(group)
+    if not live_counts:
+        return None
+
+    async with db.session() as session:
+        stored_counts = await repos.get_reaction_counts(session, head.id)
+        if stored_counts != live_counts:
+            return None
+        cached = await repos.list_cached_reactions(session, head.id)
+
+    if not cached:
+        return None
+    reactions = [Reaction(user_id=row.user_id, emoji_name=row.emoji_name) for row in cached]
+    return reactions, [row.user_id for row in cached]
+
+
+def _live_counts(group: list[Any]) -> dict[str, int]:
+    """Emoji key -> count, from the message payload (no request needed)."""
+    counts: dict[str, int] = {}
+    for message in group:
+        for reaction in message.reactions:
+            name = getattr(reaction.emoji, "name", None) or str(reaction.emoji)
+            if name not in APPROVE and name not in REJECT:
+                continue
+            key = f"unicode:{name}"
+            counts[key] = counts.get(key, 0) + int(getattr(reaction, "count", 0))
+    return counts
+
+
+async def _remember_reactions(
+    db: Any,
+    channel_id: int,
+    channel: Any,
+    group: list[Any],
+    reactions: list[Reaction],
+) -> None:
+    """Store the reactors so the next scan can skip the request.
+
+    Best-effort: a failure here only costs a future request, never correctness, so it is
+    logged and swallowed rather than failing an otherwise good report.
+    """
+    from dsbot.storage import repos
+
+    head = group[0]
+    guild_id = getattr(getattr(head, "guild", None), "id", None)
+    rows = [
+        (
+            r.user_id,
+            r.emoji_name,
+            r.emoji_id,
+            f"unicode:{r.emoji_name}" if r.emoji_id is None else f"custom:{r.emoji_id}",
+        )
+        for r in reactions
+    ]
+    try:
+        async with db.write_session() as session:
+            await repos.replace_cached_reactions(
+                session,
+                message_id=head.id,
+                channel_id=channel_id,
+                guild_id=guild_id,
+                reactions=rows,
+            )
+    except Exception:
+        log.exception("reaction_cache_write_failed", message_id=head.id)
+
+
+async def _read_all_reactions(
+    groups: list[list[Any]],
+    *,
+    interval: float = DEFAULT_REACTION_INTERVAL,
+    cached: Callable[[list[Any]], Any] | None = None,
+    remember: Callable[[list[Any], list[Reaction], list[int]], Any] | None = None,
+) -> list[tuple[list[Reaction], list[int]]]:
+    """Read every report's reactions, reusing what was fetched on an earlier scan.
+
+    Cheap for three reasons, in order of importance:
+
+    * a report with no ✓/✗ needs no request at all - the message already carries counts;
+    * a report whose reaction counts match the stored ones is served from storage, since
+      the same people are still the ones who reacted;
+    * only genuinely unknown reports hit the API, spaced by `interval`.
+
+    Discord rate limits this per channel and asks clients to honour the response headers
+    rather than hardcode timing, which discord.py already does. So the lever is making
+    fewer requests, not slower ones.
+    """
+    import asyncio as _asyncio
+
+    results: list[tuple[list[Reaction], list[int]]] = []
+    requests = 0
+    for group in groups:
+        if not _has_verdict_reactions(group):
+            results.append(([], []))
+            continue
+
+        if cached is not None:
+            hit = await cached(group)
+            if hit is not None:
+                results.append(hit)
+                continue
+
+        if requests:
+            await _asyncio.sleep(interval)
+        requests += 1
+        reactions, reactors = await _read_reactions(group)
+        results.append((reactions, reactors))
+        if remember is not None:
+            await remember(group, reactions, reactors)
+    return results
+
+
+def _has_verdict_reactions(group: list[Any]) -> bool:
+    """Whether any message in the group carries a ✓ or ✗ worth fetching.
+
+    The reaction summary arrives with the message, so this check is free. Skipping the
+    fetch is what keeps a scan of mostly-unreviewed reports fast, and it removes almost
+    all of the rate-limited requests.
+    """
+    for message in group:
+        for reaction in message.reactions:
+            name = getattr(reaction.emoji, "name", None) or str(reaction.emoji)
+            if name in APPROVE or name in REJECT:
+                return True
+    return False
 
 
 APPROVE = {"\u2705", "\u2714", "\u2611"}
@@ -388,6 +532,10 @@ async def count_channel_from_discord(
         resolver=resolver,
         rank_guild_id=guild_id,
         review_ladder_id=review_ladder_id,
+        cached=lambda group: _cached_reactions(db, group),
+        remember=lambda group, reactions, reactors: _remember_reactions(
+            db, channel_id, channel, group, reactions
+        ),
     )
     return LiveCountResult(
         summary=summary,

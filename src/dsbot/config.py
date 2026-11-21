@@ -91,6 +91,11 @@ class Settings(BaseSettings):
     # Discord. Empty means no footer at all.
     developer_user_id: int | None = Field(default=None)
 
+    # Minimum gap between Discord requests that read *who reacted*. Discord limits this
+    # per channel while discord.py tracks it per message, so it must be paced by hand.
+    # Lower it only if you never see 429s; a 429 costs several seconds.
+    reaction_read_interval: float = Field(default=0.35)
+
     # DEV ONLY. Accept messages authored by bots, so the live gateway path can be
     # exercised by posting a test message as the bot itself. Never enable in production.
     dev_accept_bot_messages: bool = Field(default=False)

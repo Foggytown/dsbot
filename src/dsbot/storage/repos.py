@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -798,3 +799,72 @@ async def get_tier_ordinals(session: AsyncSession, ladder_id: int) -> dict[int, 
         )
     ).all()
     return {int(row[0]): int(row[1]) for row in rows}
+
+
+# --- reaction cache --------------------------------------------------------
+#
+# "Who reacted" costs one request per emoji per message and is rate limited per channel,
+# which is what makes a scan of an old period slow. Discord's own message payload carries
+# the reaction *counts* on every read, so if a message's counts are unchanged the same
+# people are still the ones who reacted and the reactor list does not need fetching again.
+#
+# The cache is keyed on the counts, not only the message id, so a new approval invalidates
+# the entry automatically. Stale data is therefore impossible rather than merely unlikely.
+
+
+@dataclass(frozen=True, slots=True)
+class CachedReaction:
+    user_id: int
+    emoji_name: str | None
+
+
+async def get_reaction_counts(session: AsyncSession, message_id: int) -> dict[str, int]:
+    """Stored counts per emoji, used to decide whether a cache entry is still valid."""
+    rows = (
+        await session.execute(
+            select(MessageReaction.emoji_key, func.count(MessageReaction.id))
+            .where(MessageReaction.message_id == message_id)
+            .group_by(MessageReaction.emoji_key)
+        )
+    ).all()
+    return {str(key): int(count) for key, count in rows}
+
+
+async def list_cached_reactions(session: AsyncSession, message_id: int) -> list[CachedReaction]:
+    rows = (
+        await session.scalars(
+            select(MessageReaction)
+            .where(MessageReaction.message_id == message_id)
+            .order_by(MessageReaction.added_at)
+        )
+    ).all()
+    return [CachedReaction(user_id=row.user_id, emoji_name=row.emoji_name) for row in rows]
+
+
+async def replace_cached_reactions(
+    session: AsyncSession,
+    *,
+    message_id: int,
+    channel_id: int,
+    guild_id: int | None,
+    reactions: Sequence[tuple[int, str | None, int | None, str]],
+) -> None:
+    """Store the reactor list for one message, replacing what was there.
+
+    Written with `cache` as the source so a later scan can tell these came from a report
+    read rather than from a live reaction event.
+    """
+    await session.execute(delete(MessageReaction).where(MessageReaction.message_id == message_id))
+    for user_id, emoji_name, emoji_id, emoji_key in reactions:
+        session.add(
+            MessageReaction(
+                message_id=message_id,
+                channel_id=channel_id,
+                guild_id=guild_id,
+                emoji_key=emoji_key,
+                emoji_id=emoji_id,
+                emoji_name=emoji_name,
+                user_id=user_id,
+            )
+        )
+    await session.flush()

@@ -244,7 +244,33 @@ counted, shown as «одобрено без прав», and listed in the header
 - **People are pings** (`<@id>`), not nicknames: a ping is how staff actually reach them.
 - **A tier can be hidden per channel** (`/dsbot hide-tier`) without changing who is
   counted. Stored as `hidden_tiers` in the binding config.
-- A quota is shown clamped (`2/2 +1`), because `3/2` invites the question "out of what?".
+- **One tier can be selected** (`tier:` on `/reports count`) to read a single group.
+- A row shows its real total (`4/1`) with the unusual parts in brackets.
+- A footer pings the developer, and only when `DSBOT_DEVELOPER_USER_ID` is set. Never a
+  name or an external link: a report is visible to a whole server.
+
+### Counting from Discord without getting rate limited
+
+Reading *who reacted* is the expensive part: one request per emoji per message,
+**rate limited per channel**. Discord buckets limits on the top-level resource in the path
+and its docs say to honour the response headers rather than hardcode timings, so a month
+of reports is thousands of requests and a 429 storm.
+
+The fix is fewer requests, not slower ones, in three layers:
+
+1. **No ✓/✗ on the message, no request.** The payload already carries the counts, so
+   `_has_verdict_reactions` skips it for free.
+2. **Unchanged counts, no request.** Same count means the same people reacted, so the
+   stored reactor list is reused. Measured: 20 requests on the first scan, 0 on the second.
+3. **Only new reports are fetched**, spaced by `DSBOT_REACTION_READ_INTERVAL`.
+
+The cache is keyed on the **counts**, not the message id, so a new approval or a removal
+invalidates it automatically. Do not "simplify" it to a message-id cache: stale entries
+would freeze verdicts silently.
+
+Never parallelise these reads. It looks correct locally because discord.py's bucket key
+includes the message id, so it serialises per message — and then gets 429'd upstream,
+costing more than the delay it saved. That mistake shipped once.
 
 ### Who is counted
 
@@ -382,6 +408,12 @@ Each of these shipped and had to be found by a live run or a user report.
     reaction. Distinct reactors are resolved once each, concurrently.
 17. **A row must not overfill its own quota.** `3/2` invited "out of what?". Display is
     clamped with a `+N` remainder.
+18. **Parallelising reaction reads caused a 429 storm.** discord.py's bucket key includes
+    the message id, so it believes every message has its own limit and does no
+    cross-message throttling; Discord limits the route per *channel*. Eight at once looked
+    fine locally and was slower in production, because each 429 costs seconds. The real
+    fix is fewer requests: skip messages with no ✓/✗, and reuse stored reactors when the
+    counts have not changed.
 
 ## Verification
 
