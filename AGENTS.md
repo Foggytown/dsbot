@@ -435,7 +435,22 @@ Each of these shipped and had to be found by a live run or a user report.
     authority - so the first scan of a live-report message deleted a real approval's
     provenance and replaced it with rows having can_review = NULL. The cache now lives in
     its own `reaction_cache` table. Any new cache must never overwrite observed state.
-21. **Personal details in a committed script.** A preview script carried the author's
+21. **Startup only applied the channels file when a setting was truthy.** The guard tested
+    `settings.channels_file`, which is deliberately empty because the real path is derived
+    from the data directory - so the condition was False on a fresh panel, no channel was
+    ever bound, and the bot started successfully while serving nothing. Never gate config
+    reconciliation on a setting whose default means "derive it"; reconcile unconditionally.
+22. **A database path outside the data directory was accepted silently.** The panel replaces
+    everything except its data directory, so an explicit `DSBOT_DATABASE_URL` pointing into
+    the checkout deletes all history on the next upload. `database_location_problem()`
+    compares the URL against the data directory and `run_bot` refuses to start. Diagnostics
+    that would lose data must be fatal, not warnings.
+23. **Slash commands were only synced to guilds with a binding.** A guild could keep a stale
+    registration from an earlier deploy, so Discord kept offering a command this process
+    could not resolve and every use logged
+    `CommandNotFound: Application command 'reports' not found`. Sync every guild the bot is
+    in; the cost is one request per guild, the alternative is a permanently stale menu.
+24. **Personal details in a committed script.** A preview script carried the author's
     username and a repository URL, which would have shipped in every deployment. The
     developer credit is a Discord ping only, read from settings; nothing name-like is
     hardcoded, and never add a name or external link to user-visible output.

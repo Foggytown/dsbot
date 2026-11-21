@@ -12,9 +12,8 @@
 #
 # Someone holding several roles here gets the HIGHEST tier's number, never the sum.
 #
-# `required_per_week: 0` means "owes nothing" - a tier that is tracked (so they appear in
-# the report) but has no weekly duty. That is different from a tier with no number at all,
-# which is ignored.
+# NOTE: `required_per_week` values below are PLACEHOLDERS. Set the real weekly
+# norms before relying on the count.
 # =============================================================================
 
 key: quota

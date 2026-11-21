@@ -130,10 +130,29 @@ DSBOT_REPORT_GROUP_WINDOW_SECONDS=120
 DSBOT_ENABLE_MEMBERS_INTENT=true
 ```
 
-DSBOT_AUTO_BIND_CHANNELS больше не нужен: каналы берутся из channels.yaml в папке
-данных (/data), который копируется из orms/channels.yaml при первом старте.
+Ни `DSBOT_AUTO_BIND_CHANNELS`, ни `DSBOT_DATABASE_URL` задавать **не нужно**:
 
-Путь к БД **относительный** (`./var`), поэтому рабочий каталог процесса должен быть
+- каналы берутся из `channels.yaml` в папке данных, который копируется из
+  `forms/channels.yaml` при первом старте;
+- база сама ложится в ту же папку данных, рядом с `channels.yaml`.
+
+**Никогда не задавай `DSBOT_DATABASE_URL` на панели.** Это единственная настройка, которая
+может молча уничтожить историю: явный путь вида `./var/dsbot.db` уводит базу из `/data`,
+а панель стирает всё, кроме `/data`, при каждой загрузке. Бот теперь **отказывается
+стартовать** в таком случае и пишет, что убрать из `.env`.
+
+Проверить, что путь правильный:
+
+```bash
+python main.py status
+```
+
+```
+state dir: /data
+database: sqlite+aiosqlite:////data/dsbot.db
+```
+
+Если `database` указывает не на `state dir` — убери `DSBOT_DATABASE_URL` и перезапусти.
 корнем проекта. Панель так и делает.
 
 ## Первый запуск

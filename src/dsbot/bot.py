@@ -134,17 +134,20 @@ class Bot(discord.ext.commands.Bot):
             log.exception("deferred_recovery_failed")
 
         bindings = await self._load_bindings()
-        # ALWAYS reconcile with the channels file, not only on a fresh database. The
-        # panel keeps only /data across a redeploy: everything else is re-uploaded from
-        # git, so a channel or ladder added to the YAML must be applied on every start or
-        # a change would appear to "not work" until someone wiped the database. Sync is
-        # idempotent, so running it always is the safe direction.
-        if self.settings.channels_file or self.settings.auto_bind_channels:
-            bindings = await self._auto_bind()
-            # Ladders may have just been created by the sync, so reload them afterwards.
-            # Without this, a ladder applied by the file would be invisible to approvals
-            # until the next restart, which on a panel means "it did not work".
-            await self._load_ladders()
+        # ALWAYS reconcile with the channels file. The panel keeps only /data across a
+        # redeploy and replaces the rest of the checkout, so a channel added to the file
+        # must be applied on every start or it would appear to "not work" until someone
+        # wiped the database. Sync is idempotent, so running it unconditionally is safe.
+        #
+        # Do NOT gate this on `settings.channels_file` being set: it defaults to empty
+        # because the real path is derived from the data directory. Gating on it made the
+        # condition False on a fresh panel, so no channel was ever bound and the bot
+        # started silently serving nothing. That shipped and cost a deployment.
+        bindings = await self._auto_bind()
+        # Ladders may just have been created by the sync, so reload them afterwards.
+        # Without this, a ladder applied by the file would be invisible to approvals
+        # until the next restart, which on a panel means "it did not work".
+        await self._load_ladders()
 
         if not bindings:
             # Silence with no explanation is the worst failure mode: the bot is running,
@@ -266,18 +269,39 @@ class Bot(discord.ext.commands.Bot):
         return await self._load_bindings()
 
     async def _sync_commands(self, bindings: list[Any]) -> None:
-        """Push slash commands to each guild that has a binding.
+        """Push the current command tree to every guild the bot is in.
 
         Guild-scoped sync is instant, unlike global sync which can take an hour. That
         matters: an admin should not be told "wait up to an hour" after a fix.
+
+        Deliberately not limited to guilds that have a binding. A guild can keep a *stale*
+        registration from an earlier deploy, and if we skip it, Discord keeps offering
+        commands this process cannot resolve - which surfaces as
+        `CommandNotFound: Application command 'reports' not found` in the log, triggered by
+        a user clicking an old menu entry. Syncing every guild overwrites the stale
+        registration with what actually exists now.
         """
         guild_ids = {b.guild_id for b in bindings if b.guild_id}
+        # Also cover guilds without a binding: they may hold a stale registration.
+        guild_ids.update(guild.id for guild in self.guilds)
+
+        if not guild_ids:
+            log.warning(
+                "slash_commands_not_synced",
+                hint="the bot is in no guild yet; commands sync on the next start",
+            )
+
         for guild_id in guild_ids:
             guild = discord.Object(id=guild_id)
             try:
                 self.tree.copy_global_to(guild=guild)
                 synced = await self.tree.sync(guild=guild)
-                log.info("slash_commands_synced", guild_id=guild_id, count=len(synced))
+                log.info(
+                    "slash_commands_synced",
+                    guild_id=guild_id,
+                    count=len(synced),
+                    commands=[command.name for command in synced],
+                )
             except discord.HTTPException:
                 log.exception("slash_command_sync_failed", guild_id=guild_id)
 
@@ -609,6 +633,18 @@ def _emoji_from_key(key: str, emoji_id: int | None) -> Any:
 async def run_bot(settings: Settings) -> None:
     if not settings.discord_token:
         raise RuntimeError("DSBOT_DISCORD_TOKEN is empty; put your token in .env")
+
+    # Refuse to start with a database outside the data directory. On a panel that file is
+    # deleted on the next upload, and the failure is invisible until someone notices that
+    # months of history are gone.
+    location_problem = settings.database_location_problem()
+    if location_problem:
+        typer_echo_error(location_problem)
+        raise SystemExit(1)
+
+    location_warning = settings.database_location_warning()
+    if location_warning:
+        log.warning("database_outside_data_dir", detail=location_warning)
 
     # One instance per lock file. Two bots on one database look like random behaviour
     # and corrupt state, so refuse to start rather than misbehave. The lock is named per
