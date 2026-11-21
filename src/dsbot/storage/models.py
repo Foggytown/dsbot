@@ -379,6 +379,30 @@ class ReportField(Base):
     report: Mapped[Report] = relationship(back_populates="fields")
 
 
+class ReactionCacheEntry(Base):
+    """Reactors fetched from Discord by a scan, never the live gateway's record.
+
+    Deliberately a separate table from `message_reactions`. That one is the bot's own
+    observation, carrying a rank snapshot taken when the reaction happened; this one is
+    just "what the last scan saw", used to avoid re-fetching. Sharing one table meant a
+    scan would delete a live snapshot and replace it with an empty one, silently
+    destroying the authority of a real approval.
+    """
+
+    __tablename__ = "reaction_cache"
+    __table_args__ = (
+        UniqueConstraint("message_id", "emoji_key", "user_id"),
+        Index("ix_reaction_cache_message", "message_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger)
+    emoji_key: Mapped[str] = mapped_column(String(80))
+    emoji_name: Mapped[str | None] = mapped_column(String(120))
+    captured_at: Mapped[datetime] = _ts()
+
+
 class ReportVerdictHistory(Base):
     """Every verdict change. Kept so overrides and reversions are auditable."""
 

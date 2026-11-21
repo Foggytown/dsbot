@@ -429,7 +429,13 @@ Each of these shipped and had to be found by a live run or a user report.
     another adds one leaves the count identical while the *people* change - and who
     reacted is what decides authority. Freshness is therefore judged by period: a closed
     period is historical fact and is reused freely, a recent message only for two minutes.
-20. **Personal details in a committed script.** A preview script carried the author's
+20. **The reaction cache wrote into the live verdict table.** A scan used
+    message_reactions to remember what it had fetched, and replaced rows by message id.
+    That table is the gateway's own record, carrying the rank snapshot that decides who had
+    authority - so the first scan of a live-report message deleted a real approval's
+    provenance and replaced it with rows having can_review = NULL. The cache now lives in
+    its own `reaction_cache` table. Any new cache must never overwrite observed state.
+21. **Personal details in a committed script.** A preview script carried the author's
     username and a repository URL, which would have shipped in every deployment. The
     developer credit is a Discord ping only, read from settings; nothing name-like is
     hardcoded, and never add a name or external link to user-visible output.
@@ -505,10 +511,12 @@ scripts/profile-*.py          where the time goes, measured
 
 These were deliberately left to the community. Do not invent an answer to them.
 
-1. **Reaction ingestion.** Reactions are currently read from Discord on demand, which
-   costs ~1 request per reviewed report. Ingesting reaction events as they arrive would
-   make recent scans free and give the bot its own record, but stores more data. Not
-   approved yet.
+1. **Reaction ingestion, catching up on old reviews.** Live ingestion already exists:
+   `on_raw_reaction_add` stores each reaction with its rank snapshot, so reviews that
+   happen while the bot runs cost nothing later. The gap is history — reviews that
+   happened while it was not running — which are read from Discord on demand at ~1 request
+   per reviewed report. Whether a scan should *store* what it fetches (so the bot keeps
+   its own evidence rather than only a cache) is undecided.
 2. **Jedi identity.** JEDI reports identify soldiers by name, not IDN. No such reports
    arrive today, so the IDN field is correct for now. Do not force a name into an IDN.
 3. **Conflict notification target.** A same-tier disagreement is announced in the report
@@ -520,6 +528,6 @@ These were deliberately left to the community. Do not invent an answer to them.
 5. **Ladders and forms stay in git.** Channels moved to `/data` because they change
    operationally; ladders and forms are reviewed, so they still need a push. Making them
    editable from Discord is future work.
-6. **Historical rosters.** A count for a past period uses *today's* roster, because
-   Discord cannot report who held a role last month. The output says so. Recording
-   membership over time would fix it, and is not implemented.
+6. ~~Historical rosters.~~ **Settled: not wanted.** A count for a past period uses
+   today's roster, and that is fine — roles change rarely and keeping membership history is
+   complexity nobody asked for. Do not build it.

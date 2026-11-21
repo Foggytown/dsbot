@@ -32,6 +32,7 @@ from dsbot.storage.models import (
     QuotaPolicy,
     RankTier,
     RawEvent,
+    ReactionCacheEntry,
     Report,
     ReportField,
     ReportVerdictHistory,
@@ -695,34 +696,32 @@ class CachedReaction:
 
 
 async def get_reaction_counts(session: AsyncSession, message_id: int) -> dict[str, int]:
-    """Stored counts per emoji, used to decide whether a cache entry is still valid."""
+    """Cached counts per emoji, used to decide whether a cache entry is still valid."""
     rows = (
         await session.execute(
-            select(MessageReaction.emoji_key, func.count(MessageReaction.id))
-            .where(MessageReaction.message_id == message_id)
-            .group_by(MessageReaction.emoji_key)
+            select(ReactionCacheEntry.emoji_key, func.count(ReactionCacheEntry.id))
+            .where(ReactionCacheEntry.message_id == message_id)
+            .group_by(ReactionCacheEntry.emoji_key)
         )
     ).all()
     return {str(key): int(count) for key, count in rows}
 
 
 async def get_reaction_cache_time(session: AsyncSession, message_id: int) -> datetime | None:
-    """When the reactor list for this message was last stored by a scan.
-
-    Used to decide whether the cache can describe what is on the message right now: an
-    entry written before the message was last edited cannot account for a change.
-    """
+    """When the reactor list for this message was last stored by a scan."""
     return await session.scalar(
-        select(func.max(MessageReaction.added_at)).where(MessageReaction.message_id == message_id)
+        select(func.max(ReactionCacheEntry.captured_at)).where(
+            ReactionCacheEntry.message_id == message_id
+        )
     )
 
 
 async def list_cached_reactions(session: AsyncSession, message_id: int) -> list[CachedReaction]:
     rows = (
         await session.scalars(
-            select(MessageReaction)
-            .where(MessageReaction.message_id == message_id)
-            .order_by(MessageReaction.added_at)
+            select(ReactionCacheEntry)
+            .where(ReactionCacheEntry.message_id == message_id)
+            .order_by(ReactionCacheEntry.captured_at)
         )
     ).all()
     return [CachedReaction(user_id=row.user_id, emoji_name=row.emoji_name) for row in rows]
@@ -736,22 +735,23 @@ async def replace_cached_reactions(
     guild_id: int | None,
     reactions: Sequence[tuple[int, str | None, int | None, str]],
 ) -> None:
-    """Store the reactor list for one message, replacing what was there.
+    """Store the reactor list a scan fetched, replacing the previous snapshot for it.
 
-    Written with `cache` as the source so a later scan can tell these came from a report
-    read rather than from a live reaction event.
+    Writes only to `reaction_cache`. Touching `message_reactions` here would delete the
+    gateway's own record and the rank snapshot that decides who had authority, which is
+    exactly the bug this split exists to prevent.
     """
-    await session.execute(delete(MessageReaction).where(MessageReaction.message_id == message_id))
-    for user_id, emoji_name, emoji_id, emoji_key in reactions:
+    _ = (channel_id, guild_id)  # kept for call-site symmetry; the cache does not need them
+    await session.execute(
+        delete(ReactionCacheEntry).where(ReactionCacheEntry.message_id == message_id)
+    )
+    for user_id, emoji_name, _emoji_id, emoji_key in reactions:
         session.add(
-            MessageReaction(
+            ReactionCacheEntry(
                 message_id=message_id,
-                channel_id=channel_id,
-                guild_id=guild_id,
-                emoji_key=emoji_key,
-                emoji_id=emoji_id,
-                emoji_name=emoji_name,
                 user_id=user_id,
+                emoji_key=emoji_key,
+                emoji_name=emoji_name,
             )
         )
     await session.flush()

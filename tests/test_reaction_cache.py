@@ -153,20 +153,58 @@ async def test_a_recent_message_is_only_trusted_briefly(db: Database) -> None:
     # Backdate the stored rows: the entry was written long ago, the message is recent.
     from sqlalchemy import update
 
-    from dsbot.storage.models import MessageReaction
+    from dsbot.storage.models import ReactionCacheEntry
 
     async with db.write_session() as session:
         await session.execute(
-            update(MessageReaction)
-            .where(MessageReaction.message_id == MESSAGE)
-            .values(added_at=datetime.now(UTC) - age)
+            update(ReactionCacheEntry)
+            .where(ReactionCacheEntry.message_id == MESSAGE)
+            .values(captured_at=datetime.now(UTC) - age)
         )
 
     hit = await _cached_reactions(db, group)
     assert hit is None, "an old entry on a recent message must be refetched"
 
 
-async def test_a_message_without_verdict_reactions_touches_nothing(db: Database) -> None:
+async def test_the_cache_never_touches_the_live_reaction_table(db: Database) -> None:
+    """A scan must not disturb the gateway's own record.
+
+    The live path stores every reaction with a rank snapshot, which is what decides who
+    had authority. Keeping the cache in the same table meant a scan deleted those rows and
+    replaced them with empty ones, silently destroying a real approval's provenance.
+    """
+    from dsbot.storage import repos
+
+    message_id = 4242
+    async with db.write_session() as session:
+        await repos.add_reaction(
+            session,
+            message_id=message_id,
+            channel_id=CHANNEL,
+            guild_id=GUILD,
+            emoji_key="unicode:\u2705",
+            emoji_id=None,
+            emoji_name="\u2705",
+            user_id=555,
+            tier_key="senior",
+            tier_ordinal=30,
+            tier_label="Senior Instructor",
+            can_review=True,
+        )
+
+    # A scan caches a *different* reactor for the same message.
+    group = [_message("\u2705", 2, created_at=None)]
+    group[0].id = message_id
+    await _remember_reactions(
+        db, CHANNEL, None, group, [Reaction(user_id=999, emoji_name="\u2705")]
+    )
+
+    async with db.session() as session:
+        live = await repos.list_reactions(session, message_id)
+    assert [row.user_id for row in live] == [555], "the live snapshot was deleted"
+    assert live[0].can_review is True
+    assert live[0].tier_ordinal == 30, "the rank snapshot was lost"
+
     """The unreviewed case must stay free: no request, no cache lookup, no DB read.
 
     This is the guarantee that makes a period where nobody reacted cheap. If a database
@@ -191,8 +229,28 @@ async def test_a_message_without_verdict_reactions_touches_nothing(db: Database)
     assert called == {"cached": 0, "remember": 0}, "the free path did extra work"
 
 
+async def test_a_message_without_verdict_reactions_touches_nothing(db: Database) -> None:
+    """The unreviewed case must stay free: no request, no cache lookup, no DB read."""
+    from dsbot.modules.quotas.live import _read_all_reactions
+
+    called = {"cached": 0, "remember": 0}
+
+    async def cached(group: object) -> None:
+        called["cached"] += 1
+        return None
+
+    async def remember(group: object, reactions: object, reactors: object) -> None:
+        called["remember"] += 1
+
+    groups = [[Message([])] for _ in range(5)]
+    results = await _read_all_reactions(groups, cached=cached, remember=remember)
+
+    assert results == [([], [])] * 5
+    assert called == {"cached": 0, "remember": 0}, "the free path did extra work"
+
+
 async def test_a_thumb_only_reaction_is_also_free(db: Database) -> None:
-    """A 👍 is not a verdict, so it must not trigger a fetch either."""
+    """A thumbs-up is not a verdict, so it must not trigger a fetch either."""
     from dsbot.modules.quotas.live import _read_all_reactions
 
     called = {"cached": 0}
@@ -204,18 +262,6 @@ async def test_a_thumb_only_reaction_is_also_free(db: Database) -> None:
     groups = [[Message([ReactionOnMessage("\U0001f44d", 3)])]]
     await _read_all_reactions(groups, cached=cached, remember=None)
     assert called["cached"] == 0
-
-    """Hiding a tier must also skip its reports, not merely hide the rows."""
-    from dsbot.modules.quotas.counting import RosterEntry
-    from dsbot.modules.quotas.live import _hidden_authors
-
-    roster = [
-        RosterEntry(user_id=1, tier_label="Senior"),
-        RosterEntry(user_id=2, tier_label="Junior"),
-        RosterEntry(user_id=3, tier_label="Исключение"),
-    ]
-    skipped = _hidden_authors(roster, hidden_tiers=["Junior", "исключение"], only_tier=None)
-    assert skipped == frozenset({2, 3})
 
 
 def test_hidden_tiers_skip_their_authors() -> None:
