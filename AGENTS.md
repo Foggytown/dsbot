@@ -17,10 +17,15 @@ Deployed phases:
 - **Next (not started):** scheduled weekly posting. Possible later: ingesting reactions
   as they happen so recent scans need no API calls; dashboards.
 
-**Where things stand at the end of phase 3.** The counting feature works end to end and
-has been run against a real channel. The known open points are listed at the end of this
-file under "Open questions" — read them before starting new work, several are decisions
-waiting on the community rather than code.
+**Where things stand.** Phase 3 is deployed and working on the real server: both channels
+are bound, the roster is scraped, and `/reports count` produces numbers. The next phase is
+scheduled weekly publication. Open decisions are listed at the end of this file under
+"Open questions" — read them before starting new work; several are choices that belong to
+the community, not to code.
+
+**The panel's settings are a web form, not a `.env` file.** Values persist across uploads,
+so a stale entry keeps applying until somebody deletes it by hand. Keep it minimal — token
+and `DATA_DIR` — and see "The panel stores settings as a form" below.
 
 Explicitly out of scope for now: role assignment, soldier progression tiers,
 soldier-to-instructor assignment, dashboards.
@@ -532,6 +537,11 @@ scripts/e2e-reaction-cache.py cached reactors reused, changes refetch
 scripts/check-commands.py     the slash command tree is valid
 scripts/preview-report.py     print the exact message staff would see
 scripts/profile-*.py          where the time goes, measured
+scripts/e2e-conflict.py       conflict stays silent and credits nobody
+scripts/e2e-ladder-log.py     the review-role diagnostic counts correctly
+scripts/e2e-roster-discord.py /dsbot roster-refresh populates the roster
+scripts/e2e-panel-start.py    panel startup: bindings appear, bad DB URL ignored
+scripts/show-commands.py      print every slash command and its parameters
 ```
 
 ## Open questions — decisions, not bugs
