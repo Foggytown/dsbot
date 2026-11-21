@@ -61,7 +61,7 @@ async def main() -> None:
     finally:
         await db.dispose()
 
-    print("\n4. a database outside the data dir is refused")
+    print("\n4. a database outside the data dir is ignored, not obeyed")
     bad = Settings(
         _env_file=None,  # type: ignore[call-arg]
         data_dir=str(data_dir),
@@ -69,13 +69,21 @@ async def main() -> None:
     )
     problem = bad.database_location_problem()
     assert problem is not None
-    print(f"   refused: {problem.splitlines()[0][:70]}")
+    assert bad.ignored_database_url() is not None, "the bad URL must be recorded as ignored"
+    resolved = bad.resolved_database_url.replace("\\", "/")
+    expected = str(data_dir).replace("\\", "/")
+    assert expected in resolved
+    print(f"   ignored: {bad.database_url}")
+    print(f"   using  : {bad.resolved_database_url}")
 
     print("\n5. the correct config is accepted")
     assert settings.database_location_problem() is None
     print(f"   database: {settings.resolved_database_url}")
 
-    print("\nOK: channels bind on a fresh panel, and a bad database path stops startup")
+    print(
+        "\nOK: channels bind on a fresh panel, and a stale database URL is "
+        "ignored instead of losing data"
+    )
 
 
 if __name__ == "__main__":

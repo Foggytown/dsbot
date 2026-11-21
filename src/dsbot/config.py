@@ -135,22 +135,31 @@ class Settings(BaseSettings):
 
     @property
     def resolved_database_url(self) -> str:
-        """Database URL, defaulting inside the state directory."""
-        if self.database_url:
+        """The database URL to use, defaulting inside the state directory.
+
+        A configured URL that would lose data is *overridden* rather than obeyed: see
+        `database_location_problem`. Being right matters more than respecting a stale
+        setting, and on a panel the settings are a web form the user edits, so refusing to
+        start would leave the bot down until they noticed.
+        """
+        if self.database_url and self.database_location_problem() is None:
             return self.database_url
         return f"sqlite+aiosqlite:///{self.state_dir().as_posix()}/dsbot.db"
 
+    def ignored_database_url(self) -> str | None:
+        """The configured URL that was ignored because it would lose data."""
+        if self.database_url and self.database_location_problem() is not None:
+            return self.database_url
+        return None
+
     def database_location_problem(self) -> str | None:
-        """A reason the configured database would be lost on redeploy, or None.
+        """Why the configured database URL must not be used, or None.
 
-        The panel replaces everything except its data directory, so a database outside it
-        is deleted on the next upload - taking every report, verdict and weekly result
-        with it. This is not a warning: an explicit `DSBOT_DATABASE_URL` pointing into the
-        checkout is a misconfiguration that silently destroys history, so startup refuses.
-
-        Only *relative* paths are refused unconditionally. An absolute path might be a
-        deliberate choice on a host that preserves it, so it is reported by
-        `database_location_warning` instead.
+        The panel keeps only its data directory and replaces everything else on upload, so
+        a database outside it is deleted - taking every report, verdict and weekly result
+        with it. A *relative* sqlite path always resolves into the checkout, so it is
+        always wrong there. An absolute path elsewhere may be deliberate on a host that
+        preserves it, so it is only warned about.
         """
         if not self.database_url:
             return None
@@ -163,29 +172,17 @@ class Settings(BaseSettings):
         if not raw or ":memory:" in raw:
             return None
 
-        path = _sqlite_path(url)
-        if path is None:
-            # No file in the URL (in-memory), or a relative path. Only a relative path
-            # reaches here, and that is the dangerous case: it resolves against the
-            # checkout, which a panel deletes on every upload.
-            raw_again = url.split("///", 1)[-1] if "///" in url else ""
-            if not raw_again or ":memory:" in raw_again:
-                return None
+        if _sqlite_path(url) is None:
+            # A relative path. This resolves against the working directory, which is the
+            # checkout on a panel, so the file is deleted on the next upload.
             return (
-                f"DSBOT_DATABASE_URL is a relative path ({raw_again}). A relative path "
-                "resolves against the checkout, which a hosting panel deletes on every "
-                "upload, so all reports and verdicts would be lost. Remove "
-                "DSBOT_DATABASE_URL from .env to use the default location, which already "
-                f"sits in {self.state_dir()}."
+                f"DSBOT_DATABASE_URL is a relative path ({raw}), which resolves inside the "
+                "application checkout. A hosting panel deletes that on every upload, so "
+                "all reports and verdicts would be lost. The default location is used "
+                f"instead: {self.state_dir()}. Remove DSBOT_DATABASE_URL from the panel "
+                "environment to silence this."
             )
-        data_dir = self.state_dir().resolve()
-        try:
-            resolved = path.resolve()
-        except OSError:
-            return None
-        if resolved == data_dir or data_dir in resolved.parents:
-            return None
-        return None  # absolute but elsewhere: warned about, not fatal
+        return None
 
     def database_location_warning(self) -> str | None:
         """An advisory for an absolute database path outside the data directory."""

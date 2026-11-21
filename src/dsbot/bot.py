@@ -637,10 +637,17 @@ async def run_bot(settings: Settings) -> None:
     # Refuse to start with a database outside the data directory. On a panel that file is
     # deleted on the next upload, and the failure is invisible until someone notices that
     # months of history are gone.
-    location_problem = settings.database_location_problem()
-    if location_problem:
-        typer_echo_error(location_problem)
-        raise SystemExit(1)
+    # A stale database URL is *ignored*, not fatal: on a panel the settings are a web form
+    # the user edits, so refusing to start would leave the bot down until they notice. The
+    # default location is used instead, and the reason is logged once at startup.
+    ignored_url = settings.ignored_database_url()
+    if ignored_url:
+        typer_echo_error(
+            "IGNORING DSBOT_DATABASE_URL.\n"
+            f"  configured: {ignored_url}\n"
+            f"  using:      {settings.resolved_database_url}\n"
+            f"  {settings.database_location_problem()}"
+        )
 
     location_warning = settings.database_location_warning()
     if location_warning:

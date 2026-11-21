@@ -41,6 +41,17 @@ There is nothing to merge between machines: runtime data exists only on the serv
 Persistent state must live in the panel data directory (`/data`). Resolution order:
 `DSBOT_DATA_DIR`, `DATA_DIR`, an existing `/data` or `/app/data`, then `./var`.
 
+### The panel stores settings as a form, not a file
+
+On a hosting panel there is no `.env` to edit: the variables are a web form, and they
+persist across uploads. A value left over from an older version therefore keeps being
+applied until it is deleted there by hand.
+
+That is how a stale `DSBOT_DATABASE_URL=./var/dsbot.db` moved the database out of `/app/data`
+and into the checkout. The bot now *ignores* a relative sqlite path, uses the default
+inside the data directory, and prints what it did. Prefer the panel's form over a `.env`
+file, and keep it minimal: token plus `DATA_DIR`, nothing else unless needed.
+
 ### Only `/data` survives a deploy
 
 The panel replaces the whole checkout on every upload and keeps only `/data`. Therefore
@@ -442,9 +453,10 @@ Each of these shipped and had to be found by a live run or a user report.
     reconciliation on a setting whose default means "derive it"; reconcile unconditionally.
 22. **A database path outside the data directory was accepted silently.** The panel replaces
     everything except its data directory, so an explicit `DSBOT_DATABASE_URL` pointing into
-    the checkout deletes all history on the next upload. `database_location_problem()`
-    compares the URL against the data directory and `run_bot` refuses to start. Diagnostics
-    that would lose data must be fatal, not warnings.
+    the checkout deletes all history on the next upload. A *relative* sqlite path is now
+    **ignored**: the default location inside the data directory is used and the reason is
+    printed once at startup. Not fatal, because the panel's settings are a web form the
+    user edits, so refusing to start would leave the bot down until they noticed.
 23. **Slash commands were only synced to guilds with a binding.** A guild could keep a stale
     registration from an earlier deploy, so Discord kept offering a command this process
     could not resolve and every use logged
