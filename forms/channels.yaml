@@ -48,6 +48,7 @@ channels:
   # here, so rank_guild is omitted. Both ladders are named explicitly.
   - guild: 1274460259661910149
     channel: 1274460260941434901
+    rank_guild: 1274402776696488108
     form: training_report
-    # review_ladder: review    # who may approve  (forms/ladders/review.yaml)
-    # quota_ladder: quota      # who owes reports (forms/ladders/quota.yaml)
+    review_ladder: review    # who may approve  (forms/ladders/review.yaml)
+    quota_ladder: quota      # who owes reports (forms/ladders/quota.yaml)

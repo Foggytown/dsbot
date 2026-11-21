@@ -116,7 +116,7 @@ class CountingService:
 
         context = RenderContext(
             title=title,
-            period_label=request.period.label(request.timezone),
+            period_label=request.period.describe(request.timezone),
             timezone=request.timezone,
             generated_at=datetime.now(UTC),
             scope=scope,

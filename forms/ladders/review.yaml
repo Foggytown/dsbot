@@ -42,25 +42,30 @@
 key: review
 purpose: review
 name: Специализации — проверяющие
-guild_id: 1274460259661910149
+guild_id: 1274402776696488108
 
 tiers:
   # Highest first is only a convention; ordering comes from `ordinal`.
   - key: high_command
     label: High Command
     ordinal: 100
-    roles: []
+    roles: [1274452329470361672]
     capabilities: [review]
 
-  - key: head_instructor
-    label: Head Instructor
-    ordinal: 50
-    roles: []
+  - key: commander
+    label: ENG | CO
+    ordinal: 75
+    roles: [1274452075861774406]
     capabilities: [review, admin, quota_manage]
+    
+  - key: deputy
+    label: ENG | DEP
+    ordinal: 50
+    roles: [1274452151913025697]
+    capabilities: [review]
 
-  # Senior instructor and above may approve. Approving your own report is allowed.
   - key: senior_instructor
     label: Senior Instructor
     ordinal: 30
-    roles: []
+    roles: [1274452518495326209]
     capabilities: [review]

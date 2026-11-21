@@ -27,16 +27,16 @@ tiers:
     label: Старший инс +
     ordinal: 50
     roles: [1499842014525788270, 1274452329470361672]
-    required_per_week: 2
+    required_per_week: 0
 
   - key: nothing
     label: Исключение
     ordinal: 30
-    roles: []
+    roles: [1274452627664408596]
     required_per_week: 0
 
   - key: instructor
     label: Instructor
     ordinal: 10
-    roles: []
-    required_per_week: 3
+    roles: [1274452759147712574]
+    required_per_week: 1

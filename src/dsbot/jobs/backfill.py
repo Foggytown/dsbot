@@ -34,6 +34,9 @@ class BackfillStats:
     reactions: int = 0
     skipped_bots: int = 0
     errors: int = 0
+    # Reports the parser recognised. Zero here with `--to-db` means the archive has
+    # messages but the count will find nothing, which is the confusing case worth showing.
+    parsed: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +44,7 @@ class BackfillStats:
             "reactions": self.reactions,
             "skipped_bots": self.skipped_bots,
             "errors": self.errors,
+            "parsed": self.parsed,
         }
 
 
@@ -142,10 +146,19 @@ async def backfill_channel(
     include_reactions: bool = True,
     include_bots: bool = False,
     progress_every: int = 250,
+    parse: bool = False,
+    report_service: Any = None,
 ) -> BackfillStats:
-    """Walk one channel. JSONL and DB outputs can be produced in the same pass."""
+    """Walk one channel. JSONL and DB outputs can be produced in the same pass.
+
+    `parse=True` also runs the report parser over every stored message. That is what makes
+    a backfill countable: storing messages alone gives the archive but no reports, so a
+    count over that period returns nothing. Parsing is opt-in because a JSONL-only dump
+    does not need it, and re-parsing is expensive.
+    """
     assert (writer is not None) or (db is not None), "need a destination"
     stats = BackfillStats()
+    parsed_ids: list[tuple[int, int, int]] = []
 
     async for message in iter_channel_history(channel, since=since, limit=limit):
         if getattr(message.author, "bot", False) and not include_bots:
@@ -183,6 +196,8 @@ async def backfill_channel(
             except Exception:
                 stats.errors += 1
                 log.exception("backfill_message_failed", message_id=message.id)
+            else:
+                parsed_ids.append((snapshot.channel_id, snapshot.author_id, snapshot.message_id))
 
         stats.messages += 1
         if progress_every and stats.messages % progress_every == 0:
@@ -193,12 +208,35 @@ async def backfill_channel(
                 channel_id=getattr(channel, "id", None),
             )
 
+    if parse and report_service is not None:
+        stats.parsed = await _parse_backfilled(report_service, parsed_ids)
+
     log.info(
         "backfill_channel_done",
         channel_id=getattr(channel, "id", None),
         **stats.as_dict(),
     )
     return stats
+
+
+async def _parse_backfilled(report_service: Any, messages: list[tuple[int, int, int]]) -> int:
+    """Run the report parser over backfilled messages.
+
+    Live ingest parses as messages arrive; a backfill writes straight to the archive and
+    would otherwise leave the reports table empty. Order matters for reporting: oldest
+    first, so a report is grouped with its own follow-up photos and a later edit cannot be
+    applied before the message it edits.
+    """
+    parsed = 0
+    for channel_id, author_id, message_id in messages:
+        try:
+            result = await report_service.process_message(channel_id, author_id, message_id)
+        except Exception:
+            log.exception("backfill_parse_failed", message_id=message_id)
+            continue
+        if result is not None and result.matched:
+            parsed += 1
+    return parsed
 
 
 def parse_since(value: str | None) -> datetime | None:

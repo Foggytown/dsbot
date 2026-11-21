@@ -135,7 +135,16 @@ schema does not yet cover.
 ## How counting works
 
 A person's number is the count of their reports that ended up **approved**, for one
-period. The rules that were agreed explicitly, and why:
+period.
+
+**Reports are read from Discord history**, not from the bot's database. The archive only
+holds what the bot saw while running, so a report over a period before it started would
+come back empty — indistinguishable from "nobody reported". `/reports count` therefore
+reads the channel's real messages, parses them, reads reactions, and counts; nothing is
+written. Use `source=База бота` only when you specifically want the archived view.
+
+The database still holds the parts that are configuration or audit: forms, ladders, the
+roster, quota norms, and a record of invalid reports and their warnings.
 
 | Situation | Counted? | Why |
 |---|---|---|

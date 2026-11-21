@@ -195,7 +195,26 @@ another. Never infer the hierarchy from Discord's role position ordering.
 ### What counting counts
 
 Counting answers one question: how many approved reports did this person file in the
-period. The rules are deliberate and were agreed explicitly:
+period.
+
+**Reports come from Discord history, not from the database.** The archive only contains
+what the bot happened to see while running: ask it for last week when the bot started
+yesterday and the honest answer is "nothing", which looks identical to "nobody reported".
+So `/reports count` reads the channel's real messages for the requested window, parses
+them with the same parser the live bot uses, reads each message's reactions, and counts.
+Nothing is written back.
+
+The database is still needed, for three things it is genuinely better at:
+
+- **form and ladder configuration** (applied from git, cached in the DB)
+- **the roster and quota norms** (who was supposed to report, and how many)
+- **an audit trail** of what was seen, including invalid reports and their warnings
+
+The one honest limitation: the **roster is current-only**. Discord cannot tell us who held
+a role three months ago, so a count for a past period uses today's roster, and the output
+says so.
+
+The rules are deliberate and were agreed explicitly:
 
 | Situation | Counted | Reason |
 |---|---|---|

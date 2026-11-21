@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from datetime import date, timedelta
+from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any
@@ -117,6 +117,13 @@ def backfill(
     limit: Annotated[int | None, typer.Option(help="Max messages")] = None,
     out: Annotated[Path | None, typer.Option(help="JSONL output path")] = None,
     to_db: Annotated[bool, typer.Option("--to-db", help="Also write to the database")] = False,
+    parse: Annotated[
+        bool,
+        typer.Option(
+            "--parse/--no-parse",
+            help="Also parse stored messages into reports (needed for counting)",
+        ),
+    ] = True,
     reactions: Annotated[
         bool, typer.Option("--reactions/--no-reactions", help="Fetch reactor lists")
     ] = True,
@@ -149,6 +156,14 @@ def backfill(
                 raise typer.BadParameter(f"channel {channel} is not a text channel")
 
             writer = JsonlWriter(out) if out is not None else None
+            report_service = None
+            if to_db and parse and db is not None:
+                # Backfill writes straight to the archive, so without this the reports
+                # table stays empty and a count over the same period finds nothing.
+                from dsbot.modules.reports.service import ReportService
+
+                await db.prepare()
+                report_service = ReportService(db)
             try:
                 if writer is not None:
                     writer.__enter__()
@@ -160,6 +175,8 @@ def backfill(
                     db=db,
                     include_reactions=reactions,
                     include_bots=include_bots,
+                    parse=parse,
+                    report_service=report_service,
                 )
             finally:
                 if writer is not None:
@@ -169,6 +186,13 @@ def backfill(
                 f"messages={stats.messages} reactions={stats.reactions} "
                 f"skipped_bots={stats.skipped_bots} errors={stats.errors}"
             )
+            if report_service is not None:
+                typer.echo(f"parsed into reports: {stats.parsed}")
+                if stats.parsed == 0 and stats.messages:
+                    typer.echo(
+                        "NOTE: no report matched the bound form. Check that the channel is "
+                        "bound and the form file is the one the channel uses."
+                    )
             if out is not None:
                 typer.echo(f"wrote {out}")
         finally:
@@ -1431,36 +1455,28 @@ def _period_window(
     date_from: str | None,
     date_to: str | None,
     timezone: str | None = None,
+    days: int | None = None,
 ) -> Any:
     """Resolve the period the operator asked for.
 
-    Explicit dates win over a relative window: if someone typed both, they meant the
-    dates. `--week last` is the common case and is spelled out rather than inferred.
-
-    `timezone` defaults to the deployment setting, but a channel may override it, so the
-    caller resolves the binding first: a week boundary must not depend on which way the
-    count was started.
+    Delegates to `resolve_period` so the CLI and `/reports count` cannot disagree about
+    what a period means. `--from`/`--to` win over a relative window, because someone who
+    typed two dates meant those dates.
     """
-    from dsbot.modules.quotas.period import (
-        current_week,
-        explicit_period,
-        previous_week,
-        weeks_back,
-    )
+    from dsbot.modules.quotas.period import resolve_period
 
     zone = timezone or get_settings().default_timezone
-
-    if date_from or date_to:
-        if not (date_from and date_to):
-            raise typer.BadParameter("--from and --to must be given together")
-        return explicit_period(date.fromisoformat(date_from), date.fromisoformat(date_to), zone)
-    if weeks is not None:
-        if weeks < 1:
-            raise typer.BadParameter("--weeks must be at least 1")
-        return weeks_back(weeks, timezone=zone)
-    if week.strip().lower() in {"last", "previous", "prev"}:
-        return previous_week(timezone=zone)
-    return current_week(timezone=zone)
+    try:
+        return resolve_period(
+            timezone=zone,
+            start=date_from,
+            end=date_to,
+            days=days,
+            weeks=weeks,
+            which=week,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
 
 
 def _require_scrape_settings(settings: Settings) -> None:
@@ -1650,7 +1666,10 @@ def count_command(
     weeks: Annotated[
         int | None, typer.Option(help="Last N ISO weeks including the current one")
     ] = None,
-    date_from: Annotated[str | None, typer.Option("--from", help="Start date, YYYY-MM-DD")] = None,
+    days: Annotated[int | None, typer.Option(help="Last N days, counting back from now")] = None,
+    date_from: Annotated[
+        str | None, typer.Option("--from", help="Start date, YYYY-MM-DD or DD.MM.YYYY")
+    ] = None,
     date_to: Annotated[str | None, typer.Option("--to", help="End date, inclusive")] = None,
     csv_out: Annotated[
         Path | None, typer.Option("--csv", help="Write the result to this CSV file")
@@ -1659,7 +1678,7 @@ def count_command(
     publish: Annotated[int | None, typer.Option(help="Channel id to post the report to")] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Count approved reports per person for one period."""
+    """Count approved reports per person for any period."""
     settings = _settings(verbose)
 
     async def run() -> None:
@@ -1682,7 +1701,7 @@ def count_command(
             # count of the same week could disagree by hours.
             config = binding.config or {}
             timezone = config.get("timezone") or settings.default_timezone
-            period = _period_window(week, weeks, date_from, date_to, timezone)
+            period = _period_window(week, weeks, date_from, date_to, timezone, days)
 
             persist = save or publish is not None
             request = CountRequest(

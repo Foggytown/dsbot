@@ -45,6 +45,10 @@ class Period:
             return f"{start:%d.%m.%Y}"
         return f"{start:%d.%m.%Y}–{end:%d.%m.%Y}"
 
+    def describe(self, timezone: str = DEFAULT_TIMEZONE) -> str:
+        """Label plus length, so a hand-picked range is not mistaken for a week."""
+        return f"{self.label(timezone)} ({self.days} дн.)"
+
 
 def load_timezone(name: str | None) -> ZoneInfo:
     """Resolve a timezone, refusing to silently fall back to UTC.
@@ -106,6 +110,78 @@ def explicit_period(
     return Period(start=start_at.astimezone(UTC), end=end_at.astimezone(UTC))
 
 
+def parse_date(value: str) -> date:
+    """Accept the two spellings people actually type.
+
+    Discord has no date picker, so the value arrives as text. `01.11.2026` is what a
+    Russian-speaking admin writes; `2026-11-01` is what ISO says. Both are accepted and
+    anything else is an error with the accepted forms, never a silent guess.
+    """
+    text = value.strip()
+    for parse in (date.fromisoformat, _parse_dotted):
+        try:
+            return parse(text)
+        except ValueError:
+            continue
+    raise ValueError(
+        f"could not read the date {value!r}. Use YYYY-MM-DD (2026-11-01) "
+        "or DD.MM.YYYY (01.11.2026)."
+    )
+
+
+def _parse_dotted(text: str) -> date:
+    day, month, year = text.replace("/", ".").split(".")
+    return date(int(year), int(month), int(day))
+
+
+def resolve_period(
+    *,
+    timezone: str = DEFAULT_TIMEZONE,
+    start: str | None = None,
+    end: str | None = None,
+    days: int | None = None,
+    weeks: int | None = None,
+    which: str = "current",
+    now: datetime | None = None,
+) -> Period:
+    """Build a period from whatever the caller supplied, with explicit precedence.
+
+    An explicit date range wins over a relative window, because someone who typed two
+    dates meant those dates. Then `days`, then `weeks`, then the named week. Every input
+    is validated here so the slash command and the CLI cannot disagree, and so a typo
+    comes back as a sentence instead of a traceback.
+    """
+    has_start = bool(start and start.strip())
+    has_end = bool(end and end.strip())
+    if has_start != has_end:
+        raise ValueError("give both start and end, or neither")
+
+    if has_start and has_end:
+        first = parse_date(start or "")
+        last = parse_date(end or "")
+        if last < first:
+            raise ValueError(f"end ({last:%d.%m.%Y}) is before start ({first:%d.%m.%Y})")
+        return explicit_period(first, last, timezone)
+
+    moment = now or datetime.now(UTC)
+    if days is not None:
+        if days < 1:
+            raise ValueError("days must be at least 1")
+        # Whole days back from now, not calendar-aligned: "last 30 days" means a window,
+        # and snapping it to midnight would surprise whoever asked.
+        return Period(
+            start=moment - timedelta(days=days),
+            end=moment,
+        )
+    if weeks is not None:
+        if weeks < 1:
+            raise ValueError("weeks must be at least 1")
+        return weeks_back(weeks, moment, timezone)
+    if (which or "current").strip().lower() in {"last", "previous", "prev"}:
+        return previous_week(moment, timezone)
+    return current_week(moment, timezone)
+
+
 def _start_of(value: date | datetime, zone: ZoneInfo) -> datetime:
     if isinstance(value, datetime):
         aware = value if value.tzinfo else value.replace(tzinfo=zone)
@@ -127,7 +203,9 @@ __all__ = [
     "current_week",
     "explicit_period",
     "load_timezone",
+    "parse_date",
     "previous_week",
+    "resolve_period",
     "week_of",
     "weeks_back",
 ]
