@@ -129,16 +129,6 @@ async def test_remembering_replaces_rather_than_appends(db: Database) -> None:
     assert [row.user_id for row in rows] == [8]
 
 
-async def test_a_swap_on_a_closed_period_is_trusted(db: Database) -> None:
-    """A month-old report cannot change any more, so re-running the week is free."""
-    from datetime import UTC, datetime, timedelta
-
-    closed = datetime.now(UTC) - timedelta(days=30)
-    group = [_message("\u2705", 1, created_at=closed)]
-    await _remember_reactions(db, CHANNEL, None, group, [Reaction(user_id=7, emoji_name="\u2705")])
-    assert await _cached_reactions(db, group) is not None
-
-
 async def test_a_recent_message_is_only_trusted_briefly(db: Database) -> None:
     """On a live week a swap is plausible, so the entry must expire fast."""
     from datetime import UTC, datetime
@@ -287,3 +277,13 @@ def test_selecting_one_tier_skips_everyone_else() -> None:
         RosterEntry(user_id=2, tier_label="Junior"),
     ]
     assert _hidden_authors(roster, hidden_tiers=[], only_tier="Senior") == frozenset({2})
+
+
+async def test_a_swap_on_a_closed_period_is_trusted(db: Database) -> None:
+    """A month-old report cannot change any more, so re-running the week is free."""
+    from datetime import UTC, datetime, timedelta
+
+    closed = datetime.now(UTC) - timedelta(days=30)
+    group = [_message("\u2705", 1, created_at=closed)]
+    await _remember_reactions(db, CHANNEL, None, group, [Reaction(user_id=7, emoji_name="\u2705")])
+    assert await _cached_reactions(db, group) is not None

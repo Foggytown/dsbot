@@ -284,6 +284,77 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
         ][:MAX_CHOICES]
 
     @app_commands.command(
+        name="roster-refresh",
+        description="Обновить список людей из ролей (нужно перед подсчётом)",
+    )
+    async def roster_refresh(self, interaction: discord.Interaction) -> None:
+        """Scrape who holds the quota roles, straight from the running bot.
+
+        This exists because the hosting panel gives no shell: `dsbot roster-refresh` needs
+        one, and without it a count reports "nobody found" forever. The bot is already
+        connected to the gateway, so it can read members itself.
+        """
+        if not await _require_admin(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        guild_id, ladder_id, ladder = await self._quota_ladder(interaction.channel_id)
+        if ladder is None:
+            await interaction.followup.send(
+                "В канале не настроена квота-лестница, считать некого.", ephemeral=True
+            )
+            return
+
+        intents = getattr(interaction.client, "intents", None)
+        if not getattr(intents, "members", False):
+            await interaction.followup.send(
+                "У бота выключен Members intent, поэтому Discord не отдаёт список "
+                "участников. Включите SERVER MEMBERS INTENT в developer portal и "
+                "DSBOT_ENABLE_MEMBERS_INTENT=true.",
+                ephemeral=True,
+            )
+            return
+
+        from dsbot.modules.ranks.roster import DiscordRosterSource, RosterService
+
+        service = RosterService(self._db, DiscordRosterSource(interaction.client))
+        result = await service.refresh(guild_id, ladder, ladder_id=ladder_id)
+
+        if not result.ok:
+            await interaction.followup.send(
+                f"Не удалось обновить список: {result.error}", ephemeral=True
+            )
+            return
+        await interaction.followup.send(
+            f"Список обновлён: **{len(result.members)}** из {result.total_members} "
+            f"участников подходят под роли квоты. Теперь `/reports count` знает, кого "
+            f"считать.",
+            ephemeral=True,
+        )
+        log.info(
+            "roster_refreshed_from_discord",
+            guild_id=guild_id,
+            matched=len(result.members),
+            scanned=result.total_members,
+            user_id=interaction.user.id,
+        )
+
+    async def _quota_ladder(self, channel_id: int | None) -> tuple[int, int, Any]:
+        """The channel's rank guild and quota ladder, for a roster scrape."""
+        if channel_id is None:
+            return 0, 0, None
+        async with self._db.session() as session:
+            binding = await repos.get_binding_by_channel(session, channel_id)
+            if binding is None:
+                return 0, 0, None
+            guild_id = binding.rank_source_guild_id or binding.guild_id
+            ladders = await ranks_repo.load_all_ladders(session)
+        group = ladders.get(guild_id)
+        if group is None or group.quota_ladder_id is None:
+            return guild_id, 0, None
+        return guild_id, group.quota_ladder_id, group
+
+    @app_commands.command(
         name="quota-set",
         description="Override a tier's weekly requirement for this channel",
     )

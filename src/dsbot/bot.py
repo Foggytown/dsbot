@@ -604,7 +604,18 @@ class Bot(discord.ext.commands.Bot):
             )
             return
         for guild_id, group in ladders.items():
-            review_roles = sum(1 for caps in group.by_role.values() if caps and "review" in caps)
+            # Count per ladder, from the capabilities slot of each role entry.
+            # `group.by_role` merges every ladder in the guild, so a quota tier (no
+            # capabilities) overwrites a review tier for the same role id - counting there
+            # reported 0 while approvals worked, which sends people hunting a problem that
+            # does not exist.
+            review_roles = 0
+            for index in group.indexes:
+                if index.purpose != "review":
+                    continue
+                # Each value is (tier_key, label, ordinal, capabilities); index the tuple
+                # rather than the tuple itself, or `"review" in entry` checks the wrong thing.
+                review_roles += sum(1 for entry in index.by_role.values() if "review" in entry[3])
             log.info(
                 "ladders_loaded",
                 guild_id=guild_id,
@@ -613,6 +624,15 @@ class Bot(discord.ext.commands.Bot):
                 review_roles=review_roles,
                 quota_ladder=group.quota_ladder_id,
             )
+            if review_roles == 0:
+                log.warning(
+                    "no_review_roles",
+                    guild_id=guild_id,
+                    hint=(
+                        "No role in the review ladder grants 'review', so nothing can "
+                        "approve a report. Check forms/ladders/review.yaml."
+                    ),
+                )
 
     # --- helpers -----------------------------------------------------------
 

@@ -299,3 +299,76 @@ async def test_counting_uses_the_stored_requirement(tmp_path: Path) -> None:
         assert ann.met is False
     finally:
         await db.dispose()
+
+
+async def test_review_roles_survive_a_coexisting_quota_ladder(tmp_path: Path) -> None:
+    """A guild with a review ladder and a quota ladder must keep its review authority.
+
+    The bug: the count that feeds the `ladders_loaded` diagnostic indexed the by_role
+    *tuple* instead of its capabilities slot, so `"review" in entry` was always False and
+    the log said review_roles=0 while approvals worked.
+    """
+    from dsbot.config import Settings
+    from dsbot.modules.ranks.ladder import LadderSpec, TierSpec
+    from dsbot.storage import ranks_repo
+    from dsbot.storage.db import Database
+
+    shared_role = 111
+    database = Database(
+        Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{tmp_path / 'r.db'}")  # type: ignore[call-arg]
+    )
+    await database.prepare()
+    try:
+        async with database.write_session() as session:
+            await ranks_repo.replace_ladder(
+                session,
+                LadderSpec(
+                    key="review",
+                    guild_id=900,
+                    purpose="review",
+                    tiers=[
+                        TierSpec(
+                            key="senior",
+                            label="Senior",
+                            ordinal=30,
+                            roles=[shared_role],
+                            capabilities=["review"],
+                        )
+                    ],
+                ),
+            )
+            await ranks_repo.replace_ladder(
+                session,
+                LadderSpec(
+                    key="quota",
+                    guild_id=900,
+                    purpose="quota",
+                    tiers=[
+                        TierSpec(
+                            key="senior",
+                            label="Senior",
+                            ordinal=30,
+                            roles=[shared_role],
+                            required_per_week=2,
+                        )
+                    ],
+                ),
+            )
+
+        async with database.session() as session:
+            group = (await ranks_repo.load_all_ladders(session))[900]
+    finally:
+        await database.dispose()
+
+    review_roles = sum(
+        1
+        for index in group.indexes
+        if index.purpose == "review"
+        for entry in index.by_role.values()
+        if "review" in entry[3]
+    )
+    assert review_roles == 1, "the review ladder must still grant review"
+
+    # And the merged view is the one that misleads: quota wins for the shared role.
+    merged = sum(1 for entry in group.by_role.values() if "review" in entry[3])
+    assert merged == 0, "this is why counting from by_role reported zero"
