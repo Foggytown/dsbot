@@ -35,6 +35,23 @@ There is nothing to merge between machines: runtime data exists only on the serv
 Persistent state must live in the panel data directory (`/data`). Resolution order:
 `DSBOT_DATA_DIR`, `DATA_DIR`, an existing `/data` or `/app/data`, then `./var`.
 
+### Only `/data` survives a deploy
+
+The panel replaces the whole checkout on every upload and keeps only `/data`. Therefore
+**every** piece of wiring — which channel, which form, which review ladder, which quota
+ladder — must come from git and be rebuilt on each start. A binding or ladder created by
+hand on the server is lost or duplicated on the next upload.
+
+`forms/channels.yaml` is the single source of that wiring: it names `form`,
+`review_ladder` and `quota_ladder` per channel, and startup applies all of them, every
+time (not only when the database is empty). `ladder-apply` is therefore optional, for
+applying a file to a running bot without a restart.
+
+Because sync runs on every start, an **unchanged ladder must not be rebuilt**: deleting
+its row would cascade-delete `roster_members`, and the weekly report would claim nobody
+is tracked after each deploy. `replace_ladder` compares content and keeps an identical
+ladder in place.
+
 ## Non-negotiable constraints
 
 1. **No AI/LLM in the bot.** Parsing is deterministic. If parsing needs to become

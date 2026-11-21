@@ -125,10 +125,17 @@ class Bot(discord.ext.commands.Bot):
             log.exception("deferred_recovery_failed")
 
         bindings = await self._load_bindings()
-        if not bindings and (self.settings.channels_file or self.settings.auto_bind_channels):
-            # A fresh deployment has an empty database. Panels often offer no shell, so
-            # the channel list has to come from configuration instead.
+        # ALWAYS reconcile with the channels file, not only on a fresh database. The
+        # panel keeps only /data across a redeploy: everything else is re-uploaded from
+        # git, so a channel or ladder added to the YAML must be applied on every start or
+        # a change would appear to "not work" until someone wiped the database. Sync is
+        # idempotent, so running it always is the safe direction.
+        if self.settings.channels_file or self.settings.auto_bind_channels:
             bindings = await self._auto_bind()
+            # Ladders may have just been created by the sync, so reload them afterwards.
+            # Without this, a ladder applied by the file would be invisible to approvals
+            # until the next restart, which on a panel means "it did not work".
+            await self._load_ladders()
 
         if not bindings:
             # Silence with no explanation is the worst failure mode: the bot is running,
@@ -136,10 +143,9 @@ class Bot(discord.ext.commands.Bot):
             log.error(
                 "no_channel_bindings",
                 hint=(
-                    "No channel is bound, so every message is ignored. Bind one by either:\n"
-                    "  - running: dsbot form-apply --channel <id> --file "
-                    "forms/training.yaml --guild <id>\n"
-                    "  - or setting DSBOT_AUTO_BIND_CHANNELS=<guild_id>:<channel_id> in .env"
+                    "No channel is bound, so every message is ignored. Add one to "
+                    "forms/channels.yaml and redeploy, or run "
+                    "`dsbot channels-apply` with that file present."
                 ),
             )
         else:
@@ -201,6 +207,8 @@ class Bot(discord.ext.commands.Bot):
             updated=result.updated,
             paused=result.paused,
             unchanged=len(result.unchanged),
+            ladders=result.ladders,
+            forms=result.forms,
         )
         return await self._load_bindings()
 

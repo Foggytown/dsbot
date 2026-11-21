@@ -842,7 +842,13 @@ def ladder_apply(
     ] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Load a rank ladder into the database, replacing that guild's ladder."""
+    """Load a rank ladder into the database right now, without restarting.
+
+    Normally you do NOT need this: `forms/channels.yaml` names the ladders each channel
+    uses, and startup applies them automatically, so pushing the file is enough. Use this
+    when you want to apply a ladder immediately on a running bot, or to inspect what a
+    file would produce. Note that a running bot only reloads ladders at startup.
+    """
     settings = _settings(verbose)
 
     from dsbot.modules.ranks.ladder import ladder_problems, load_ladder
@@ -991,10 +997,16 @@ def channels_check(
             if entry.rank_guild is not None
             else "rank_guild=(same guild)"
         )
+        ladders = f"review={entry.review_ladder or '-'} quota={entry.quota_ladder or '-'}"
         typer.echo(
             f"  guild {entry.guild}  channel {entry.channel}  "
-            f"form={entry.form}  {rank}  locale={entry.locale}  {state}"
+            f"form={entry.form}  {rank}  {ladders}  locale={entry.locale}  {state}"
         )
+
+    # Ladders are applied by this file, so a missing or invalid one is a configuration
+    # error that must be caught before deploy, not at startup on the server.
+    for problem in _ladder_file_problems(spec):
+        typer.echo(f"PROBLEM: {problem}")
 
     problems = channels_problems(spec)
     if problems:
@@ -1011,7 +1023,11 @@ def channels_apply(
     ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Make the database match forms/channels.yaml. Nothing is deleted."""
+    """Make the database match forms/channels.yaml, including its ladders.
+
+    Startup does this automatically, so this command exists for checking the result
+    by hand; nothing is deleted, and running it twice changes nothing the second time.
+    """
     settings = _settings(verbose)
 
     from dsbot.modules.reports.channels import DEFAULT_CHANNELS_FILE, load_channels_file
@@ -1040,6 +1056,8 @@ def channels_apply(
             f"created={result.created} updated={result.updated} "
             f"paused={result.paused} unchanged={len(result.unchanged)}"
         )
+        if result.ladders:
+            typer.echo(f"ladders applied: {', '.join(result.ladders)}")
 
     asyncio.run(run_apply())
 
@@ -1080,7 +1098,7 @@ def channels(
             await db.dispose()
 
         if not rows:
-            typer.echo("no channels bound. Use `dsbot bind` or `dsbot form-apply`.")
+            typer.echo("no channels bound. Add one to forms/channels.yaml and redeploy.")
             return
 
         typer.echo(
@@ -1344,6 +1362,55 @@ def parse_text(
 
 
 # --- phase 3: counting, roster and quotas ---------------------------------
+
+
+def _ladder_file_problems(spec: Any) -> list[str]:
+    """Check that every ladder a channel names exists, parses, and matches its guild.
+
+    Ladders are applied by `forms/channels.yaml`, so this is the validation step that
+    keeps a typo from reaching the server, where it would only show up as "nobody can
+    approve" at runtime.
+    """
+    from dsbot.modules.ranks.ladder import ladder_problems, load_ladder
+    from dsbot.modules.reports.channels_sync import LADDER_DIR
+
+    problems: list[str] = []
+    for entry in spec.channels:
+        guild = entry.rank_source_guild
+        for key in (entry.review_ladder, entry.quota_ladder):
+            if not key:
+                continue
+            path = LADDER_DIR / f"{key}.yaml"
+            if not path.is_file():
+                problems.append(
+                    f"channel {entry.channel}: ladder {key!r} not found at {path}. "
+                    "Create it (see review.yaml.example / quota.yaml.example)."
+                )
+                continue
+            try:
+                parsed = load_ladder(path)
+            except Exception as exc:
+                problems.append(f"{path}: INVALID: {exc}")
+                continue
+            if parsed.key != key:
+                problems.append(
+                    f"{path}: declares key {parsed.key!r} but channel {entry.channel} asked "
+                    f"for {key!r}"
+                )
+            if parsed.guild_id != guild:
+                problems.append(
+                    f"{path}: is for guild {parsed.guild_id}, but channel {entry.channel} "
+                    f"reads roles from guild {guild}"
+                )
+            expected = "quota" if key == entry.quota_ladder else "review"
+            if parsed.purpose != expected:
+                problems.append(
+                    f"{path}: purpose is {parsed.purpose!r}, but it is named as "
+                    f"{expected!r} for channel {entry.channel}"
+                )
+            for issue in ladder_problems(parsed):
+                problems.append(f"{path}: {issue}")
+    return problems
 
 
 def _period_window(

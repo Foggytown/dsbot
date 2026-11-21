@@ -14,17 +14,38 @@ from dsbot.storage.models import RankLadder, RankTier, RankTierRole, TierCapabil
 
 
 async def replace_ladder(session: AsyncSession, spec: LadderSpec) -> RankLadder:
-    """Replace one ladder with `spec`.
+    """Replace one ladder with `spec`, or keep the existing row if it is identical.
 
-    Replacement, not merge: a ladder is a single authority ordering, and a partial
-    update would leave stale tiers that still match roles. Only the ladder with the
-    same key in the same guild is removed; other ladders in that guild are untouched,
-    because a guild may need both a review ladder and quota ladders.
+    Replacement, not merge: a ladder is a single authority ordering, and a partial update
+    would leave stale tiers that still match roles. Only the ladder with the same key in
+    the same guild is touched; other ladders in that guild are untouched, because a guild
+    may need both a review ladder and quota ladders.
+
+    Identical content is *kept*, not rebuilt. That matters on a panel: sync runs on every
+    start, and deleting the row would cascade-delete every `roster_members` row pointing
+    at it, so the roster would be empty after each deploy and the weekly report would
+    claim nobody is tracked.
     """
     existing = await session.scalar(
         select(RankLadder).where(RankLadder.guild_id == spec.guild_id, RankLadder.key == spec.key)
     )
+    if existing is not None and await _ladder_matches(session, existing, spec):
+        existing.name = spec.name
+        existing.purpose = spec.purpose
+        return existing
+
     if existing is not None:
+        # Clear references first: a channel may point at this ladder, and deleting a row
+        # that is still referenced fails the foreign key.
+        from sqlalchemy import update
+
+        from dsbot.storage.models import ChannelBinding
+
+        await session.execute(
+            update(ChannelBinding)
+            .where(ChannelBinding.rank_ladder_id == existing.id)
+            .values(rank_ladder_id=None)
+        )
         await session.execute(delete(RankLadder).where(RankLadder.id == existing.id))
         await session.flush()
 
@@ -49,6 +70,51 @@ async def replace_ladder(session: AsyncSession, spec: LadderSpec) -> RankLadder:
 
     await session.flush()
     return ladder
+
+
+async def _ladder_matches(session: AsyncSession, ladder: RankLadder, spec: LadderSpec) -> bool:
+    """Whether the stored ladder already says exactly what `spec` says."""
+    if ladder.purpose != spec.purpose:
+        return False
+    tiers = (await session.scalars(select(RankTier).where(RankTier.ladder_id == ladder.id))).all()
+    stored: dict[str, dict[str, Any]] = {}
+    for tier in tiers:
+        roles = set(
+            (
+                await session.scalars(
+                    select(RankTierRole.role_id).where(RankTierRole.tier_id == tier.id)
+                )
+            ).all()
+        )
+        caps = set(
+            (
+                await session.scalars(
+                    select(TierCapability.capability).where(TierCapability.tier_id == tier.id)
+                )
+            ).all()
+        )
+        stored[tier.key] = {
+            "label": tier.label,
+            "ordinal": tier.ordinal,
+            "required": tier.required_per_week,
+            "roles": roles,
+            "caps": caps,
+        }
+    if set(stored) != {tier.key for tier in spec.tiers}:
+        return False
+    for tier_spec in spec.tiers:
+        row = stored[tier_spec.key]
+        if row["label"] != (tier_spec.label or tier_spec.key):
+            return False
+        if row["ordinal"] != tier_spec.ordinal:
+            return False
+        if row["required"] != tier_spec.required_per_week:
+            return False
+        if row["roles"] != set(tier_spec.roles):
+            return False
+        if row["caps"] != set(tier_spec.capabilities):
+            return False
+    return True
 
 
 async def list_ladders(

@@ -1,8 +1,20 @@
 """Channels as a configuration file.
 
-Forms and ladders are YAML, and the list of served channels belongs with them: it is
-deployment configuration, not runtime data. Keeping it in git means a channel you set up
-locally is deployed by pushing, with no shell on the server.
+Forms, ladders and served channels are all configuration, so they live together in git
+and are applied the same way: on startup, automatically, with no manual step. A channel
+entry names everything that governs it:
+
+    channels:
+      - guild: 1274460259661910149
+        channel: 1274460260941434901
+        form: training_report          # which form to parse
+        rank_guild: 1274460259661910149 # which server holds the roles
+        review_ladder: review           # who may approve
+        quota_ladder: quota             # who owes reports, and how many
+
+That last pair is the answer to "which ladder applies here": it is written per channel,
+not inferred from a single global ladder. Apply the file and the bot knows both, for that
+channel only.
 
 What stays in the server database: messages, reports, reactions, verdicts, weekly
 results. Nothing here changes while the bot runs, so there is no "merging" to do.
@@ -20,13 +32,21 @@ DEFAULT_CHANNELS_FILE = Path("forms/channels.yaml")
 
 
 class ChannelSpec(BaseModel):
-    """One channel to serve."""
+    """One channel to serve, and everything that governs it."""
 
     guild: int
     channel: int
     form: str = "training_report"
-    # Which guild's role ladder governs approvals. Defaults to `guild`.
+
+    # Which guild's roles decide authority. Defaults to `guild`.
     rank_guild: int | None = None
+
+    # Ladder keys, resolved inside the rank guild. Naming them here is what makes the
+    # hierarchy per-channel: two channels can point at different ladders, and either may
+    # be omitted (approvals only, or counting only).
+    review_ladder: str | None = None
+    quota_ladder: str | None = None
+
     locale: str = "ru"
     # Disabled channels stay bound and keep their history; they just stop being served.
     enabled: bool = True
@@ -69,6 +89,8 @@ class ChannelsSyncResult:
     updated: list[int] = field(default_factory=list)
     paused: list[int] = field(default_factory=list)
     unchanged: list[int] = field(default_factory=list)
+    ladders: list[str] = field(default_factory=list)
+    forms: list[str] = field(default_factory=list)
 
 
 def load_channels_file(path: Path = DEFAULT_CHANNELS_FILE) -> ChannelsFile:
@@ -79,7 +101,7 @@ def load_channels_file(path: Path = DEFAULT_CHANNELS_FILE) -> ChannelsFile:
     """
     if not path.is_file():
         return ChannelsFile(channels=[])
-    data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+    data: object = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a YAML mapping")
     return ChannelsFile.model_validate(data)

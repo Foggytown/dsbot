@@ -102,8 +102,8 @@ class CountingService:
 
         if ladders is None and binding.rank_source_guild_id:
             ladders = await self._ladders_for(binding.rank_source_guild_id)
-        if quota_ladder_id is None and ladders is not None:
-            quota_ladder_id = ladders.quota_ladder_id
+        if quota_ladder_id is None:
+            quota_ladder_id = _quota_ladder_id(ladders, binding.config or {})
 
         roster, roster_problem = await self._roster_entries(quota_ladder_id, ladders, binding.id)
         if roster_problem:
@@ -338,6 +338,28 @@ class CountingService:
         if stored:
             return stored
         return [run.report_message_id] if run.report_message_id else []
+
+
+def _quota_ladder_id(ladders: GuildLadders | None, config: dict[str, Any]) -> int | None:
+    """Which ladder this channel counts against.
+
+    The channel names its quota ladder in `forms/channels.yaml`, so this is a per-channel
+    choice, not a global one. When it is not named, the single quota ladder of the guild
+    is used; if the guild has several and the channel names none, counting refuses rather
+    than guessing which duty applies.
+    """
+    if ladders is None:
+        return None
+    wanted = config.get("quota_ladder")
+    if wanted:
+        for index in ladders.indexes:
+            if index.key == wanted and index.purpose == "quota":
+                return index.ladder_id
+        return None
+    quota_ladders = [index for index in ladders.indexes if index.purpose == "quota"]
+    if len(quota_ladders) == 1:
+        return quota_ladders[0].ladder_id
+    return None
 
 
 def _required_by_tier(policies: Any, tiers: dict[int, int] | None = None) -> dict[int | None, int]:

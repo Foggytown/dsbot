@@ -1,40 +1,53 @@
 # =============================================================================
-# Channels this bot serves
+# Channels this bot serves, and EVERYTHING that governs each one
 #
-# This file is CONFIGURATION, not data. It lives in git alongside the forms, so a
-# channel you set up locally is deployed by pushing. The server reads it at startup and
-# makes the database match.
+# This file is CONFIGURATION, not data. It lives in git, so a channel you set up
+# locally is deployed by pushing. The server reads it at startup and makes the
+# database match — there is no separate "apply" step and nothing to re-do after a
+# redeploy.
 #
-# Data lives on the server only: messages, reports, verdicts, weekly results. This file
-# holds nothing that changes while the bot runs.
+# WHY THIS MATTERS ON THE PANEL: only /data survives a redeploy. Everything else is
+# re-uploaded from git each time, and /data holds only runtime data (messages,
+# reports, reactions, verdicts, weekly results). If a binding or a ladder were
+# created by hand on the server, it would be lost or duplicated on the next upload.
+# So the wiring lives HERE, and it is rebuilt automatically on every start.
 #
 # Check:  uv run dsbot channels-check
-# Apply:  uv run dsbot channels-apply
+# Apply:  uv run dsbot channels-apply     (optional; startup does this anyway)
+# Show:   uv run dsbot channels
 #
-# Startup also reads it, so on a panel with no shell you only need to redeploy.
+# EACH ENTRY:
+#   guild:          the server that CONTAINS the channel
+#   channel:        the channel to monitor
+#   form:           which YAML form from forms/ to parse there
+#   rank_guild:     which server HOLDS the roles (leave out to use the channel's guild)
+#   review_ladder:  which ladder decides who may approve, by its `key` in that guild
+#   quota_ladder:   which ladder says who owes reports and how many, by its `key`
+#   locale:         ru or en, defaults to ru
+#   enabled:        false pauses the channel without deleting anything
 #
-# Each entry binds one channel to one form:
+# The two ladders are named PER CHANNEL on purpose. Two channels may read reports in
+# the same server while ordering the same people differently, and one channel may have
+# approvals but no quota, or a quota but no approvals.
 #
-#   - guild:    the server id that CONTAINS the channel
-#     channel:  the channel to monitor
-#     form:     which YAML form from forms/
-#     rank_guild: which server's role ladder sets authority for approvals
-#                 (leave out to use the channel's own guild)
-#     locale:   ru or en, defaults to ru
-#     enabled:  false pauses the channel without deleting anything
+# Ladders are read from forms/ladders/<key>.yaml and applied automatically. A channel
+# that names a ladder which does not exist is a configuration error, reported loudly at
+# startup rather than silently counting nobody.
 #
 # Leaving a channel OUT of this file does not delete it. Use `enabled: false` to pause
 # and keep its history.
 # =============================================================================
 
 channels:
-  # Test channel in the home server.
+  # Test channel in the home server. No ladders yet: parsing and warnings only.
   - guild: 1209516013779943544
     channel: 1573045809774067812
     form: training_report
 
-  # Instructors server: reports are read here, but authority comes from the
-  # specialization servers, so rank_guild differs from guild.
+  # Instructors server: reports are read here, but the roles live in the same guild
+  # here, so rank_guild is omitted. Both ladders are named explicitly.
   - guild: 1274460259661910149
     channel: 1274460260941434901
     form: training_report
+    # review_ladder: review    # who may approve  (forms/ladders/review.yaml)
+    # quota_ladder: quota      # who owes reports (forms/ladders/quota.yaml)
