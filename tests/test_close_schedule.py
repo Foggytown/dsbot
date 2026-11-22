@@ -55,19 +55,21 @@ def test_an_unreadable_date_is_a_sentence_not_a_guess() -> None:
 
 
 def test_the_period_covers_the_whole_closing_day() -> None:
-    """The admin writes the *end*, and means "all of the 22nd is included".
+    """The close *date* decides what is counted; the close *time* only decides when.
 
-    The stored end is one second after the closing instant, so the exclusive boundary
-    lands on the next midnight. Without that the label began a day earlier
-    (`15.11–22.11` instead of `16.11–22.11`) and looked like a counting bug.
+    A `17:00` close and a `23:59:59` close must report the same week. Before this, the
+    time also shaped the window, so a 17:00 close reported `15.11–22.11` - eight calendar
+    days, arithmetically consistent and not what anybody meant.
     """
-    close = local("22.11.2026 23:59:59")
-    schedule = Schedule(period_days=7, next_close=close)
+    for value in ("22.11.2026 17:00:00", "22.11.2026 23:59:59", "22.11.2026"):
+        schedule = Schedule(period_days=7, next_close=local(value))
+        period = schedule.period_for(MOSCOW)
+        assert period.describe(MOSCOW) == "16.11.2026–22.11.2026 (7 дн.)", value
 
-    assert schedule.current_period.end == close + timedelta(seconds=1)
-    assert schedule.current_period.start == close + timedelta(seconds=1) - timedelta(days=7)
-    # And it is exactly the ISO week, so a run and a `/reports count` agree.
-    assert schedule.current_period.describe(MOSCOW) == "16.11.2026–22.11.2026 (7 дн.)"
+    # It is the whole local week, independent of the closing clock time.
+    period = Schedule(period_days=7, next_close=local("22.11.2026 17:00:00")).period_for(MOSCOW)
+    assert period.start == local("16.11.2026 00:00:00")
+    assert period.end == local("23.11.2026 00:00:00")
 
 
 def test_rolling_keeps_the_wall_clock_time() -> None:

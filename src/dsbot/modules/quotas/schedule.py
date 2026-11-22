@@ -59,21 +59,34 @@ class Schedule:
     def period_length(self) -> timedelta:
         return timedelta(days=self.period_days)
 
-    @property
-    def current_period(self) -> Period:
-        """The period ending at `next_close`, inclusive of the closing instant.
+    def period_for(self, timezone: str) -> Period:
+        """The period this schedule reports, as whole local days.
 
-        The interval is `[close - length, close]`, advanced by one second only to make it
-        half-open for counting, so a report posted at exactly `close` still belongs to the
-        period.
+        **Two different things, deliberately separated:**
 
-        The admin's close is a **moment, not a date**. An earlier version added a second
-        and then assumed the boundary was midnight, which produced `15.11–22.11` for a
-        `22.11 17:00` close - a whole day early, for any close time that is not midnight.
-        Do not reason about "the closing day" here.
+        * the close *time* decides **when** the report is published (17:00 means the
+          numbers appear at 17:00);
+        * the close *date* decides **what** is counted - always complete calendar days.
+
+        So a close of `22.11.2026 17:00:00` reports `16.11–22.11` in full, and a close of
+        `22.11.2026 23:59:59` reports exactly the same thing. Before this, the time also
+        shaped the window, so a 17:00 close started at 15.11 17:00:01 and spanned eight
+        calendar days - arithmetically right, and not what anybody meant by "the week".
+
+        Needs the timezone because "whole days" is a civil fact: midnight is local
+        midnight, not UTC midnight.
         """
-        end = self.next_close + CLOSE_SLACK
-        return Period(start=end - self.period_length, end=end)
+        from datetime import time as clock_time
+
+        from dsbot.modules.quotas.period import load_timezone
+
+        zone = load_timezone(timezone)
+        closing_day = self.next_close.astimezone(zone).date()
+        # Half-open on whole days: [start 00:00, day after close 00:00). A report posted
+        # at any time on the closing date belongs to the period, including 23:59.
+        end_local = datetime.combine(closing_day + timedelta(days=1), clock_time.min, tzinfo=zone)
+        start_local = end_local - self.period_length
+        return Period(start=start_local.astimezone(UTC), end=end_local.astimezone(UTC))
 
     def rolled(self, *, after: datetime) -> Schedule:
         """The schedule whose next close is the first one strictly after `after`.
@@ -103,17 +116,26 @@ class Due:
     skipped_periods: int = 0
 
 
-def due_at(schedule: Schedule, now: datetime, *, grace: timedelta = DEFAULT_GRACE) -> Due:
+def due_at(
+    schedule: Schedule,
+    now: datetime,
+    *,
+    grace: timedelta = DEFAULT_GRACE,
+    timezone: str = "Europe/Moscow",
+) -> Due:
     """Decide what to do at `now`.
 
     Only ever reports **one** period, the one that just closed. A bot that was down for
     six weeks does not publish six reports; it either publishes the latest close if it is
     still inside the grace window, or skips and moves on.
+
+    `timezone` is needed because the period is whole local days: the close time decides
+    *when* to publish, the close date decides *what* to count.
     """
     if now < schedule.next_close:
         return Due(action="wait")
 
-    period = schedule.current_period
+    period = schedule.period_for(timezone)
     rolled = schedule.rolled(after=now)
     skipped = _periods_between(schedule.next_close, rolled.next_close, schedule.period_length)
 

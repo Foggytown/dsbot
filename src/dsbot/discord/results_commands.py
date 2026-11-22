@@ -128,7 +128,7 @@ class ResultsCommands(app_commands.Group, name="results", description="Итог�
 
         days = PERIOD_DAYS.get(period.value, 7)
         schedule = Schedule(period_days=days, next_close=close)
-        period_window = schedule.current_period
+        period_window = schedule.period_for(timezone)
 
         # A close in the past would publish immediately and then roll forward, which looks
         # like a bug to whoever typed it. Refuse and say what to do instead.
@@ -212,7 +212,7 @@ class ResultsCommands(app_commands.Group, name="results", description="Итог�
         config = binding.config or {}
         destination = config.get("report_channel_id")
         lines = [
-            f"**Период:** {schedule.current_period.describe(timezone)}",
+            f"**Период:** {schedule.period_for(timezone).describe(timezone)}",
             f"**Длина:** {schedule.period_days} дн.",
             f"**Закроется:** {describe_close(schedule.next_close, timezone)} ({timezone})",
             f"**Следующий:** "

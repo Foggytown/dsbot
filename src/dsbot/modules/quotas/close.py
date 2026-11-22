@@ -88,10 +88,14 @@ async def close_period(
             problem="this channel has no close schedule",
         )
 
-    due = due_at(schedule, moment, grace=grace)
+    due = due_at(schedule, moment, grace=grace, timezone=timezone)
     if force:
         # A manual run always counts the period the schedule points at.
-        due = Due(action="publish", period=schedule.current_period, next_close=schedule.next_close)
+        due = Due(
+            action="publish",
+            period=schedule.period_for(timezone),
+            next_close=schedule.next_close,
+        )
     elif due.action == "wait":
         return CloseOutcome(action="nothing", channel_id=channel_id)
 

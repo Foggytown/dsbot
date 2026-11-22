@@ -680,9 +680,19 @@ The periodic report. Four moving parts:
 | the close | `modules/quotas/close.py` | count, publish, then advance |
 
 **The admin's model is one number.** `/results set period:week next_result:22.11.2026
-23:59:59` stores "the period *ending* at this moment is a week long". The period being
-counted is `[close - 7 days, close)`. Nobody has to reason about cron expressions, and
-"make this week two days longer" is one field.
+17:00:00` stores "the period ending on the 22nd is a week long". Two different things,
+deliberately separated:
+
+| The close... | decides |
+|---|---|
+| **time** (`17:00`) | *when* the report is published |
+| **date** (`22.11`) | *what* is counted: whole local days, `16.11–22.11` |
+
+So 17:00 and 23:59:59 on the 22nd report exactly the same week. Tying the window to the
+clock time instead made a 17:00 close report `15.11–22.11` - eight calendar days, correct
+arithmetic for "exactly 7×24 hours" and not what anybody means by "the week".
+`Schedule.period_for(timezone)` is the only way to ask for the window, because "whole
+days" needs a timezone.
 
 **Why polling and not APScheduler.** The close time is editable from Discord at any
 moment; a timer computed at startup would be wrong the instant somebody changes it. One
