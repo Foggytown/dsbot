@@ -1,4 +1,4 @@
-"""Reactions -> stored verdicts, and telling staff when something is ambiguous.
+"""Reactions -> stored verdicts.
 
 The report's verdict is a function of its current reactions and the ranks captured when
 those reactions were stored. Every reaction event recomputes it; nothing is applied
@@ -6,8 +6,9 @@ incrementally. Removing the deciding reaction therefore reverts to the next surv
 verdict for free, which is the behaviour staff already expect from an undo.
 
 A conflicting verdict (two reviewers of equal authority disagreeing) is not guessed at.
-The report is marked `conflict` and staff are told once, when the conflict appears, not
-on every subsequent recomputation.
+The report is marked `conflict`, which counts as declined, and **nothing is announced** -
+not once, not ever. That was decided explicitly: an automatic weekly run has to finish
+unattended, so no report decision may require a human to read the channel.
 """
 
 from __future__ import annotations

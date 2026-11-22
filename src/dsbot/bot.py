@@ -125,6 +125,7 @@ class Bot(discord.ext.commands.Bot):
             self.resolver,
             self.settings.default_timezone,
             developer_user_id=self.settings.developer_user_id,
+            reaction_cache=self.settings.reaction_cache,
         )
 
         from dsbot.discord.results_commands import register_results_commands

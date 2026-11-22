@@ -121,8 +121,10 @@ An IDN has exactly **two** valid shapes. Never invent a third:
 2. **prefixed**: 6 digits written `PP/00NN`, where `PP` is `01` or `00` and the two
    digits after the slash are always `00` - `SOB | 01/0016`
 
-The optional system (NRP) IDN is exactly 4 digits and may follow the **prefixed** form
-only. `SOB | 0016 | 0017` is invalid, and so is a bare 6-digit `SOB | 000016`.
+The optional system (NRP) IDN is exactly 4 digits. It may follow **either** form:
+`SOB | 0016 | 0017` and `SOB | 01/0016 | 0017` are both valid - some soldiers have both a
+lore IDN and a system IDN. A bare 6-digit `SOB | 000016` is still invalid; the two IDNs
+are separate fields, not one long number.
 
 Prefixes belong to SOB squads, so a prefixed IDN is rejected for any other formation
 (`ARC | 01/0016` is invalid). `lore_prefixes` and `lore_prefix_formations` on the field
@@ -172,8 +174,23 @@ highest surviving verdict automatically. Do not implement last-event-wins.
 
 Only a tier whose `capabilities` include `review`. A reviewer may approve **their own**
 report; that is expected, not an error to "fix". A reaction whose author's rank could
-not be resolved is stored but counts for nothing — a NULL `can_review` must never be
+not be resolved is stored but counts for nothing - a NULL `can_review` must never be
 treated as "allowed", or any stranger's check mark would approve a report.
+
+**`approved_unknown` is a deliberate compromise, not a safeguard.** When the only check
+marks come from reactors whose rank cannot be resolved, the report becomes
+`approved_unknown` and **is credited** toward the quota. The reasoning: a human did approve
+it, and the common cause is that they held the role at the time and have since lost it.
+The cost is real and accepted: a check mark from somebody who never had the right is
+indistinguishable from one by a reviewer whose role was removed, so in principle a friend's
+reaction can close somebody's weekly norm.
+
+This was raised in review as a possible hole and **closed as "leave it"**. Do not "fix" it
+by making `approved_unknown` uncounted without asking: that would silently uncredit every
+genuinely-approved report whose reviewer has since been promoted or left. If it ever needs
+tightening, the correct change is to store `can_review=False` when a rank *was* resolved but
+carries no review capability, so "known and unauthorised" separates from "unknown" - and
+that is a decision, not a clean-up.
 
 Two reviewers of the **same** ordinal who disagree produce `conflict`. Different
 ordinals are resolved by the higher one. A conflict is never guessed at.
@@ -351,6 +368,13 @@ separator, and a second IDN shape that does not exist.
 Kept: case-insensitive qualification codes with trailing commentary stripped, and
 `formation | idn | idn` for every formation (only `01/` and `00/` are SOB-specific).
 
+**A formation must match the configured spelling exactly.** Not upper-cased, not
+case-folded: `SOB` and `501st` and `Guard` are accepted because that is how they are
+written in `forms/training.yaml`, while `sob`, `Sob`, `501ST` and `GUARD` are rejected as
+`formation_unknown`. The list is the specification for how the channel writes its formations,
+so an admin adding `501ST` alongside `501st` would create two formations that look identical
+to a human.
+
 ### Conditional rules must not guess
 
 A rule keyed on the qualification does not fire when the qualification was not
@@ -450,8 +474,10 @@ Each of these shipped and had to be found by a live run or a user report.
     unreviewed. It is `approved_unknown` now and still counts.
 16. **Per-reaction rank lookups made a scan take half a minute.** One awaited REST call per
     reaction. Distinct reactors are resolved once each, concurrently.
-17. **A row must not overfill its own quota.** `3/2` invited "out of what?". Display is
-    clamped with a `+N` remainder.
+17. **A row must not overfill its own quota - but the number is not capped.** The first
+    attempt clamped `4/1` to `1/1 +3`, which made the reader add numbers up and hid the
+    real total. The row now shows the true `4/1`, because "4 out of 1" says exactly what
+    happened. Anything unusual goes in brackets afterwards.
 18. **Parallelising reaction reads caused a 429 storm.** discord.py's bucket key includes
     the message id, so it believes every message has its own limit and does no
     cross-message throttling; Discord limits the route per *channel*. Eight at once looked

@@ -214,10 +214,11 @@ Cross-field requirements are `rules:` (`when` + `min_attachments` / `allowed` / 
 - `dsbot scan` — read-only verdicts over real channel history
 - `dsbot parse --channel <id>` — test a message against a channel's real form
 - verdicts from reactions, recomputed from state so un-reacting reverts them
-- `dsbot count` / `/reports count` — approved reports per person per week, CSV and
-  optional publication to a channel
+- `dsbot count` / `/reports count` — approved reports per person for any period, both
+  reading Discord history; `/reports count` can also publish into a channel
+- `/results set` — a per-channel close time; the bot publishes the finished period itself
 
-Not built yet: scheduled automatic weekly posting, dashboards, role assignment.
+Not built yet: dashboards, role assignment, soldier-to-instructor assignment.
 
 ## Testing locally before touching the real server
 
@@ -226,9 +227,8 @@ Not built yet: scheduled automatic weekly posting, dashboards, role assignment.
 3. `uv run dsbot bind --guild <guild> --channel <channel>`
 4. `uv run dsbot run`
 5. Post a valid report, an incomplete report, and plain chat. Expect: no reply for
-   chat, no immediate reply for a fresh incomplete report (a grace window), a warning
-   for an old incomplete report, and the warning deleting itself when you edit the
-   message to be complete.
+   chat, an immediate warning for an incomplete report, and that warning being deleted
+   when you edit the message to be complete.
 
 `--dry-run` is the safe way to watch parsing decisions: it logs
 `report_processed` with `matched`, `valid`, `action`, and issue codes without posting.
@@ -247,9 +247,18 @@ it is deployment tuning, not per-channel policy.
 
 ## IDN rules
 
-An IDN is **exactly 4 digits, or 6 or more**. Values are stored verbatim and never
-zero-padded, so `001` stays `001` and is rejected as `idn_bad_length` rather than
-silently becoming `0001`. Lore IDNs use `sub_unit/number`, e.g. `01/0016`.
+An IDN has exactly **two** valid shapes, and values are stored verbatim - never
+zero-padded, so `001` stays `001` and is rejected as `idn_bad_length` rather than silently
+becoming `0001`:
+
+1. **plain** - exactly 4 digits: `ARC | 0042`
+2. **prefixed** - `PP/00NN`, where `PP` is `01` or `00`: `SOB | 01/0016`
+
+A prefixed IDN is SOB-only. Either shape may be followed by a 4-digit system (NRP) IDN of
+its own: `SOB | 0016 | 0017` and `SOB | 01/0016 | 0017` are both valid.
+
+Formations must match the configured spelling exactly, including capitalisation: `501st`
+is accepted, `501ST` is not.
 
 ## Stopping the bot
 

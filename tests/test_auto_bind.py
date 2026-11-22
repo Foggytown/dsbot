@@ -1,8 +1,13 @@
-"""Auto-binding from configuration.
+"""Channels are bound from a file, not from an environment variable.
 
-Panels often give no shell, so a fresh deployment must be able to bind its channels
-from `.env`. Without it the bot starts, reports `no_channel_bindings`, and silently
-ignores every message.
+`DSBOT_AUTO_BIND_CHANNELS` was documented in `config.py` as an "escape hatch for panels
+that provide no shell". Nothing ever read it - `auto_bind_pairs()` had no callers - so a
+channel configured that way would simply never be bound, while the bot started happily and
+reported `no_channel_bindings`. A promise the code cannot keep is worse than no promise, so
+the setting is gone.
+
+The panel-friendly route is the file in the data directory: the panel keeps only `/data`,
+the bot seeds it once from `forms/channels.yaml`, and re-reads it while running.
 """
 
 from __future__ import annotations
@@ -17,42 +22,20 @@ from dsbot.storage import repos
 from dsbot.storage.db import Database
 
 
-def settings(value: str) -> Settings:
-    return Settings(_env_file=None, auto_bind_channels=value)  # type: ignore[call-arg]
+def test_the_auto_bind_setting_is_gone() -> None:
+    """It was advertised and never implemented; leaving it would invite configuration that
+    silently does nothing."""
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert not hasattr(settings, "auto_bind_channels")
+    assert not hasattr(settings, "auto_bind_pairs")
 
 
-def test_single_pair() -> None:
-    assert settings("1209516013779943544:1573045809774067812").auto_bind_pairs() == [
-        (1209516013779943544, 1573045809774067812)
-    ]
-
-
-def test_multiple_pairs() -> None:
-    pairs = settings("111:222, 333:444").auto_bind_pairs()
-    assert pairs == [(111, 222), (333, 444)]
-
-
-def test_whitespace_and_newlines_are_tolerated() -> None:
-    pairs = settings("111:222,\n  333:444 ,\n").auto_bind_pairs()
-    assert pairs == [(111, 222), (333, 444)]
-
-
-def test_empty_means_nothing() -> None:
-    assert settings("").auto_bind_pairs() == []
-
-
-def test_malformed_entries_are_skipped_not_fatal() -> None:
-    """A typo in one pair must not stop the others from binding."""
-    pairs = settings("111:222,not-a-pair,333:444").auto_bind_pairs()
-    assert pairs == [(111, 222), (333, 444)]
-
-
-def test_slash_separator_is_accepted() -> None:
-    assert settings("111/222").auto_bind_pairs() == [(111, 222)]
-
-
-def test_semicolons_also_separate() -> None:
-    assert settings("111:222;333:444").auto_bind_pairs() == [(111, 222), (333, 444)]
+def test_the_channels_file_is_derived_from_the_data_directory() -> None:
+    """The file that *does* work, and why it needs no environment variable."""
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    path = settings.resolved_channels_file()
+    assert path.name == "channels.yaml"
+    assert path == settings.state_dir() / "channels.yaml"
 
 
 @pytest.fixture
@@ -65,8 +48,8 @@ async def db(tmp_path: Path) -> AsyncIterator[Database]:
     await database.dispose()
 
 
-async def test_binding_created_from_config(db: Database) -> None:
-    """The actual startup path: config -> import_forms -> visible binding."""
+async def test_a_channel_is_bound_by_importing_its_form(db: Database) -> None:
+    """The actual startup path: channels file -> import_forms -> visible binding."""
     from dsbot.modules.reports.authoring import import_forms
     from dsbot.modules.reports.yaml_form import parse_form_file
 

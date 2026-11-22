@@ -37,11 +37,6 @@ class Settings(BaseSettings):
     log_format: Literal["console", "json"] = Field(default="console")
 
     default_timezone: str = Field(default="Europe/Moscow")
-    default_locale: Literal["en", "ru"] = Field(default="ru")
-
-    # Discord REST concurrency ceiling per host, in requests/second. Backfill uses
-    # this to stay inside the global bucket without triggering 429s.
-    rest_requests_per_second: float = Field(default=4.0)
 
     # Instance identity. Two bots may run side by side (e.g. a test bot next to the
     # live one) as long as each uses its own name, database and token. The name selects
@@ -51,15 +46,14 @@ class Settings(BaseSettings):
     # Optional explicit lock location. Defaults to var/<instance_name>.lock.
     lock_path: str = Field(default="")
 
-    # Channels to bind at startup, as "guild_id:channel_id" pairs separated by commas.
-    #
-    # Prefer `forms/channels.yaml`, which lives in git. This variable is the escape hatch
-    # for panels that provide no shell and cannot use the file.
-    #
-    #   DSBOT_AUTO_BIND_CHANNELS=1209516013779943544:1573045809774067812
-    auto_bind_channels: str = Field(default="")
+    # Channels are bound from `channels.yaml` in the data directory, seeded once from
+    # `forms/channels.yaml`. There is deliberately no environment-variable alternative:
+    # one was documented here as an "escape hatch for panels without a shell", but nothing
+    # read it, so it was a promise the bot could not keep - a configured channel would
+    # simply never bind. The file in /data IS the panel-friendly route, because the panel
+    # only keeps /data and the bot re-reads that file while running.
 
-    # The form applied to channels bound via AUTO_BIND_CHANNELS.
+    # The form applied to a newly bound channel when the channels file names none.
     auto_bind_form: str = Field(default="forms/training.yaml")
 
     # The channels configuration file.
@@ -113,6 +107,10 @@ class Settings(BaseSettings):
     # Reuse stored reactors when the reaction set provably has not changed. On by default:
     # without it a repeat scan re-reads every report. Turn it off if a count ever looks
     # stale, and please report it.
+    #
+    # Wired through `count_channel_from_discord(use_cache=...)` from both the slash command
+    # and the CLI. It used to be declared here and never read, so a stale-cache report had
+    # no way to bypass the cache.
     reaction_cache: bool = Field(default=True)
 
     # Publish a channel's period automatically when its close time passes.
@@ -251,25 +249,6 @@ class Settings(BaseSettings):
 
     def pid_file(self) -> Path:
         return self.lock_file().with_suffix(".pid")
-
-    def auto_bind_pairs(self) -> list[tuple[int, int]]:
-        """Parse `DSBOT_AUTO_BIND_CHANNELS` into (guild_id, channel_id) pairs.
-
-        Malformed entries are skipped rather than crashing the bot: a typo in one pair
-        must not prevent the others from binding.
-        """
-        pairs: list[tuple[int, int]] = []
-        for chunk in self.auto_bind_channels.replace(";", ",").split(","):
-            entry = chunk.strip()
-            if not entry:
-                continue
-            separator = ":" if ":" in entry else "/"
-            left, _, right = entry.partition(separator)
-            try:
-                pairs.append((int(left.strip()), int(right.strip())))
-            except ValueError:
-                continue
-        return pairs
 
     def intents(self) -> Any:
         import discord

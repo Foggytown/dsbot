@@ -331,6 +331,7 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             channel_id=channel_id,
             period=window,
             resolver=self._resolver,
+            use_cache=self._reaction_cache,
         )
         context = RenderContext(
             period_label=result.period.describe(timezone),
@@ -394,6 +395,7 @@ async def register_count_commands(
     timezone: str = "Europe/Moscow",
     *,
     developer_user_id: int | None = None,
+    reaction_cache: bool = True,
 ) -> None:
     bot.tree.add_command(
         CountCommands(
@@ -401,6 +403,7 @@ async def register_count_commands(
             resolver,
             timezone,
             developer_user_id=developer_user_id,
+            reaction_cache=reaction_cache,
         )
     )
     log.info("count_commands_registered")

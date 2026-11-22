@@ -42,8 +42,10 @@ fields:
     type: identity
     required: true
 
-    # The finite list of formations, as reporters write them. Comparison is
-    # case-insensitive, so "501st" matches and "501ST" as literal text is never stored.
+    # The finite list of formations. A report must match an entry EXACTLY, character for
+    # character: "SOB" is accepted because it is written "SOB" below, while "sob" and
+    # "Sob" are rejected. Same for mixed-case names - "501st" matches, "501ST" does not.
+    # The spelling in this list is the spelling the channel must use.
     # Squads (ALPHA, NULL) are internal to a formation and are NOT part of the form.
     formations:
       - SOB

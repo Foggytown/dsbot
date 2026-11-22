@@ -160,15 +160,6 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
             "For example: SOB | 01/0016 | 0017."
         ),
     },
-    "idn_nrp_not_allowed": {
-        "ru": (
-            "- У обычного IDN не может быть второго номера. "
-            "Второй IDN нужен только для 01/ или 00/."
-        ),
-        "en": (
-            "- A plain IDN takes no second number. A second IDN is only needed after 01/ or 00/."
-        ),
-    },
     "brackets_not_allowed": {
         "ru": "- Скобки [ ] не нужны. Формат: «ФОРМИРОВАНИЕ | IDN», например SOB | 01/0038.",
         "en": "- No [ ] brackets. Format: 'FORMATION | IDN', for example SOB | 01/0038.",

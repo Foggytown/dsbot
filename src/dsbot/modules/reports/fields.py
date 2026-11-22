@@ -387,12 +387,15 @@ def parse_identity(
     Rejected, with the reason reported to the reporter:
         ARC | 01/0016            prefix belongs to SOB
         SOB | 01/0038            prefixed IDN needs its system IDN
-        SOB | 0016 | 0017        plain IDN takes no second number
         SOB | 01\\0016            backslash instead of slash
         SOB | 01/0038 [8289]     brackets
         ARC Alpha | 01/0016      extra word
         212th | Revers           name instead of a number
         99 | 9902                unknown formation
+        sob | 0016               wrong capitalisation
+
+    Accepted: either IDN form, optionally followed by a 4-digit system IDN -
+    `SOB | 0016 | 0017` and `SOB | 01/0016 | 0017` both name two IDs.
     """
     text = strip_emphasis(normalize(raw)).strip()
     if is_blank_value(text):
