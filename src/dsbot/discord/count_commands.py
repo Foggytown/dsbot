@@ -269,12 +269,25 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         destination = config.get("report_channel_id")
         if destination and pages:
             posted = 0
+            problem = ""
             for page in pages:
-                if await self._send_to(interaction, int(destination), page):
+                ok, why = await self._send_to(interaction, int(destination), page)
+                if ok:
                     posted += 1
-            if posted:
+                else:
+                    problem = why
+                    break
+            if posted == len(pages):
                 await interaction.followup.send(
                     f"Также опубликовано в <#{destination}>.", ephemeral=True
+                )
+            else:
+                # Never let a failed publication be silent. Silence here is what made a
+                # missing channel permission look like the feature not existing.
+                await interaction.followup.send(
+                    f"⚠️ Не удалось опубликовать в <#{destination}>: {problem}.\n"
+                    f"Отчёт выше посчитан верно — проблема только с каналом публикации.",
+                    ephemeral=True,
                 )
 
         log.info(
@@ -372,25 +385,41 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             return pages, list(outcome.problems), bool(outcome.summary.tallies)
         return outcome.messages(), list(outcome.problems), bool(outcome.summary.tallies)
 
-    async def _send_to(self, interaction: discord.Interaction, target: int, content: str) -> bool:
-        """Post into another channel, resolving it if it is not cached."""
+    async def _send_to(
+        self, interaction: discord.Interaction, target: int, content: str
+    ) -> tuple[bool, str]:
+        """Post into another channel, resolving it if it is not cached.
+
+        Returns the reason on failure, not just a bool. `publish_send_failed` in the log
+        with no user-facing counterpart is how a missing permission looked like "the
+        feature is broken": the count appeared, the publication did not, and nothing said
+        why. A 403 on a channel is nearly always a configuration mistake - wrong channel,
+        or the bot was never given access to it - and the admin can fix it in seconds if
+        they are told.
+        """
         client = interaction.client
         destination = client.get_channel(target)
         if destination is None:
             try:
                 destination = await client.fetch_channel(target)
-            except Exception:
-                log.exception("publish_channel_fetch_failed", channel_id=target)
-                return False
+            except Exception as exc:
+                log.warning("publish_channel_fetch_failed", channel_id=target, error=str(exc))
+                return False, f"канал <#{target}> не найден или бот его не видит"
         if not isinstance(destination, discord.abc.Messageable):
             log.error("publish_target_not_messageable", channel_id=target)
-            return False
+            return False, f"<#{target}> — это не текстовый канал, писать в него нельзя"
         try:
             await destination.send(content, allowed_mentions=discord.AllowedMentions(users=True))
-        except Exception:
-            log.exception("publish_send_failed", channel_id=target)
-            return False
-        return True
+        except discord.Forbidden:
+            log.warning("publish_send_forbidden", channel_id=target)
+            return False, (
+                f"нет доступа к <#{target}>. Проверьте, что бот добавлен в этот канал и "
+                f"имеет право «Отправлять сообщения»"
+            )
+        except discord.HTTPException as exc:
+            log.warning("publish_send_failed", channel_id=target, error=str(exc))
+            return False, f"Discord отклонил отправку в <#{target}>: {exc.text or exc}"
+        return True, ""
 
     @app_commands.command(name="csv", description="Выгрузка подсчёта в CSV-файл")
     @app_commands.describe(

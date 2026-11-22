@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -31,7 +32,10 @@ MOSCOW = "Europe/Moscow"
 class _EmptyChannel:
     """A report channel with no messages: these tests are about scheduling, not parsing."""
 
-    id = REPORT_CHANNEL
+    def __init__(self, channel_id: int) -> None:
+        self.id = channel_id
+        self.sent: list[str] = []
+        self._next = 1
 
     def history(self, **kwargs: object) -> object:
         async def empty() -> object:
@@ -40,10 +44,27 @@ class _EmptyChannel:
 
         return empty()
 
+    async def send(self, content: str, **kwargs: object) -> object:
+        self.sent.append(content)
+        probe = _Probe(self._next)
+        self._next += 1
+        return probe
+
+
+class _Probe:
+    def __init__(self, probe_id: int) -> None:
+        self.id = probe_id
+
+    async def delete(self) -> None:
+        return None
+
 
 class _Client:
     def __init__(self) -> None:
-        self._channels = {REPORT_CHANNEL: _EmptyChannel()}
+        self._channels = {
+            REPORT_CHANNEL: _EmptyChannel(REPORT_CHANNEL),
+            DESTINATION: _EmptyChannel(DESTINATION),
+        }
 
     def get_channel(self, channel_id: int) -> object:
         return self._channels.get(channel_id)
@@ -229,3 +250,80 @@ async def test_a_channel_without_a_schedule_does_nothing(bound: Database) -> Non
     )
     assert outcome.action == "nothing"
     assert "no close schedule" in outcome.problem
+
+
+async def test_an_unreachable_destination_fails_before_counting(bound: Database) -> None:
+    """A missing permission must be caught before a minute of Discord requests.
+
+    Reproduces a 403 "Missing Access" on the destination channel: the report was counted,
+    then the send failed, and only the log knew. Now it refuses up front, names the
+    missing permission, and does not advance the schedule.
+    """
+    close_at = parse_close("22.11.2026 23:59:59", MOSCOW)
+    await _arm(bound, close=close_at)
+    binding = await _binding(bound)
+    sink = RecordingReplySink()
+
+    class _Forbidden(_EmptyChannel):
+        async def send(self, content: str, **kwargs: object) -> object:
+            import discord
+
+            raise discord.Forbidden(_fake(403), {"code": 50001, "message": "Missing Access"})
+
+    class _BlindClient(_Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self._channels[DESTINATION] = _Forbidden(DESTINATION)
+
+    outcome = await close_module.close_period(
+        db=bound,
+        client=_BlindClient(),
+        binding_id=binding.id,
+        now=close_at + timedelta(minutes=1),
+        reply=sink,
+    )
+
+    assert outcome.action == "failed"
+    assert "доступ" in outcome.problem, "the message must name the missing access"
+    assert sink.sent == [], "nothing may be published into a channel it cannot write to"
+    assert await _next_close(bound) == close_at, "a failed publish must not advance"
+
+
+def _fake(status: int) -> Any:
+    class _Response:
+        def __init__(self) -> None:
+            self.status = status
+            self.reason = "Forbidden"
+
+    return _Response()
+
+
+async def test_a_failed_send_names_the_reason_not_just_nothing(bound: Database) -> None:
+    """`nothing was posted` is not an error message.
+
+    The live failure reported exactly that sentence, which sends an operator to the logs
+    instead of to the channel permission. The sink's reason must reach the reply.
+    """
+    close_at = parse_close("22.11.2026 23:59:59", MOSCOW)
+    await _arm(bound, close=close_at)
+    binding = await _binding(bound)
+
+    class _RefusingSink(RecordingReplySink):
+        last_error = ""
+
+        async def send(self, channel_id: int, content: str, **kwargs: object) -> None:
+            self.last_error = f"нет доступа к <#{channel_id}>: нужны права"
+            return None
+
+    outcome = await close_module.close_period(
+        db=bound,
+        client=_Client(),
+        binding_id=binding.id,
+        now=close_at + timedelta(minutes=1),
+        reply=_RefusingSink(),
+    )
+
+    assert outcome.action == "failed"
+    assert "доступ" in outcome.problem, "the cause must reach the user, not just the log"
+    assert "nothing was posted" not in outcome.problem
+    assert await _next_close(bound) == close_at, "a failed publish must not advance"

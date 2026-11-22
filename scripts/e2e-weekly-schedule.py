@@ -32,13 +32,12 @@ DESTINATION = 1573045809774067812
 
 
 class FakeChannel:
-    """A report channel with no history.
+    """A report channel with no history."""
 
-    The script tests scheduling and publishing, not parsing, and an empty history also
-    proves a period with no reports does not fall over.
-    """
-
-    id = REPORT_CHANNEL
+    def __init__(self, channel_id: int) -> None:
+        self.id = channel_id
+        self.sent: list[str] = []
+        self._next = 1
 
     def history(self, **kwargs: object) -> object:
         async def empty() -> object:
@@ -47,10 +46,27 @@ class FakeChannel:
 
         return empty()
 
+    async def send(self, content: str, **kwargs: object) -> object:
+        self.sent.append(content)
+        probe = _Probe(self._next)
+        self._next += 1
+        return probe
+
+
+class _Probe:
+    def __init__(self, probe_id: int) -> None:
+        self.id = probe_id
+
+    async def delete(self) -> None:
+        return None
+
 
 class FakeClient:
     def __init__(self) -> None:
-        self._channels = {REPORT_CHANNEL: FakeChannel()}
+        self._channels = {
+            REPORT_CHANNEL: FakeChannel(REPORT_CHANNEL),
+            DESTINATION: FakeChannel(DESTINATION),
+        }
 
     def get_channel(self, channel_id: int) -> object:
         return self._channels.get(channel_id)

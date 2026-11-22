@@ -44,6 +44,10 @@ class DiscordReplySink:
     def __init__(self, client: discord.Client) -> None:
         self._client = client
         self._cache: dict[int, Any] = {}
+        # Why the last send failed, so a caller can tell the user instead of reporting
+        # "nothing was posted". A bool return loses the only piece of information an
+        # admin needs: whether it was a permission, a missing channel, or Discord.
+        self.last_error: str = ""
 
     async def _resolve(self, channel_id: int) -> Any:
         channel = self._client.get_channel(channel_id)
@@ -54,8 +58,9 @@ class DiscordReplySink:
             return cached
         try:
             channel = await self._client.fetch_channel(channel_id)
-        except discord.HTTPException:
-            log.error("reply_channel_fetch_failed", channel_id=channel_id)
+        except discord.HTTPException as exc:
+            log.error("reply_channel_fetch_failed", channel_id=channel_id, error=str(exc))
+            self.last_error = f"канал <#{channel_id}> не найден или бот его не видит"
             return None
         self._cache[channel_id] = channel
         log.info("reply_channel_fetched", channel_id=channel_id)
@@ -69,9 +74,11 @@ class DiscordReplySink:
         ephemeral: bool = False,
         reference_message_id: int | None = None,
     ) -> int | None:
+        self.last_error = ""
         channel = await self._resolve(channel_id)
         if not isinstance(channel, discord.abc.Messageable):
             log.error("reply_channel_not_messageable", channel_id=channel_id)
+            self.last_error = f"<#{channel_id}> — это не текстовый канал"
             return None
         reference: Any = None
         if reference_message_id is not None:
@@ -89,10 +96,19 @@ class DiscordReplySink:
                 mention_author=False,
             )
         except discord.Forbidden:
-            log.error("reply_forbidden", channel_id=channel_id)
+            log.error(
+                "reply_forbidden",
+                channel_id=channel_id,
+                hint="the bot lacks View Channel / Send Messages in that channel",
+            )
+            self.last_error = (
+                f"нет доступа к <#{channel_id}>: нужны права «Просматривать канал» и "
+                f"«Отправлять сообщения»"
+            )
             return None
-        except discord.HTTPException:
-            log.exception("reply_send_failed", channel_id=channel_id)
+        except discord.HTTPException as exc:
+            log.warning("reply_send_failed", channel_id=channel_id, error=str(exc))
+            self.last_error = f"Discord отклонил отправку в <#{channel_id}>: {exc.text or exc}"
             return None
         return message.id
 

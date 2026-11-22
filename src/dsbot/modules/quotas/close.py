@@ -18,6 +18,7 @@ see, which on a panel that restarts is the same class of bug as the one that mad
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -161,8 +162,21 @@ async def close_period(
         )
 
     destination = int(report_channel)
+    # Check access BEFORE counting. A missing permission is a configuration mistake, and
+    # counting first would spend a minute of Discord requests only to discover it cannot
+    # publish. It also must not advance the schedule.
+    unreachable = await _destination_problem(client, destination)
+    if unreachable:
+        return CloseOutcome(
+            action="failed",
+            channel_id=channel_id,
+            period_label=label,
+            destination=destination,
+            problem=unreachable,
+        )
+
     try:
-        posted = await publish_period(
+        posted, publish_error = await publish_period(
             db=db,
             client=client,
             binding_id=binding_id,
@@ -175,13 +189,14 @@ async def close_period(
             developer_user_id=developer_user_id,
             reply=reply,
         )
-    except Exception:
+    except Exception as exc:
         log.exception("period_close_publish_failed", channel_id=channel_id, period=label)
         return CloseOutcome(
             action="failed",
             channel_id=channel_id,
             period_label=label,
-            problem="publishing failed; the schedule was not advanced",
+            destination=destination,
+            problem=f"публикация не удалась: {exc}. Расписание не сдвинуто.",
         )
 
     if not posted:
@@ -190,7 +205,12 @@ async def close_period(
             channel_id=channel_id,
             period_label=label,
             destination=destination,
-            problem="nothing was posted; the schedule was not advanced",
+            # Say WHY. "nothing was posted" is exactly the kind of message that sends
+            # someone reading logs instead of fixing a permission.
+            problem=(
+                publish_error
+                or f"не удалось отправить отчёт в <#{destination}>. Расписание не сдвинуто."
+            ),
         )
 
     next_close = due.next_close
@@ -256,7 +276,7 @@ async def publish_period(
     hidden_tiers: tuple[str, ...] = (),
     developer_user_id: int | None = None,
     reply: Any = None,
-) -> list[int]:
+) -> tuple[list[int], str]:
     """Render, persist and publish one counted period.
 
     Every caller must go through here. A different ordering - publish then persist, say -
@@ -287,7 +307,10 @@ async def publish_period(
     # makes a manual re-run edit the same message instead of posting a second one.
     outcome = await service.count(request, persist=True, hidden_tiers=hidden_tiers)
     outcome.context = context
-    return await service.publish(request, outcome, target_channel_id=target_channel_id)
+    posted = await service.publish(request, outcome, target_channel_id=target_channel_id)
+    # Returned, not stashed on a module attribute: two channels can close on the same tick,
+    # and a shared slot would let one close read the other's reason.
+    return posted, getattr(sink, "last_error", "") or ""
 
 
 async def _build_resolver(db: Database, client: Any) -> Any:
@@ -316,3 +339,43 @@ async def _resolve_channel(client: Any, channel_id: int) -> Any:
     except Exception:
         log.warning("close_channel_fetch_failed", channel_id=channel_id)
         return None
+
+
+async def _destination_problem(client: Any, channel_id: int) -> str:
+    """Can the bot actually post here? Returns "" when it can.
+
+    Probed by sending a throwaway message and deleting it, because computing permissions
+    needs the Members intent and gets channel overwrites wrong. A stored destination the
+    bot cannot write to is the worst failure mode: the setting looks saved, every report
+    then fails, and only the log knows.
+    """
+    channel = await _resolve_channel(client, channel_id)
+    if channel is None:
+        return f"канал <#{channel_id}> не найден или бот его не видит"
+    send = getattr(channel, "send", None)
+    if send is None:
+        return f"<#{channel_id}> — это не текстовый канал, писать в него нельзя"
+    try:
+        probe = await send(
+            "dsbot: проверка прав публикации (удалится само)",
+            allowed_mentions=None,
+        )
+    except Exception as exc:
+        if _is_forbidden(exc):
+            return (
+                f"нет доступа к <#{channel_id}>: боту нужно право «Просматривать канал» "
+                f"и «Отправлять сообщения»"
+            )
+        return f"не удалось проверить <#{channel_id}>: {exc}"
+    with contextlib.suppress(Exception):
+        await probe.delete()
+    return ""
+
+
+def _is_forbidden(exc: BaseException) -> bool:
+    try:
+        import discord
+
+        return isinstance(exc, discord.Forbidden)
+    except Exception:  # pragma: no cover - discord is always installed in production
+        return False
