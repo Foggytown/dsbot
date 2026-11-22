@@ -227,23 +227,35 @@ def render_message(summary: CountSummary, context: RenderContext) -> list[str]:
 
     pages.append("\n".join(current))
 
+    # The trailer is appended with the same length check the rows get. It used to be
+    # concatenated blindly onto the last page, so a long report plus the "not in the role
+    # list" block plus the footer could exceed Discord's 2000-character limit - and the
+    # send would fail *after* the first pages were already in the channel.
     unranked = [
         r
         for r in summary.unranked
         if (r.approved_count or r.pending_count or r.unknown_approval_count)
         and _tier_key(r).strip().lower() not in hidden
     ]
+    trailer = ""
     if unranked:
-        pages[-1] += (
+        trailer += (
             "\n\nНе в списке ролей, но рапорты есть: "
             + ", ".join(f"<@{r.user_id}>" for r in unranked[:10])
             + (" и др." if len(unranked) > 10 else "")
         )
-        pages[-1] += "\nПроверьте, что у этих людей выдана нужная роль."
+        trailer += "\nПроверьте, что у этих людей выдана нужная роль."
 
     credit = _footer(context)
     if credit:
-        pages[-1] += "\n\n" + credit
+        trailer += "\n\n" + credit
+
+    if trailer:
+        if len(pages[-1]) + len(trailer) > MAX_MESSAGE_LENGTH:
+            # Start a fresh page rather than overflow the last one.
+            pages.append(trailer.lstrip("\n"))
+        else:
+            pages[-1] += trailer
     return pages
 
 

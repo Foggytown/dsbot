@@ -167,6 +167,44 @@ def _partial_message(channel: Any, message_id: int) -> Any | None:
     return getter(message_id)
 
 
+async def can_post_to(client: Any, channel: Any) -> str:
+    """Can the bot actually post here? Returns "" when it can, else the reason.
+
+    Probed by sending a throwaway message and deleting it, rather than computing
+    permissions: `permissions_for` needs the Members intent and gets channel overwrites
+    wrong, so a real send is the only answer that cannot be wrong. The probe deletes
+    itself, so the channel is left as it was.
+
+    One implementation, used by `/dsbot report-target` (before saving a destination) and
+    by the scheduled close (before counting a period). These were two copies of the same
+    text, and two copies of an error message drift until one of them is wrong.
+    """
+    if channel is None:
+        return "канал не найден или бот его не видит"
+    channel_id = getattr(channel, "id", None)
+    send = getattr(channel, "send", None)
+    if send is None:
+        return f"<#{channel_id}> — это не текстовый канал, писать в него нельзя"
+    try:
+        probe = await send(
+            "dsbot: проверка прав публикации (удалится само)",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except discord.Forbidden:
+        return (
+            f"нет доступа к <#{channel_id}>: боту нужно право «Просматривать канал» "
+            f"и «Отправлять сообщения»"
+        )
+    except discord.HTTPException as exc:
+        return f"Discord отклонил проверку <#{channel_id}>: {exc.text or exc}"
+    try:
+        await probe.delete()
+    except Exception:
+        # Leaving one probe behind is harmless; the permission was proven.
+        log.warning("probe_not_deleted", channel_id=channel_id)
+    return ""
+
+
 class RecordingReplySink:
     """Used by tests and `--dry-run`. Records instead of sending."""
 

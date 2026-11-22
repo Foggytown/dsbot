@@ -18,7 +18,6 @@ see, which on a panel that restarts is the same class of bug as the one that mad
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -148,6 +147,21 @@ async def close_period(
 
     resolver = await _build_resolver(db, client)
 
+    destination = int(report_channel)
+
+    # Check access BEFORE counting. A missing permission is a configuration mistake, and
+    # counting first spends a minute of Discord requests only to discover it cannot
+    # publish. It must also not advance the schedule.
+    unreachable = await destination_problem(client, destination)
+    if unreachable:
+        return CloseOutcome(
+            action="failed",
+            channel_id=channel_id,
+            period_label=label,
+            destination=destination,
+            problem=unreachable,
+        )
+
     try:
         counted = await count_period(
             db=db,
@@ -163,20 +177,6 @@ async def close_period(
             channel_id=channel_id,
             period_label=label,
             problem="counting failed; the schedule was not advanced",
-        )
-
-    destination = int(report_channel)
-    # Check access BEFORE counting. A missing permission is a configuration mistake, and
-    # counting first would spend a minute of Discord requests only to discover it cannot
-    # publish. It also must not advance the schedule.
-    unreachable = await _destination_problem(client, destination)
-    if unreachable:
-        return CloseOutcome(
-            action="failed",
-            channel_id=channel_id,
-            period_label=label,
-            destination=destination,
-            problem=unreachable,
         )
 
     try:
@@ -215,6 +215,18 @@ async def close_period(
                 publish_error
                 or f"не удалось отправить отчёт в <#{destination}>. Расписание не сдвинуто."
             ),
+        )
+
+    # A partially published report is a failure, not a success: the schedule advances on
+    # success, and the missing pages would then never be posted.
+    if publish_error:
+        return CloseOutcome(
+            action="failed",
+            channel_id=channel_id,
+            period_label=label,
+            destination=destination,
+            pages=len(posted),
+            problem=publish_error,
         )
 
     next_close = due.next_close
@@ -326,7 +338,13 @@ async def publish_period(
         problems=list(getattr(counted, "problems", []) or []),
     )
     outcome.run_id = await service.persist_run(request, outcome)
+    pages = len(outcome.messages())
     posted = await service.publish(request, outcome, target_channel_id=target_channel_id)
+    if len(posted) < pages:
+        # Partial publication must not look like success: the caller advances the schedule
+        # on success, and the missing pages would never be posted.
+        reason = service.last_error or (f"опубликовано только {len(posted)} из {pages} страниц")
+        return posted, reason
     return posted, getattr(sink, "last_error", "") or ""
 
 
@@ -358,41 +376,15 @@ async def _resolve_channel(client: Any, channel_id: int) -> Any:
         return None
 
 
-async def _destination_problem(client: Any, channel_id: int) -> str:
-    """Can the bot actually post here? Returns "" when it can.
+async def destination_problem(client: Any, channel_id: int) -> str:
+    """Can the bot post to this channel id? Returns "" when it can.
 
-    Probed by sending a throwaway message and deleting it, because computing permissions
-    needs the Members intent and gets channel overwrites wrong. A stored destination the
-    bot cannot write to is the worst failure mode: the setting looks saved, every report
-    then fails, and only the log knows.
+    Resolves the channel (cache, then REST) and delegates to `can_post_to`, so the
+    scheduled close and `/dsbot report-target` share one definition of "reachable".
     """
+    from dsbot.discord.reply import can_post_to
+
     channel = await _resolve_channel(client, channel_id)
     if channel is None:
         return f"канал <#{channel_id}> не найден или бот его не видит"
-    send = getattr(channel, "send", None)
-    if send is None:
-        return f"<#{channel_id}> — это не текстовый канал, писать в него нельзя"
-    try:
-        probe = await send(
-            "dsbot: проверка прав публикации (удалится само)",
-            allowed_mentions=None,
-        )
-    except Exception as exc:
-        if _is_forbidden(exc):
-            return (
-                f"нет доступа к <#{channel_id}>: боту нужно право «Просматривать канал» "
-                f"и «Отправлять сообщения»"
-            )
-        return f"не удалось проверить <#{channel_id}>: {exc}"
-    with contextlib.suppress(Exception):
-        await probe.delete()
-    return ""
-
-
-def _is_forbidden(exc: BaseException) -> bool:
-    try:
-        import discord
-
-        return isinstance(exc, discord.Forbidden)
-    except Exception:  # pragma: no cover - discord is always installed in production
-        return False
+    return await can_post_to(client, channel)

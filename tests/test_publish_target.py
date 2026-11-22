@@ -15,7 +15,7 @@ from typing import Any
 
 import discord
 
-from dsbot.discord.commands import can_post_to
+from dsbot.discord.reply import can_post_to
 
 
 class _ForbiddenChannel:

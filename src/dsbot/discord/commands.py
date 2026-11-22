@@ -424,6 +424,24 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
             )
             return
 
+        # Verify access BEFORE saving. A destination that is stored but forbidden is the
+        # worst outcome: the setting looks successful, every later count fails, and the
+        # failure only shows up in the log. This used to run after the write, so the
+        # message said "not saved" while the row had already been updated.
+        if channel is not None:
+            from dsbot.discord.reply import can_post_to
+
+            problem = await can_post_to(interaction.client, channel)
+            if problem:
+                await interaction.followup.send(
+                    f"⚠️ Канал {channel.mention} выбран, но публиковать туда не получится: "
+                    f"{problem}\n\n"
+                    "Настройка **не сохранена**. Дайте боту доступ к этому каналу "
+                    "(«Просматривать канал» и «Отправлять сообщения») и повторите команду.",
+                    ephemeral=True,
+                )
+                return
+
         try:
             await set_report_target(
                 self._db,
@@ -437,21 +455,6 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
         if channel is None:
             await interaction.followup.send(
                 "Отчёты больше не публикуются в канал — только в ответ на команду.",
-                ephemeral=True,
-            )
-            return
-
-        # Verify the bot can actually post BEFORE saving. A destination that is stored but
-        # forbidden is the worst outcome: the setting looks successful, every later count
-        # fails, and the failure only shows up in the log. That is exactly what happened
-        # with a 403 "Missing Access" on this server.
-        problem = await can_post_to(interaction.client, channel)
-        if problem:
-            await interaction.followup.send(
-                f"⚠️ Канал {channel.mention} выбран, но публиковать туда не получится: "
-                f"{problem}\n\n"
-                "Настройка **не сохранена**. Дайте боту доступ к этому каналу "
-                "(«Просматривать канал» и «Отправлять сообщения») и повторите команду.",
                 ephemeral=True,
             )
             return
@@ -627,34 +630,6 @@ async def set_report_target(
         config["report_channel_id"] = None if publish_to == 0 else publish_to
         config.pop("report_title", None)
         binding.config = config
-
-
-async def can_post_to(client: Any, channel: Any) -> str:
-    """Try to post a throwaway message. Returns the problem, or "" when it works.
-
-    Probed by doing, not by computing permissions. `permissions_for` needs the Members
-    intent and gets channel overwrites subtly wrong; a real send is the only answer that
-    cannot be wrong. The probe deletes itself, so the channel is left as it was.
-
-    This exists because a 403 "Missing Access" was only visible in the log: the setting
-    saved fine, then every published report failed silently while the count looked correct.
-    """
-    try:
-        probe = await channel.send(
-            "dsbot: проверка прав публикации (удалится само)",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-    except discord.Forbidden:
-        return "у бота нет прав «Просматривать канал» и «Отправлять сообщения» в этом канале"
-    except discord.HTTPException as exc:
-        return f"Discord отклонил пробное сообщение: {exc.text or exc}"
-
-    try:
-        await probe.delete()
-    except Exception:
-        # Leaving one probe message behind is harmless; the permission was proven.
-        log.warning("report_target_probe_not_deleted", channel_id=channel.id)
-    return ""
 
 
 async def pin_channel_ladder(db: Database, channel_id: int, key: str | None) -> str:

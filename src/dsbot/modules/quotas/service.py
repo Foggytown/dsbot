@@ -87,6 +87,9 @@ class CountingService:
     ) -> None:
         self._db = db
         self._reply = reply
+        # Why the last publish stopped short, so the caller can tell the operator instead
+        # of reporting "nothing was posted".
+        self.last_error: str = ""
         # Footer credit, from settings. Kept here rather than in the renderer so the
         # renderer stays pure and testable with no configuration at all.
         self._developer_user_id = developer_user_id
@@ -170,11 +173,19 @@ class CountingService:
         Replacement is by message, not by deletion: an existing page is edited in place
         when possible. That keeps the report where staff already look and stops a re-run
         from leaving a trail of near-identical messages.
+
+        **All pages or nothing.** A report split across three messages must not half
+        succeed: the caller treats a non-empty result as "published" and advances the
+        schedule, so returning the first page and stopping would mark the week as done
+        while pages two and three were never posted. On a failure after some pages exist,
+        the already-posted ones are returned so the caller can still edit them, but the
+        failure is recorded so the schedule does not move.
         """
         if self._reply is None:
             log.warning("count_not_published_no_sink", binding_id=request.binding_id)
             return []
 
+        self.last_error = ""
         pages = outcome.messages()
         existing = await self._existing_message_ids(request)
         posted: list[int] = []
@@ -186,11 +197,16 @@ class CountingService:
                 continue
             message_id = await self._reply.send(target_channel_id, page)
             if message_id is None:
+                self.last_error = getattr(self._reply, "last_error", "") or (
+                    f"не удалось отправить страницу {index + 1} из {len(pages)}"
+                )
                 log.error(
                     "count_publish_failed",
                     binding_id=request.binding_id,
                     channel_id=target_channel_id,
                     page=index,
+                    pages=len(pages),
+                    posted=len(posted),
                 )
                 return posted
             posted.append(message_id)
