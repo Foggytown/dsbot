@@ -360,6 +360,22 @@ is wrong", and the real mistake is hidden.
 The one check that always applies is "at least one photo", because it is a property of
 the form, not of the qualification.
 
+### The link is checked for presence, not for approval
+
+Field 4 must contain a Discord message link that points at a report giving the right to a
+qualification promotion. The bot checks only that **a Discord link is present**, plus that
+it is in the right numbered field.
+
+It deliberately does **not** fetch the linked message to confirm that report was approved.
+That was decided explicitly: the approval of the linked report is a human judgement made by
+senior instructors while approving this one. Enforcing it in code would mean an extra
+Discord request per report and a rule for what "approved" means in another channel, to
+reproduce a check somebody is already doing.
+
+So the warning text states the requirement ("ссылка на одобренный рапорт, дающий право на
+повышение квалификации") while the code only verifies presence. That gap is intentional.
+Do not "fix" it into a fetch without asking first.
+
 ## Engineering conventions
 
 - Python 3.13, `uv` for everything (`uv run ...`, never bare `python`).

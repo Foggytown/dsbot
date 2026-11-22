@@ -77,7 +77,30 @@ def test_a_link_in_both_places_is_not_flagged() -> None:
     assert "link_in_wrong_field" not in codes(result)
 
 
-def test_the_message_names_both_field_numbers() -> None:
+def test_any_discord_link_is_accepted_without_being_fetched() -> None:
+    """Presence is the check; the linked report's approval is not verified.
+
+    Decided explicitly: senior instructors judge whether the linked report was approved
+    while approving this one. So the parser must accept *any* well-formed Discord message
+    link - including one in a guild this bot has never seen - and parsing is pure: it takes
+    text and attachments and has no client to fetch anything with.
+    """
+    import inspect
+
+    from dsbot.modules.reports import parser
+
+    # Parsing must stay a pure function of the text: no client, no I/O.
+    source = inspect.getsource(parser)
+    assert "await " not in source, "the parser must not perform I/O"
+    assert "discord.Client" not in source
+
+    foreign = (
+        "https://discord.com/channels/999999999999999999/888888888888888888/777777777777777777"
+    )
+    result = parse(f"1. SOB | 0016\n2. INF\n3. фото\n4. {foreign}", attachments=2)
+
+    assert result.is_valid, "any well-formed Discord message link satisfies field 4"  # type: ignore[attr-defined]
+    assert "link_not_discord" not in codes(result)
     from dsbot.modules.reports.templates import issue_line
 
     result = parse(f"1. SOB | 0016\n2. INF\n3. {LINK}\n4. ", attachments=2)
