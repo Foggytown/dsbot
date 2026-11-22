@@ -383,6 +383,7 @@ async def put_validation_message(
     channel_id: int,
     message_id: int,
     issue_codes: list[str],
+    report_message_id: int | None = None,
     kind: str = "warning",
 ) -> None:
     existing = await get_validation_message(session, report_id, kind)
@@ -393,12 +394,15 @@ async def put_validation_message(
                 kind=kind,
                 channel_id=channel_id,
                 message_id=message_id,
+                report_message_id=report_message_id,
                 issue_codes=issue_codes,
             )
         )
         return
     existing.channel_id = channel_id
     existing.message_id = message_id
+    if report_message_id is not None:
+        existing.report_message_id = report_message_id
     existing.issue_codes = issue_codes
 
 

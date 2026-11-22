@@ -71,6 +71,7 @@ class Bot(discord.ext.commands.Bot):
             group_window=timedelta(seconds=settings.report_group_window_seconds),
             allow_bot_authors=settings.dev_accept_bot_messages,
             contact_user_id=settings.contact_user_id,
+            warn_max_age=timedelta(hours=settings.report_warn_max_age_hours),
         )
         # Ranks are resolved from the rapporteur's home guild, so the same object serves
         # both verdicts and roster scraping.
@@ -334,6 +335,21 @@ class Bot(discord.ext.commands.Bot):
     async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
         if not await self._is_bound(payload.channel_id):
             return
+        # Discord sends MESSAGE_UPDATE for anything that changes a message, and an embed
+        # unfurl (someone posts a link) or a pin sends one while the text stays identical.
+        # Re-parsing those is pure waste, and worse: the re-parse can post a warning about
+        # a report that has not changed at all. Cheap check first, REST fetch second.
+        new_content = payload.data.get("content")
+        if isinstance(new_content, str):
+            async with self.db.session() as session:
+                stored = await repos.get_message(session, payload.channel_id, payload.message_id)
+            if stored is not None and (stored.content or "") == new_content:
+                log.debug(
+                    "message_edit_without_text_change",
+                    message_id=payload.message_id,
+                    channel_id=payload.channel_id,
+                )
+                return
         # get_channel only sees cached channels; fetch is the reliable path and this
         # used to fail intermittently for exactly that reason.
         channel = self.get_channel(payload.channel_id)
@@ -429,6 +445,7 @@ class Bot(discord.ext.commands.Bot):
             log.info(
                 "report_processed",
                 report_id=result.report_id,
+                report_message_id=snapshot.message_id,
                 author=snapshot.author_name,
                 author_id=snapshot.author_id,
                 matched=result.matched,
@@ -452,6 +469,7 @@ class Bot(discord.ext.commands.Bot):
             log.info(
                 "report_rechecked",
                 report_id=result.report_id,
+                report_message_id=message_id,
                 author=snapshot.author_name,
                 author_id=snapshot.author_id,
                 triggered_by=snapshot.message_id,
@@ -464,9 +482,36 @@ class Bot(discord.ext.commands.Bot):
 
     async def _on_message_edited(self, event: MessageEdited) -> None:
         # An edit can complete a report, so re-parse the same group.
-        await self.reports.process_message(
+        result = await self.reports.process_message(
             event.message.channel_id, event.message.author_id, event.message.message_id
         )
+        # This path used to log nothing at all, so a warning triggered by an edit appeared
+        # in the channel with no trace of why. Say what happened, and how old the message
+        # was: an old message being re-evaluated is the difference between "the reporter
+        # fixed a typo" and "this should never have been warned about".
+        if result is not None:
+            log.info(
+                "report_reparsed_after_edit",
+                report_id=result.report_id,
+                report_message_id=event.message.message_id,
+                channel_id=event.message.channel_id,
+                author_id=event.message.author_id,
+                action=result.action,
+                valid=result.valid,
+                issues=result.issues,
+                message_age_hours=round(
+                    (
+                        datetime.now(UTC)
+                        - (
+                            event.message.created_at
+                            if event.message.created_at.tzinfo
+                            else event.message.created_at.replace(tzinfo=UTC)
+                        )
+                    ).total_seconds()
+                    / 3600,
+                    1,
+                ),
+            )
 
     # --- reactions ---------------------------------------------------------
 

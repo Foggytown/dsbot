@@ -432,6 +432,9 @@ class ValidationMessage(Base):
     kind: Mapped[str] = mapped_column(String(30), default="warning")
     channel_id: Mapped[int] = mapped_column(BigInteger)
     message_id: Mapped[int] = mapped_column(BigInteger)
+    # The report this warning is about. Without it the row records only the bot's own
+    # message, so "which report?" needs a join through reports.id and a manual lookup.
+    report_message_id: Mapped[int | None] = mapped_column(BigInteger)
     issue_codes: Mapped[list[Any]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = _ts()
 

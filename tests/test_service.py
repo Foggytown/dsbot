@@ -156,18 +156,66 @@ async def test_warning_is_cleared_when_photos_arrive_later(bound_db: Database) -
     assert result.action == "cleared"
 
 
-async def test_old_incomplete_report_is_warned(bound_db: Database) -> None:
+async def test_an_old_report_is_stored_but_not_warned(bound_db: Database) -> None:
+    """A message from months ago is not a mistake the channel should be nagged about.
+
+    Warnings are a nudge to fix something still actionable. A report re-evaluated long
+    after the fact - by a reaction, an edit, or a reconciliation pass - is stored for the
+    record, but the bot must stay silent. This is the guard against the bot complaining
+    about half-year-old messages.
+    """
     sink = RecordingReplySink()
-    service = ReportService(bound_db, sink)
+    service = ReportService(bound_db, sink, warn_max_age=timedelta(hours=24))
+    await store_message(
+        bound_db,
+        message_id=1,
+        content="1. SOB | 0016\n2. INF\n3.",
+        minutes=-60 * 24 * 180,
+    )
+
+    result = await service.process_message(CHANNEL, AUTHOR, 1)
+    assert result is not None
+    assert result.matched
+    assert not result.valid
+    assert result.action == "stored", "an old report must not trigger a warning"
+    assert sink.sent == []
+
+    # Still recorded, so the archive and the audit trail are complete.
+    async with bound_db.session() as session:
+        report = await repos.get_report_by_message(session, CHANNEL, 1)
+    assert report is not None
+    assert report.status == "invalid"
+
+
+async def test_a_recent_report_is_still_warned(bound_db: Database) -> None:
+    """The age limit must not silence real mistakes arriving now."""
+    sink = RecordingReplySink()
+    service = ReportService(bound_db, sink, warn_max_age=timedelta(hours=24))
     await store_message(bound_db, message_id=1, content="1. SOB | 0016\n2. INF\n3.", minutes=-30)
 
     result = await service.process_message(CHANNEL, AUTHOR, 1)
     assert result is not None
     assert result.action == "warned"
     assert len(sink.sent) == 1
-    channel_id, body = sink.sent[0]
-    assert channel_id == CHANNEL
-    assert f"<@{AUTHOR}>" in body
+
+
+async def test_a_warning_records_the_report_it_is_about(bound_db: Database) -> None:
+    """The log and the row must both name the report, not only the bot's own message."""
+    sink = RecordingReplySink()
+    service = ReportService(bound_db, sink, warn_max_age=timedelta(hours=24))
+    await store_message(bound_db, message_id=777, content="1. SOB | 0016\n2. INF\n3.")
+
+    result = await service.process_message(CHANNEL, AUTHOR, 777)
+    assert result is not None and result.action == "warned"
+
+    async with bound_db.session() as session:
+        stored = await repos.get_validation_message(session, result.report_id)
+    assert stored is not None
+    # `message_id` is the warning the bot posted; `report_message_id` is the report it
+    # complains about. Storing both is what makes the log traceable back to the source.
+    assert stored.report_message_id == 777
+    assert stored.message_id == sink.sent_ids[0]
+    assert stored.message_id != stored.report_message_id
 
 
 async def test_warning_quotes_the_report_message(bound_db: Database) -> None:

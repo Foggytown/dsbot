@@ -453,6 +453,9 @@ def replay(
                 db,
                 sink,
                 group_window=timedelta(seconds=settings.report_group_window_seconds),
+                # Replaying a week to check a parser fix must not nag the channel about
+                # last week's reports; the same age limit as the live bot applies.
+                warn_max_age=timedelta(hours=settings.report_warn_max_age_hours),
             )
             result = await replay_channel(
                 db,

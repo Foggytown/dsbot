@@ -42,6 +42,14 @@ log = structlog.get_logger(__name__)
 # How long a report may wait for follow-up attachments before being warned about.
 DEFAULT_GROUP_WINDOW = timedelta(minutes=2)
 
+# The default ceiling on warning about an old report.
+#
+# Deliberately a default, not an opt-in. Every caller - live bot, replay, backfill -
+# re-evaluates messages it did not receive now, and a forgotten argument would restore
+# the bug where the bot complained about messages from half a year ago. Live reports
+# arrive within seconds, so a day is far more generous than the real case.
+DEFAULT_WARN_MAX_AGE = timedelta(hours=24)
+
 
 @dataclass(slots=True)
 class ChannelContext:
@@ -77,6 +85,7 @@ class ReportService:
         group_window: timedelta | None = None,
         allow_bot_authors: bool = False,
         contact_user_id: int | None = None,
+        warn_max_age: timedelta | None = DEFAULT_WARN_MAX_AGE,
     ) -> None:
         self._db = db
         self._reply = reply
@@ -88,8 +97,10 @@ class ReportService:
         self._allow_bot_authors = allow_bot_authors
         # Who to ping when a reporter needs a human. Shown in every warning.
         self.contact_user_id = contact_user_id
-        # The message currently being evaluated, so a reply can quote it.
-        self._report_message_id: int = 0
+        # Never nag the channel about a report from long ago. A reaction, an edit or a
+        # reconciliation pass can re-evaluate an old message at any time, and none of
+        # them mean "this report is late". None disables the check.
+        self._warn_max_age = warn_max_age
 
     # --- context -----------------------------------------------------------
 
@@ -136,12 +147,16 @@ class ReportService:
         return await self._evaluate(context, group, phase="initial")
 
     async def _evaluate(
-        self, context: ChannelContext, group: list[GroupMessage], *, phase: str
+        self,
+        context: ChannelContext,
+        group: list[GroupMessage],
+        *,
+        phase: str,
     ) -> ProcessResult | None:
         """One parsing pass. `phase` decides whether the grace window still applies."""
         if not group:
             return None
-        self._report_message_id = group[0].message_id
+        head = group[0]
         candidate = ReportCandidate(messages=group)
         parsed = parse_report(context.schemas, candidate)
 
@@ -175,11 +190,26 @@ class ReportService:
         # deferred report that dies with the process is worse. Warn immediately; if the
         # photos arrive later the warning is cleared automatically.
         report_id = await self._persist(context, candidate, parsed, status="invalid")
+        if not self._may_warn(
+            head,
+            channel_id=context.channel_id,
+            report_id=report_id,
+            issues=issue_codes,
+        ):
+            return ProcessResult(
+                report_id=report_id,
+                matched=True,
+                valid=False,
+                issues=issue_codes,
+                field_count=len(parsed.fields),
+                action="stored",
+            )
         await self._warn(
             context,
             report_id,
             parsed,
-            author_id=group[0].author_id,
+            author_id=head.author_id,
+            report_message_id=head.message_id,
         )
         return ProcessResult(
             report_id=report_id,
@@ -189,6 +219,36 @@ class ReportService:
             field_count=len(parsed.fields),
             action="warned",
         )
+
+    def _may_warn(
+        self, head: GroupMessage, *, channel_id: int, report_id: int, issues: list[str]
+    ) -> bool:
+        """Is this report recent enough to be worth complaining about?
+
+        The reply is a nudge to fix something that is still actionable. Re-evaluating a
+        message from months ago - because somebody added a reaction, edited it, or a
+        reconciliation sweep touched it - does not make it late, and warning then is
+        indistinguishable from the bot malfunctioning. It is stored either way; only the
+        reply to the channel is suppressed.
+        """
+        if self._warn_max_age is None or self._warn_max_age <= timedelta(0):
+            return True
+        created = head.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        age = datetime.now(UTC) - created
+        if age <= self._warn_max_age:
+            return True
+        log.info(
+            "warning_suppressed_too_old",
+            channel_id=channel_id,
+            report_id=report_id,
+            report_message_id=head.message_id,
+            age_hours=round(age.total_seconds() / 3600, 1),
+            max_age_hours=round(self._warn_max_age.total_seconds() / 3600, 1),
+            issues=issues,
+        )
+        return False
 
     async def retry_group(self, channel_id: int, message_id: int) -> ProcessResult | None:
         """Re-examine one report on demand.
@@ -343,6 +403,8 @@ class ReportService:
         report_id: int,
         parsed: ParseOutput,
         author_id: int,
+        *,
+        report_message_id: int,
     ) -> None:
         if self._reply is None:
             log.warning("no_reply_sink_configured", report_id=report_id)
@@ -356,15 +418,16 @@ class ReportService:
             context,
             existing.message_id if existing else None,
             body,
-            report_message_id=self._report_message_id,
+            report_message_id=report_message_id,
         )
         if post_message_id is None:
             # Never silently swallow this: a report that should have been warned about
             # and was not is indistinguishable from the bot being broken.
             log.error(
                 "warning_not_posted",
-                report_id=report_id,
                 channel_id=context.channel_id,
+                report_id=report_id,
+                report_message_id=report_message_id,
                 issues=[i.code for i in parsed.issues],
             )
             return
@@ -375,12 +438,18 @@ class ReportService:
                 report_id=report_id,
                 channel_id=context.channel_id,
                 message_id=post_message_id,
+                report_message_id=report_message_id,
                 issue_codes=[i.code for i in parsed.issues],
             )
+        # Log both ids. `message_id` is the warning the bot posted; on its own it says
+        # nothing about *which* report was complained about, which made a real incident
+        # impossible to diagnose from the log: every line was a bot message id, and the
+        # only way back to the report was a database query.
         log.info(
             "warning_posted",
-            report_id=report_id,
             channel_id=context.channel_id,
+            report_id=report_id,
+            report_message_id=report_message_id,
             message_id=post_message_id,
         )
 

@@ -83,6 +83,20 @@ class Settings(BaseSettings):
     # admin knob, so it lives in .env rather than in the database.
     report_group_window_seconds: float = Field(default=120.0)
 
+    # How old a report may be before it is stored but never warned about.
+    #
+    # Without this the bot nags the channel about anything it happens to parse. That is
+    # wrong in two ways: a message from months ago is not a mistake to fix now, and the
+    # only reasons an old message gets re-evaluated are a reaction, an edit, or a
+    # reconciliation pass - none of which mean "this report is late". Warnings are for
+    # reports arriving now.
+    #
+    # It also bounds how much damage a bug in the scan or replay path can do: the worst
+    # case becomes "some warnings were edited", never "the channel was spammed about
+    # last winter". Set to 0 to warn about anything at any age, which is what a backfill
+    # of a channel nobody has read yet may want.
+    report_warn_max_age_hours: float = Field(default=24.0, ge=0)
+
     # Human to ping in warnings so reporters can ask about a disputed report.
     contact_user_id: int | None = Field(default=None)
 

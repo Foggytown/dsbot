@@ -60,6 +60,10 @@ ADDITIONS: tuple[_Addition, ...] = (
     _Addition("rank_tiers", "required_per_week", "INTEGER"),
     # Frozen onto the roster so changing a quota later cannot rewrite last week.
     _Addition("roster_members", "required_per_week", "INTEGER NOT NULL DEFAULT 0"),
+    # A warning records which report it is about. Previously only the bot's own message
+    # was stored, so a real incident log could not be traced back to the report without a
+    # manual database query.
+    _Addition("validation_messages", "report_message_id", "BIGINT"),
 )
 
 

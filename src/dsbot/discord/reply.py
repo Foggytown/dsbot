@@ -159,6 +159,9 @@ class RecordingReplySink:
         self.references: list[int | None] = []
         self.edited: list[tuple[int, int, str]] = []
         self.cleared: list[tuple[int, int]] = []
+        # The ids handed back to the caller. The live sink returns a real message id and
+        # callers store it, so a fake that only records the body hides bugs about ids.
+        self.sent_ids: list[int] = []
         self._next_id = 1000
 
     async def send(
@@ -172,6 +175,7 @@ class RecordingReplySink:
         self.sent.append((channel_id, content))
         self.references.append(reference_message_id)
         self._next_id += 1
+        self.sent_ids.append(self._next_id)
         return self._next_id
 
     async def edit(

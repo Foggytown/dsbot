@@ -471,6 +471,25 @@ Each of these shipped and had to be found by a live run or a user report.
     username and a repository URL, which would have shipped in every deployment. The
     developer credit is a Discord ping only, read from settings; nothing name-like is
     hardcoded, and never add a name or external link to user-visible output.
+25. **Warnings had no age limit, and any edit re-parsed anything.** After a deploy the bot
+    posted warnings about messages from half a year ago. Three things combined:
+    `on_raw_message_edit` reacts to every `MESSAGE_UPDATE` - including a link unfurl or a
+    pin, which change no text - and re-ran the full pipeline; the warning path had no
+    notion of report age, so a report from last winter was treated exactly like one posted
+    seconds ago; and the edit path logged nothing, so five `warning_posted` lines appeared
+    with no `report_processed` counterpart and the cause was invisible. Fixed with an age
+    ceiling (a default, not an opt-in, and `0` disables it for a deliberate backfill), a
+    no-op check before fetching an edited message, and a log line on the edit path.
+26. **A log line that names only the bot's own message.** `warning_posted` carried
+    `message_id`, which is the warning the bot just posted - useless for finding the report
+    it complained about. Every id in that incident was a bot message, so the report could
+    only be recovered with a database query. Warnings now log `report_message_id` as well
+    and store it on the row. Any log about our own output must also name the input.
+27. **Warnings were capped, but the trigger was never understood.** The five warnings were
+    proven to come from edits, not new messages, by comparing log shapes: a new report
+    emits `report_processed`, an edit emitted nothing. The message ids in the log decoded
+    to the bot's own warning timestamps, not to the reports - snowflakes carry creation
+    time, so a suspicious id can be dated without any API call.
 
 ## Verification
 
@@ -540,6 +559,7 @@ scripts/profile-*.py          where the time goes, measured
 scripts/e2e-conflict.py       conflict stays silent and credits nobody
 scripts/e2e-ladder-log.py     the review-role diagnostic counts correctly
 scripts/e2e-roster-discord.py /dsbot roster-refresh populates the roster
+scripts/e2e-warning-age.py    an old report is stored but never warned about
 scripts/e2e-panel-start.py    panel startup: bindings appear, bad DB URL ignored
 scripts/show-commands.py      print every slash command and its parameters
 ```
