@@ -100,7 +100,7 @@ async def sync_channels(
             existing.enabled = entry.enabled
             changed = True
 
-        await import_forms(
+        imported = await import_forms(
             session,
             channel_id=entry.channel,
             payload=payload,
@@ -108,6 +108,17 @@ async def sync_channels(
             rank_source_guild_id=entry.rank_guild,
             locale=entry.locale,
         )
+        # The log claimed `forms=[]` while the import was rewriting them on every start,
+        # so a form problem was invisible. Report what actually happened, including a form
+        # kept because an admin edited it.
+        for key in imported.created:
+            result.forms.append(f"{key}:created")
+        for key in imported.updated:
+            result.forms.append(f"{key}:updated")
+        for key in imported.preserved:
+            result.forms.append(f"{key}:kept")
+        if imported.updated or imported.created:
+            changed = True
         if await _store_ladder_choice(session, entry, review_id):
             changed = True
 

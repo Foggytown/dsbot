@@ -150,6 +150,20 @@ class FormSchema(Base):
     locale: Mapped[str] = mapped_column(String(5), default="ru")
     definition: Mapped[dict[str, Any]] = mapped_column(JSON)
     template_text: Mapped[str | None] = mapped_column(Text)
+    # Fingerprint of the YAML this form was last imported from.
+    #
+    # It is what makes an admin's in-Discord edit survivable. On every start the channels
+    # file is re-imported; without a record of "what the file said last time", a stored
+    # form that differs from the file is indistinguishable from a file that was just
+    # edited, and the import blindly overwrote the admin's `add-value`. Comparing
+    # fingerprints tells the three cases apart:
+    #
+    #   file == stored fingerprint, definition differs -> the admin edited it, keep it
+    #   file != stored fingerprint                     -> git changed it, apply the file
+    #
+    # Hashed over the *compiled* definition, not the file bytes: reformatting YAML or
+    # editing a comment must not count as a change.
+    import_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = _ts()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

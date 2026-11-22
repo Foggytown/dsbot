@@ -119,12 +119,19 @@ class RosterService:
         ladder: Any,
         *,
         requires: frozenset[str] = frozenset(),
+        only_ladder_id: int | None = None,
     ) -> ScrapeResult:
         """Fetch role membership and reduce it to people on the ladder.
 
         `requires` selects the population: empty means "everyone who owes a report",
         `{"review"}` means "everyone who may approve". The two are deliberately
         separate, so a quota never silently includes the people who review.
+
+        `only_ladder_id` restricts the scrape to one ladder. Without it, a guild that has
+        both a review ladder and a quota ladder resolves people against every ladder at
+        once - so somebody holding only a review role is matched, gets a review tier
+        label, and appears in the weekly table with a quota of 0. The roster is the list
+        of people who owe reports, so it must come from the quota ladder alone.
         """
         members = await self._source.members_with_roles(guild_id)
         if members is None:
@@ -139,7 +146,11 @@ class RosterService:
         for member in members:
             role_ids = frozenset(_role_ids(member))
             resolved = ladder.resolve(
-                role_ids, _user_id(member), source="roster", requires=requires
+                role_ids,
+                _user_id(member),
+                source="roster",
+                requires=requires,
+                only_ladder_id=only_ladder_id,
             )
             if resolved is None:
                 continue
@@ -174,7 +185,7 @@ class RosterService:
         requires: frozenset[str] = frozenset(),
     ) -> ScrapeResult:
         """Scrape and store. Returns the result, including the reason on failure."""
-        result = await self.scrape(guild_id, ladder, requires=requires)
+        result = await self.scrape(guild_id, ladder, requires=requires, only_ladder_id=ladder_id)
         if not result.ok:
             return result
         async with self._db.write_session() as session:

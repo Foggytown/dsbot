@@ -5,54 +5,56 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import delete, select
+import structlog
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dsbot.modules.ranks.ladder import LadderSpec
 from dsbot.modules.ranks.resolver import GuildLadders, LadderIndex
 from dsbot.storage.models import RankLadder, RankTier, RankTierRole, TierCapability
 
+log = structlog.get_logger(__name__)
+
 
 async def replace_ladder(session: AsyncSession, spec: LadderSpec) -> RankLadder:
-    """Replace one ladder with `spec`, or keep the existing row if it is identical.
+    """Bring one ladder in line with `spec`, **updating it in place**.
 
-    Replacement, not merge: a ladder is a single authority ordering, and a partial update
-    would leave stale tiers that still match roles. Only the ladder with the same key in
-    the same guild is touched; other ladders in that guild are untouched, because a guild
-    may need both a review ladder and quota ladders.
+    Content is matched by tier `key`, never by rebuilding the rows. That is the whole
+    point: `roster_members`, `quota_policies`, `weekly_results` and `channel_bindings` all
+    reference `rank_ladders.id` and `rank_tiers.id`, and three of those cascade on delete.
+    Rebuilding the ladder therefore destroyed things an admin had configured by hand:
 
-    Identical content is *kept*, not rebuilt. That matters on a panel: sync runs on every
-    start, and deleting the row would cascade-delete every `roster_members` row pointing
-    at it, so the roster would be empty after each deploy and the weekly report would
-    claim nobody is tracked.
+      * every `quota_policies` override for the ladder vanished (`ON DELETE CASCADE`), so
+        one edited number in `quota.yaml` silently discarded every `/dsbot quota-set`;
+      * the whole roster vanished, so the weekly report claimed nobody was tracked.
+
+    Only the ladder with the same key in the same guild is touched; other ladders in that
+    guild are untouched, because a guild may need both a review ladder and quota ladders.
+
+    Identical content is not even rewritten, so a redeploy costs one comparison.
     """
     existing = await session.scalar(
         select(RankLadder).where(RankLadder.guild_id == spec.guild_id, RankLadder.key == spec.key)
     )
-    if existing is not None and await _ladder_matches(session, existing, spec):
-        existing.name = spec.name
-        existing.purpose = spec.purpose
+
+    if existing is None:
+        return await _create_ladder(session, spec)
+
+    existing.name = spec.name
+    existing.purpose = spec.purpose
+    await session.flush()
+
+    if await _ladder_matches(session, existing, spec):
         return existing
 
-    if existing is not None:
-        # Clear references first: a channel may point at this ladder, and deleting a row
-        # that is still referenced fails the foreign key.
-        from sqlalchemy import update
+    await _sync_tiers(session, existing, spec)
+    return existing
 
-        from dsbot.storage.models import ChannelBinding
 
-        await session.execute(
-            update(ChannelBinding)
-            .where(ChannelBinding.rank_ladder_id == existing.id)
-            .values(rank_ladder_id=None)
-        )
-        await session.execute(delete(RankLadder).where(RankLadder.id == existing.id))
-        await session.flush()
-
+async def _create_ladder(session: AsyncSession, spec: LadderSpec) -> RankLadder:
     ladder = RankLadder(guild_id=spec.guild_id, key=spec.key, name=spec.name, purpose=spec.purpose)
     session.add(ladder)
     await session.flush()
-
     for tier_spec in spec.tiers:
         tier = RankTier(
             ladder_id=ladder.id,
@@ -67,9 +69,112 @@ async def replace_ladder(session: AsyncSession, spec: LadderSpec) -> RankLadder:
             session.add(RankTierRole(tier_id=tier.id, role_id=role_id))
         for capability in tier_spec.capabilities:
             session.add(TierCapability(tier_id=tier.id, capability=capability))
-
     await session.flush()
     return ladder
+
+
+async def _sync_tiers(session: AsyncSession, ladder: RankLadder, spec: LadderSpec) -> None:
+    """Make the ladder's tiers match `spec`, keeping each surviving tier's id.
+
+    Three things this has to get right:
+
+    1. **A removed tier may still be referenced.** `quota_policies.tier_id` has no
+       `ON DELETE` rule, so deleting a tier that a channel overrides would raise a
+       foreign-key error. The reference is cleared first: the override was about a tier
+       that no longer exists, so keeping it would be worse than dropping it.
+    2. **`UNIQUE(ladder_id, ordinal)` forbids swapping two tiers in one step.** Moving
+       A 10->20 while B 20->10 collides unless one of them moves out of the way first, so
+       every ticket is parked on a unique negative value before the real ordinals are
+       applied.
+    3. **Roles and capabilities are replaced wholesale** when they differ. They carry no
+       references, so rebuilding those rows is safe.
+    """
+    from dsbot.storage.models import QuotaPolicy
+
+    stored = {
+        tier.key: tier
+        for tier in (
+            await session.scalars(select(RankTier).where(RankTier.ladder_id == ladder.id))
+        ).all()
+    }
+    wanted = {tier_spec.key: tier_spec for tier_spec in spec.tiers}
+
+    # 1. Remove tiers that are gone from the file, releasing any override pointing at them.
+    for key, tier in stored.items():
+        if key in wanted:
+            continue
+        await session.execute(
+            update(QuotaPolicy).where(QuotaPolicy.tier_id == tier.id).values(tier_id=None)
+        )
+        await session.delete(tier)
+    await session.flush()
+
+    # 2. Park every surviving ordinal on a unique negative value, so a swap cannot collide.
+    survivors = {key: tier for key, tier in stored.items() if key in wanted}
+    if survivors:
+        for tier in survivors.values():
+            tier.ordinal = -tier.id
+        await session.flush()
+
+    # 3. Apply the desired content.
+    for key, tier_spec in wanted.items():
+        label = tier_spec.label or tier_spec.key
+        tier = survivors.get(key)
+        if tier is None:
+            tier = RankTier(
+                ladder_id=ladder.id,
+                key=key,
+                label=label,
+                ordinal=tier_spec.ordinal,
+                required_per_week=tier_spec.required_per_week,
+            )
+            session.add(tier)
+            await session.flush()
+            survivors[key] = tier
+        else:
+            tier.label = label
+            tier.ordinal = tier_spec.ordinal
+            tier.required_per_week = tier_spec.required_per_week
+
+        await _sync_tier_roles(session, tier, tier_spec)
+    await session.flush()
+
+    log.info(
+        "ladder_synced_in_place",
+        ladder_id=ladder.id,
+        key=ladder.key,
+        tiers=sorted(wanted),
+        removed=sorted(set(stored) - set(wanted)),
+    )
+
+
+async def _sync_tier_roles(session: AsyncSession, tier: RankTier, spec: Any) -> None:
+    """Rewrite one tier's roles and capabilities, but only when they differ."""
+    current_roles = set(
+        (
+            await session.scalars(
+                select(RankTierRole.role_id).where(RankTierRole.tier_id == tier.id)
+            )
+        ).all()
+    )
+    wanted_roles = set(spec.roles)
+    if current_roles != wanted_roles:
+        await session.execute(delete(RankTierRole).where(RankTierRole.tier_id == tier.id))
+        for role_id in wanted_roles:
+            session.add(RankTierRole(tier_id=tier.id, role_id=role_id))
+
+    current_caps = set(
+        (
+            await session.scalars(
+                select(TierCapability.capability).where(TierCapability.tier_id == tier.id)
+            )
+        ).all()
+    )
+    wanted_caps = set(spec.capabilities)
+    if current_caps != wanted_caps:
+        await session.execute(delete(TierCapability).where(TierCapability.tier_id == tier.id))
+        for capability in wanted_caps:
+            session.add(TierCapability(tier_id=tier.id, capability=capability))
 
 
 async def _ladder_matches(session: AsyncSession, ladder: RankLadder, spec: LadderSpec) -> bool:

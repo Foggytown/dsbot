@@ -64,6 +64,9 @@ ADDITIONS: tuple[_Addition, ...] = (
     # was stored, so a real incident log could not be traced back to the report without a
     # manual database query.
     _Addition("validation_messages", "report_message_id", "BIGINT"),
+    # Fingerprint of the imported form, so an admin's edit made in Discord is not
+    # overwritten by the next start. See FormSchema.import_hash.
+    _Addition("form_schemas", "import_hash", "VARCHAR(64)"),
 )
 
 

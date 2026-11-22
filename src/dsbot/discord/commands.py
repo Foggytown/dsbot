@@ -350,9 +350,17 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
             guild_id = binding.rank_source_guild_id or binding.guild_id
             ladders = await ranks_repo.load_all_ladders(session)
         group = ladders.get(guild_id)
-        if group is None or group.quota_ladder_id is None:
+        if group is None:
             return guild_id, 0, None
-        return guild_id, group.quota_ladder_id, group
+        # Ask the same question counting asks. A guild can hold more than one quota ladder,
+        # and the channel names the one it wants in `channels.yaml`; taking the guild's
+        # single `quota_ladder_id` would scrape the wrong roles in that case.
+        from dsbot.modules.quotas.service import _quota_ladder_id
+
+        ladder_id = _quota_ladder_id(group, dict(binding.config or {}))
+        if ladder_id is None:
+            return guild_id, 0, None
+        return guild_id, ladder_id, group
 
     @app_commands.command(
         name="quota-set",

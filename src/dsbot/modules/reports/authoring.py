@@ -13,16 +13,20 @@ YAML file, not code.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dsbot.modules.reports.schema import FormSchemaDef
 from dsbot.storage import admin
 from dsbot.storage.models import BindingSchema, ChannelBinding, FormSchema
+
+log = structlog.get_logger(__name__)
 
 
 # A minimal starting point for a new channel form: two fields, no assumptions.
@@ -74,6 +78,43 @@ class ImportResult:
     imported: list[str]
     created: list[str]
     updated: list[str]
+    # Forms kept as they are because an admin edited them from Discord and the file has
+    # not changed since. Reported so a start can say what it did not touch.
+    preserved: list[str] = field(default_factory=list)
+
+
+def _fingerprint(definition: dict[str, Any]) -> str:
+    """A stable hash of a compiled form definition.
+
+    Sorted keys and no whitespace, so the fingerprint depends only on meaning: reordering
+    keys or reformatting the YAML file does not look like a change. Hashing the file bytes
+    instead would make every comment edit rewrite the stored form.
+    """
+    canonical = json.dumps(definition, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _should_preserve(row: FormSchema, incoming: str) -> bool:
+    """Whether the stored form is an admin edit that the incoming file must not overwrite.
+
+    Three cases, and the reason a fingerprint is needed to tell them apart:
+
+      * the file is unchanged since the last import, and the stored form still matches its
+        own fingerprint -> nothing happened; rewriting is harmless;
+      * the file is unchanged, but the stored form differs -> an admin edited it from
+        Discord. **Preserve.**
+      * the file changed -> git wins, apply it.
+
+    A row imported before this column existed has no fingerprint, so it is treated as
+    "file changed" and applied once. That is safe: the file is still the source of truth
+    for anything nobody edited.
+    """
+    if row.import_hash is None:
+        return False
+    if row.import_hash != incoming:
+        # The file changed since the last import.
+        return False
+    return _fingerprint(row.definition) != incoming
 
 
 async def import_forms(
@@ -131,25 +172,38 @@ async def import_forms(
 
     created: list[str] = []
     updated: list[str] = []
+    preserved: list[str] = []
 
     for priority, definition in enumerate(definitions, start=1):
+        compiled = definition.to_definition()
+        incoming = _fingerprint(compiled)
         row = await session.scalar(select(FormSchema).where(FormSchema.key == definition.key))
         if row is None:
             row = FormSchema(
                 key=definition.key,
                 title=definition.title,
                 locale=definition.locale,
-                definition=definition.to_definition(),
+                definition=compiled,
+                import_hash=incoming,
             )
             session.add(row)
             await session.flush()
             created.append(definition.key)
+        elif _should_preserve(row, incoming):
+            # The file has not changed since the last import, but the stored form has, so
+            # the difference is an admin's edit made from Discord. Keep it: that is the
+            # whole reason the /dsbot set-values|add-value commands exist.
+            preserved.append(definition.key)
         else:
+            # Either the file changed since the last import (git wins), or the two agree
+            # and rewriting is harmless. Either way the file is authoritative now.
             row.title = definition.title
             row.locale = definition.locale
-            row.definition = definition.to_definition()
-            row.version += 1
-            updated.append(definition.key)
+            if _fingerprint(row.definition) != incoming:
+                row.definition = compiled
+                row.version += 1
+                updated.append(definition.key)
+            row.import_hash = incoming
 
         link = await session.scalar(
             select(BindingSchema).where(
@@ -162,7 +216,12 @@ async def import_forms(
         else:
             link.priority = priority
 
-    return ImportResult(imported=[d.key for d in definitions], created=created, updated=updated)
+    return ImportResult(
+        imported=[d.key for d in definitions],
+        created=created,
+        updated=updated,
+        preserved=preserved,
+    )
 
 
 async def edit_field_values(
