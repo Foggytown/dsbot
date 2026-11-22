@@ -154,7 +154,7 @@ async def test_the_warning_names_the_report_it_is_about(bound_db: Database) -> N
 
 # --- phantom MESSAGE_UPDATE: the incident ---------------------------------
 #
-# Payloads captured from the live server. Ten of them carried `edited_at: null` while
+# Payloads captured from the live server. Ten of them had no `edited_timestamp` while
 # still carrying the current content, and each one re-parsed a 2025 report and posted a
 # warning about it. A content comparison alone misses them, because the content was
 # already what the database held.
@@ -171,31 +171,57 @@ class _Cached:
         self.content = content
 
 
-def test_a_phantom_update_without_edited_at_is_not_an_edit() -> None:
+def test_a_phantom_update_without_edited_timestamp_is_not_an_edit() -> None:
     from dsbot.bot import _edit_changed_message
 
-    payload = _RawUpdate({"content": "1. SOB | RC-77\n2. T\n3.", "edited_at": None})
+    payload = _RawUpdate({"content": "1. SOB | RC-77\n2. T\n3.", "edited_timestamp": None})
     assert _edit_changed_message(payload) is False  # type: ignore[arg-type]
 
 
-def test_a_real_edit_with_edited_at_is_processed() -> None:
+def test_a_real_edit_with_edited_timestamp_is_processed() -> None:
     from dsbot.bot import _edit_changed_message
 
     payload = _RawUpdate(
         {
             "content": "1. SOB | 01/0016\n2. INF\n3.",
-            "edited_at": "2026-11-21T21:47:06.515000+00:00",
+            "edited_timestamp": "2026-11-21T21:47:06.515000+00:00",
         }
     )
     assert _edit_changed_message(payload) is True  # type: ignore[arg-type]
 
 
+def test_the_guard_reads_the_field_discord_actually_sends() -> None:
+    """A guard keyed on the wrong field name silently drops every real edit.
+
+    The wire payload uses `edited_timestamp`; `edited_at` is what *our* MessageSnapshot
+    dataclass calls it. Checking `edited_at` on the raw gateway dict always returned None,
+    so every genuine edit was treated as a phantom update: no re-parse, no warning update.
+    Every test still passed, because the tests were written from the same wrong assumption.
+
+    This asserts against the real shape Discord documents, so the two cannot drift again.
+    """
+    from dsbot.bot import _edit_changed_message
+
+    # Exactly the keys Discord sends for a user editing a message.
+    wire = {
+        "id": "1573991757002055723",
+        "channel_id": "1274460260941434901",
+        "content": "1. SOB | 0016\n2. INF\n3. фото\n4. https://discord.com/channels/1/2/3",
+        "edited_timestamp": "2026-11-22T13:00:00.000000+00:00",
+        "timestamp": "2026-11-22T12:00:00.000000+00:00",
+    }
+    assert _edit_changed_message(_RawUpdate(wire)) is True  # type: ignore[arg-type]
+    # And a payload with no edited_timestamp is a server-side update, not an edit.
+    phantom = {k: v for k, v in wire.items() if k != "edited_timestamp"}
+    assert _edit_changed_message(_RawUpdate(phantom)) is False  # type: ignore[arg-type]
+
+
 def test_an_edit_with_identical_content_is_skipped() -> None:
-    """Discord can send edited_at for a no-op save; re-parsing it would be wasted work."""
+    """Discord can send edited_timestamp for a no-op save; re-parsing wastes work."""
     from dsbot.bot import _edit_changed_message
 
     payload = _RawUpdate(
-        {"content": "same text", "edited_at": "2026-11-21T21:47:06.515000+00:00"},
+        {"content": "same text", "edited_timestamp": "2026-11-21T21:47:06.515000+00:00"},
         cached=_Cached("same text"),
     )
     assert _edit_changed_message(payload) is False  # type: ignore[arg-type]

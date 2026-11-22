@@ -10,6 +10,7 @@ import pathlib
 import tempfile
 from datetime import UTC, datetime
 
+from dsbot.bot import _edit_changed_message
 from dsbot.config import Settings
 from dsbot.core.bus import EventBus
 from dsbot.core.events import AttachmentRef, MessageCreated, MessageEdited, MessageSnapshot
@@ -99,18 +100,11 @@ async def main() -> None:
         for index, (label, before, after, attachments) in enumerate(
             (
                 ("CASE A: link missing, then added to item 4", BEFORE, AFTER, 2),
-                ("CASE B: link in item 3, then moved to item 4", LINK_IN_3, LINK_MOVED, 0),
                 (
-                    "CASE C: YOUR CASE - complete report, link in item 3, photos attached",
+                    "CASE C: YOUR CASE - link in item 3, then moved to item 4",
                     LINK_IN_3,
                     LINK_MOVED,
                     2,
-                ),
-                (
-                    "CASE D: the real report (bad NRP) - link moved, still invalid",
-                    REAL_IN_3,
-                    REAL_MOVED,
-                    1,
                 ),
             ),
             start=1,
@@ -129,6 +123,34 @@ async def main() -> None:
             else:
                 print("   (no warning posted)")
             print()
+
+            print()
+            print("   --- the author edits it: does the gateway guard let the edit through? ---")
+            wire = {
+                "id": str(message_id),
+                "channel_id": str(CHANNEL),
+                "content": after,
+                "timestamp": "2026-11-22T12:00:00.000000+00:00",
+                "edited_timestamp": "2026-11-22T13:00:00.000000+00:00",
+            }
+
+            class _Cached:
+                def __init__(self, content: str) -> None:
+                    self.content = content
+
+            class _Payload:
+                def __init__(self, data: dict, cached: object) -> None:
+                    self.data = data
+                    self.cached_message = cached
+
+            accepted = _edit_changed_message(_Payload(wire, _Cached(before)))
+            print(f"   _edit_changed_message -> {accepted}")
+            if not accepted:
+                print("   PROBLEM: the gateway drops a genuine edit, so nothing re-parses")
+                sink.sent.clear()
+                sink.edited.clear()
+                sink.cleared.clear()
+                continue
 
             await ingestor.handle(
                 MessageEdited(

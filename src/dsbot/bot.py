@@ -773,13 +773,13 @@ def _edit_changed_message(payload: discord.RawMessageUpdateEvent) -> bool:
     server-side changes too. Those must not trigger a re-parse: the report has not
     changed, so any warning produced would be about text nobody edited.
 
-    `edited_at` is the decisive signal. Discord sets it only when the author edits the
-    message, and the phantom events observed on a live server all had it absent while
-    still carrying the *current* content - which is why a content comparison alone is
-    not enough to recognise them (the content was already up to date).
+    The decisive field is **`edited_timestamp`** - that is the name Discord puts in the
+    gateway payload, and the name discord.py parses when it builds a Message. Reading
+    `edited_at` (our own dataclass field, not the wire format) always returned None, so
+    every genuine edit was discarded as a phantom update and no warning ever updated.
     """
     data = payload.data or {}
-    if data.get("edited_at") is None:
+    if data.get("edited_timestamp") is None:
         return False
     new_content = data.get("content")
     cached = payload.cached_message

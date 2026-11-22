@@ -1,11 +1,13 @@
-"""Replays the real MESSAGE_UPDATE payloads that caused the incident.
+"""The edit guard must read the field Discord actually sends.
 
-These are the actual `raw_events` rows from the server database, so this is not a
-synthetic stand-in: it is the exact input that made the bot warn about reports from 2025.
+`on_raw_message_edit` receives Discord's raw gateway payload, where the marker of a real
+edit is `edited_timestamp`. Our own `MessageSnapshot` dataclass calls the same idea
+`edited_at`, and an earlier version of the guard checked *that* name against the raw dict.
+It never matched, so every genuine edit was treated as a phantom server-side update: the
+handler returned before re-parsing, and a report warning never updated after the author
+fixed their message.
 
     uv run python scripts/e2e-phantom-edit.py [path/to/dsbot.db]
-
-With no path it uses the captured payloads below, so the check runs anywhere.
 """
 
 from __future__ import annotations
@@ -17,57 +19,13 @@ import sys
 
 from dsbot.bot import _edit_changed_message
 
-# Captured from dsbot.db on the live server: the seven phantom edits that produced
-# warnings about 2025 reports, plus one genuine edit for contrast.
-CAPTURED = [
-    # (message_id, payload, should_process)
-    (
-        1405162864922071180,
-        {"content": "1. SOB | RC-77\n2. INF\n3. https://discord.com/...", "edited_at": None},
-        False,
-    ),
-    (
-        1348242991407562822,
-        {"content": "1. SOB | RC-77, 666th | 4285\n2.T\n3.\n4.", "edited_at": None},
-        False,
-    ),
-    (
-        1371206842331435191,
-        {"content": "1. SOB | RC-77\n2. T\n3. -\n4.", "edited_at": None},
-        False,
-    ),
-    (
-        1404900338577703003,
-        {"content": "1. SOB | RC-77\n2. T\n3.", "edited_at": None},
-        False,
-    ),
-    (
-        1398789226195320832,
-        {"content": "1. SOB | RC-77 \n2. T (MED снял)\n3.", "edited_at": None},
-        False,
-    ),
-    (
-        1348984229001953282,
-        {"content": "1. SOB | RC-77\n2. INF\n3.\n4. https://discord.com/...", "edited_at": None},
-        False,
-    ),
-    (
-        1375830066076061776,
-        {"content": "1. SOB | RC-71\n2. T\n3. \n4. -", "edited_at": None},
-        False,
-    ),
-    (
-        1573991238418571325,
-        {
-            "content": "https://discord.com/channels/.../1573991761359937561",
-            "edited_at": "2026-11-22T09:21:37.136000+00:00",
-        },
-        True,
-    ),
-]
+
+class _Cached:
+    def __init__(self, content: str) -> None:
+        self.content = content
 
 
-class Payload:
+class _Payload:
     """Just enough of RawMessageUpdateEvent for the guard."""
 
     def __init__(self, data: dict, cached: object = None) -> None:
@@ -75,24 +33,65 @@ class Payload:
         self.cached_message = cached
 
 
-def check_captured() -> int:
-    print("CAPTURED PAYLOADS FROM THE INCIDENT")
-    print("=" * 70)
+# Real gateway payload shapes, as Discord documents MESSAGE_UPDATE.
+REAL_EDIT = {
+    "id": "1573991757002055723",
+    "channel_id": "1274460260941434901",
+    "content": "1. SOB | 0016\n2. INF\n3. фото\n4. https://discord.com/channels/1/2/3",
+    "timestamp": "2026-11-22T12:00:00.000000+00:00",
+    "edited_timestamp": "2026-11-22T13:00:00.000000+00:00",
+}
+
+PHANTOM = {
+    "id": "1405162864922071180",
+    "channel_id": "1274460260941434901",
+    "content": "1. SOB | RC-77\n2. INF\n3. https://discord.com/...",
+    "timestamp": "2025-08-13T12:15:33.661000+00:00",
+    # No edited_timestamp: an unfurl, a pin, a preview. Not a person editing.
+}
+
+
+def check_wire_shapes() -> int:
+    print("THE GUARD AGAINST REAL GATEWAY PAYLOADS")
+    print("=" * 74)
     failures = 0
-    for message_id, data, should_process in CAPTURED:
-        got = _edit_changed_message(Payload(data))
-        marker = "process" if got else "skip   "
-        expected = "process" if should_process else "skip   "
-        verdict = "ok" if got == should_process else "WRONG"
-        if got != should_process:
+
+    cases = [
+        ("a person edited the text", REAL_EDIT, None, True),
+        ("phantom: no edited_timestamp", PHANTOM, None, False),
+        (
+            "edited_timestamp but identical content",
+            REAL_EDIT,
+            _Cached(REAL_EDIT["content"]),
+            False,
+        ),
+        (
+            "edited_timestamp and different content",
+            REAL_EDIT,
+            _Cached("1. SOB | 0016\n2. INF\n3. фото\n4. "),
+            True,
+        ),
+    ]
+    for label, data, cached, expected in cases:
+        got = _edit_changed_message(_Payload(data, cached))
+        verdict = "ok" if got == expected else "WRONG"
+        if got != expected:
             failures += 1
-        edited = "set" if data.get("edited_at") else "None"
-        print(f"  {message_id}  edited_at={edited:<5} -> {marker} (expect {expected}) {verdict}")
+        print(f"  {label:<38} -> {'process' if got else 'skip':<8} {verdict}")
+
+    # The specific mistake: checking the wrong key name.
+    wrong = dict(REAL_EDIT)
+    wrong["edited_at"] = wrong.pop("edited_timestamp")
+    if _edit_changed_message(_Payload(wrong)):
+        print("  a payload keyed on 'edited_at' would be ACCEPTED - the guard is wrong")
+        failures += 1
+    else:
+        print("  a payload keyed on 'edited_at' is rejected, as it must be  ok")
     return failures
 
 
-def check_database(path: pathlib.Path) -> int:
-    """Run every stored message_edited payload through the guard."""
+def check_stored(path: pathlib.Path) -> int:
+    """Report what the archive holds. Informational: those are our own snapshots."""
     conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
@@ -106,31 +105,35 @@ def check_database(path: pathlib.Path) -> int:
         print("\nno message_edited rows in that database")
         return 0
 
-    print(f"\nEVERY EDIT EVENT IN {path.name} ({len(rows)} rows)")
-    print("=" * 70)
-    skipped = processed = 0
+    real = phantom = 0
     for row in rows:
-        payload = json.loads(row["payload"])
-        data = payload.get("message") or {}
-        if _edit_changed_message(Payload(data)):
-            processed += 1
-            print(f"  {row['message_id']}  PROCESS  edited_at={data.get('edited_at')}")
+        message = (json.loads(row["payload"]) or {}).get("message") or {}
+        if message.get("edited_at"):
+            real += 1
         else:
-            skipped += 1
-            print(f"  {row['message_id']}  skip     edited_at={data.get('edited_at')}")
-    print(f"\n  processed: {processed}   skipped: {skipped}")
+            phantom += 1
+
+    print(f"\nARCHIVE: {len(rows)} edit events in {path.name}")
+    print("=" * 74)
+    print(f"  with a real edited_at : {real}")
+    print(f"  without (phantom)     : {phantom}")
+    print(
+        "\n  Note: these stored payloads are our own MessageSnapshot, which spells the\n"
+        "  field `edited_at`. Discord's wire format spells it `edited_timestamp`. The\n"
+        "  guard reads the wire format because that is what the gateway hands us."
+    )
     return 0
 
 
 def main() -> None:
-    failures = check_captured()
+    failures = check_wire_shapes()
     if len(sys.argv) > 1:
-        failures += check_database(pathlib.Path(sys.argv[1]))
+        failures += check_stored(pathlib.Path(sys.argv[1]))
 
     print()
     if failures:
-        raise SystemExit(f"FAILED: {failures} payload(s) handled wrongly")
-    print("OK: every phantom update is skipped and a real edit still gets through")
+        raise SystemExit(f"FAILED: {failures} case(s) handled wrongly")
+    print("OK: a real edit is processed and a phantom update is skipped")
 
 
 if __name__ == "__main__":

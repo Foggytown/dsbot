@@ -575,6 +575,20 @@ Each of these shipped and had to be found by a live run or a user report.
     link - and the report validated as correct with the promotion link missing. The check
     now scans the tokenized sub-items too. Whichever structure a field is *written* in, the
     check must look at the text, not at the parsed value.
+38. **The edit guard read a field name Discord never sends.** `on_raw_message_edit` receives
+    the raw gateway payload, where a real edit is marked by `edited_timestamp`.
+    `edited_at` is what our own MessageSnapshot dataclass calls it, and the guard checked
+    that name against the raw dict - so it was always None, every genuine edit was treated
+    as a phantom server-side update, and no warning ever updated after an author fixed
+    their report. Every test passed, because the tests were written from the same wrong
+    assumption. Lesson: when reading a third-party wire format, assert the key against that
+    format's documented name, never against our own model's field names.
+39. **A diagnostic line proved the wrong thing.** The report of "the warning never clears"
+    came with a `report_processed ... action=warned` line, which is emitted on *creation*.
+    An edit emits `report_reparsed_after_edit`. Confusing the two sent the investigation
+    after the parser twice before pointing at the handler that never ran. When a bug is
+    "nothing happened", find the log line that *would* have been written and establish that
+    it is absent - do not reason from a line that describes a different event.
 
 ## Verification
 
