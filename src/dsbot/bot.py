@@ -335,21 +335,24 @@ class Bot(discord.ext.commands.Bot):
     async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
         if not await self._is_bound(payload.channel_id):
             return
-        # Discord sends MESSAGE_UPDATE for anything that changes a message, and an embed
-        # unfurl (someone posts a link) or a pin sends one while the text stays identical.
-        # Re-parsing those is pure waste, and worse: the re-parse can post a warning about
-        # a report that has not changed at all. Cheap check first, REST fetch second.
-        new_content = payload.data.get("content")
-        if isinstance(new_content, str):
-            async with self.db.session() as session:
-                stored = await repos.get_message(session, payload.channel_id, payload.message_id)
-            if stored is not None and (stored.content or "") == new_content:
-                log.debug(
-                    "message_edit_without_text_change",
-                    message_id=payload.message_id,
-                    channel_id=payload.channel_id,
-                )
-                return
+        # Discord sends MESSAGE_UPDATE for far more than a member editing text: an embed
+        # unfurl, a pin, a link preview, a thread change. Those events carry no
+        # `edited_at`, because the message itself was not edited by a person.
+        #
+        # Re-parsing them is pure waste and, worse, actively harmful: a re-parse can post
+        # a warning about a report that never changed. That is exactly what happened on
+        # this server - ten such events re-judged messages from 2025 and the channel got
+        # told off about reports over a year old.
+        #
+        # `edited_at` is the reliable signal, so trust it first and fall back to comparing
+        # content only when it is absent.
+        if not _edit_changed_message(payload):
+            log.debug(
+                "message_update_without_edit",
+                message_id=payload.message_id,
+                channel_id=payload.channel_id,
+            )
+            return
         # get_channel only sees cached channels; fetch is the reliable path and this
         # used to fail intermittently for exactly that reason.
         channel = self.get_channel(payload.channel_id)
@@ -693,6 +696,32 @@ def _emoji_from_key(key: str, emoji_id: int | None) -> Any:
     if key.startswith("custom:"):
         return EmojiRef(id=emoji_id or int(key.split(":", 1)[1]), name=None)
     return EmojiRef(id=None, name=key.split(":", 1)[1] if ":" in key else key)
+
+
+def _edit_changed_message(payload: discord.RawMessageUpdateEvent) -> bool:
+    """Did a person actually change this message's content?
+
+    A `MESSAGE_UPDATE` arrives for an embed unfurl, a pin, a link preview and other
+    server-side changes too. Those must not trigger a re-parse: the report has not
+    changed, so any warning produced would be about text nobody edited.
+
+    `edited_at` is the decisive signal. Discord sets it only when the author edits the
+    message, and the phantom events observed on a live server all had it absent while
+    still carrying the *current* content - which is why a content comparison alone is
+    not enough to recognise them (the content was already up to date).
+    """
+    data = payload.data or {}
+    if data.get("edited_at") is None:
+        return False
+    new_content = data.get("content")
+    cached = payload.cached_message
+    # `cached_message` is the pre-edit copy, available when the message was cached.
+    unchanged = (
+        isinstance(new_content, str)
+        and cached is not None
+        and (cached.content or "") == new_content
+    )
+    return not unchanged
 
 
 async def run_bot(settings: Settings) -> None:

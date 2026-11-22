@@ -150,3 +150,52 @@ async def test_the_warning_names_the_report_it_is_about(bound_db: Database) -> N
     # The warning the bot posted is a different message from the report.
     assert record.message_id == sink.sent_ids[0]
     assert record.message_id != record.report_message_id
+
+
+# --- phantom MESSAGE_UPDATE: the incident ---------------------------------
+#
+# Payloads captured from the live server. Ten of them carried `edited_at: null` while
+# still carrying the current content, and each one re-parsed a 2025 report and posted a
+# warning about it. A content comparison alone misses them, because the content was
+# already what the database held.
+
+
+class _RawUpdate:
+    def __init__(self, data: dict, cached: object = None) -> None:
+        self.data = data
+        self.cached_message = cached
+
+
+class _Cached:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+def test_a_phantom_update_without_edited_at_is_not_an_edit() -> None:
+    from dsbot.bot import _edit_changed_message
+
+    payload = _RawUpdate({"content": "1. SOB | RC-77\n2. T\n3.", "edited_at": None})
+    assert _edit_changed_message(payload) is False  # type: ignore[arg-type]
+
+
+def test_a_real_edit_with_edited_at_is_processed() -> None:
+    from dsbot.bot import _edit_changed_message
+
+    payload = _RawUpdate(
+        {
+            "content": "1. SOB | 01/0016\n2. INF\n3.",
+            "edited_at": "2026-11-21T21:47:06.515000+00:00",
+        }
+    )
+    assert _edit_changed_message(payload) is True  # type: ignore[arg-type]
+
+
+def test_an_edit_with_identical_content_is_skipped() -> None:
+    """Discord can send edited_at for a no-op save; re-parsing it would be wasted work."""
+    from dsbot.bot import _edit_changed_message
+
+    payload = _RawUpdate(
+        {"content": "same text", "edited_at": "2026-11-21T21:47:06.515000+00:00"},
+        cached=_Cached("same text"),
+    )
+    assert _edit_changed_message(payload) is False  # type: ignore[arg-type]

@@ -471,25 +471,37 @@ Each of these shipped and had to be found by a live run or a user report.
     username and a repository URL, which would have shipped in every deployment. The
     developer credit is a Discord ping only, read from settings; nothing name-like is
     hardcoded, and never add a name or external link to user-visible output.
-25. **Warnings had no age limit, and any edit re-parsed anything.** After a deploy the bot
-    posted warnings about messages from half a year ago. Three things combined:
-    `on_raw_message_edit` reacts to every `MESSAGE_UPDATE` - including a link unfurl or a
-    pin, which change no text - and re-ran the full pipeline; the warning path had no
-    notion of report age, so a report from last winter was treated exactly like one posted
-    seconds ago; and the edit path logged nothing, so five `warning_posted` lines appeared
-    with no `report_processed` counterpart and the cause was invisible. Fixed with an age
-    ceiling (a default, not an opt-in, and `0` disables it for a deliberate backfill), a
-    no-op check before fetching an edited message, and a log line on the edit path.
-26. **A log line that names only the bot's own message.** `warning_posted` carried
-    `message_id`, which is the warning the bot just posted - useless for finding the report
-    it complained about. Every id in that incident was a bot message, so the report could
-    only be recovered with a database query. Warnings now log `report_message_id` as well
-    and store it on the row. Any log about our own output must also name the input.
-27. **Warnings were capped, but the trigger was never understood.** The five warnings were
-    proven to come from edits, not new messages, by comparing log shapes: a new report
-    emits `report_processed`, an edit emitted nothing. The message ids in the log decoded
-    to the bot's own warning timestamps, not to the reports - snowflakes carry creation
-    time, so a suspicious id can be dated without any API call.
+25. **A `MESSAGE_UPDATE` is not an edit.** After a deploy the bot warned about seven reports
+    from 2025 (up to 414 days old) in the space of six seconds. The trigger was
+    `on_raw_message_edit`, which treated *every* `MESSAGE_UPDATE` gateway event as "the
+    author edited this message" and re-ran the whole parse-and-warn pipeline. Discord sends
+    that event for far more than a text edit - an embed unfurl, a pin, a link preview.
+    The captured payloads show the discriminator precisely: the bogus events carried
+    `edited_at: null`, and they carried the *current* content, so a content comparison
+    alone cannot recognise them (the text already matched the database). `edited_at` is set
+    only when a person edits, so `_edit_changed_message` checks it first. Never infer
+    "the author changed this" from the event name; check the field the author controls.
+26. **Nothing bounded the age of a warning.** The same incident showed the warning path had
+    no notion of report age: a report from March 2025 was treated exactly like one posted
+    seconds earlier, because reasons to re-evaluate (a reaction, a phantom edit, a replay)
+    say nothing about whether a report is late. Warnings now have a ceiling -
+    `DSBOT_REPORT_WARN_MAX_AGE_HOURS`, default 24 h, a **default rather than an opt-in**,
+    because live bot, replay and backfill all re-evaluate old messages and a forgotten
+    argument would restore the bug. `0` disables it for a deliberate backfill. An old
+    report is still stored as `invalid`; only the reply is suppressed, since a silent
+    channel must not mean a silent archive.
+27. **A log line that names only the bot's own message.** `warning_posted` carried
+    `message_id` - the warning the bot had just posted - so every line in that incident
+    pointed at a bot message and the report could only be recovered with a database query.
+    Warnings now log and store `report_message_id` as well. Any log about our own output
+    must also name the input that caused it.
+28. **The diagnosis was provable from the database, and was proved.** `message_id` fields
+    in a log are Discord snowflakes, so `/ (id >> 22) + 1420070400000` dates any of them
+    with no API call: the ids in the incident log decoded to the bot's own warning times.
+    `scripts/audit-warnings.py` then answered the whole question read-only, joining
+    `validation_messages -> reports -> messages` and classifying each trigger from
+    `raw_events` ("ONLY seen as an EDIT"). Two habits that paid off: make the audit tool
+    refuse to lie about a stale file, and never write to a database pulled off the server.
 
 ## Verification
 
@@ -560,6 +572,8 @@ scripts/e2e-conflict.py       conflict stays silent and credits nobody
 scripts/e2e-ladder-log.py     the review-role diagnostic counts correctly
 scripts/e2e-roster-discord.py /dsbot roster-refresh populates the roster
 scripts/e2e-warning-age.py    an old report is stored but never warned about
+scripts/e2e-phantom-edit.py   real MESSAGE_UPDATE payloads: phantom edits skipped
+scripts/audit-warnings.py     read-only: which reports were warned about, and why
 scripts/e2e-panel-start.py    panel startup: bindings appear, bad DB URL ignored
 scripts/show-commands.py      print every slash command and its parameters
 ```
