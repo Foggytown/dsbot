@@ -104,7 +104,8 @@ fields:
       en: "Attach photos. 1 for T, 2 or more otherwise."
 
   # ---------------------------------------------------------------------------
-  # 4) Link to the previous approved report. Not needed for T.
+  # 4) Link to the approved report that grants the qualification promotion.
+  #    Not needed for T.
   # ---------------------------------------------------------------------------
   - id: previous_report
     labels: [ссылка, повышение, предыдущий рапорт]
@@ -112,8 +113,8 @@ fields:
     type: discord_message_ref
     required: false
     hint:
-      ru: "Ссылка на предыдущий одобренный рапорт в этом канале."
-      en: "Link to the previous approved report in this channel."
+      ru: "Ссылка на одобренный рапорт, дающий право на повышение квалификации."
+      en: "Link to the approved report that grants the qualification promotion."
 
 # =============================================================================
 # RULES
@@ -156,5 +157,9 @@ rules:
         op: ne
         value: T
     message:
-      ru: "Нужна ссылка на предыдущий одобренный рапорт (кроме квалификации T)."
-      en: "A link to the previous approved report is required (except for T)."
+      ru: >-
+        Нужна ссылка на одобренный рапорт, дающий право на повышение квалификации
+        (кроме квалификации T).
+      en: >-
+        A link to the approved report that grants the qualification promotion is
+        required (except for T).

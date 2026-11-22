@@ -92,3 +92,25 @@ def test_the_message_names_both_field_numbers() -> None:
     assert "пункте 3" in line
     assert "пункте 4" in line
     assert "Перенесите" in line
+    # The wording must say what the link is FOR, not merely that one is wanted.
+    assert "одобренный" in line
+    assert "повышение квалификации" in line
+    assert "{" not in line, "no unsubstituted placeholder may reach the channel"
+
+
+def test_every_link_message_says_it_must_be_an_approved_report() -> None:
+    """All three link codes must carry the same substantive requirement.
+
+    "Field 4 contains no link" was technically true and practically useless: it did not say
+    which link, or why. The requirement is a link to an *approved* report that grants the
+    qualification promotion, so every link message says that.
+    """
+    from dsbot.modules.reports.templates import ISSUE_LINES
+
+    for code in ("link_not_a_url", "link_not_discord", "link_in_wrong_field"):
+        ru = ISSUE_LINES[code]["ru"]
+        en = ISSUE_LINES[code]["en"]
+        assert "одобренный" in ru, f"{code} must say the report has to be approved"
+        assert "повышение квалификации" in ru, f"{code} must name the promotion"
+        assert "approved" in en
+        assert "promotion" in en

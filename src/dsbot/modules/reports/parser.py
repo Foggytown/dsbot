@@ -546,6 +546,22 @@ def _rule_message(rule: Rule, locale: str) -> str:
     return rule.message.get(locale) or next(iter(rule.message.values()))
 
 
+def _number_link_issues(fields: list[BoundField], issues: list[FieldIssue]) -> None:
+    """Give every link issue the numbered field the reporter must fix.
+
+    The message used to say "field 4" as literal text, which was already wrong for any
+    schema whose link lives elsewhere, and said nothing about *which* link is wanted. The
+    number is filled in from the spec so the wording cannot drift from the form.
+    """
+    numbers = {bound.spec.id: _field_number(bound.spec) for bound in fields}
+    for issue in issues:
+        if issue.code not in {"link_not_a_url", "link_not_discord", "link_in_wrong_field"}:
+            continue
+        if issue.field_id is None:
+            continue
+        issue.detail.setdefault("field_number", numbers.get(issue.field_id, "?"))
+
+
 def _links_in_wrong_field(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue]:
     """A Discord link written in the wrong numbered field.
 
@@ -658,6 +674,10 @@ def parse_report(
     issues = validate(schema, fields)
     for bound in fields:
         issues.extend(bound.result.issues)
+    # Number the link issues once, after both sets are merged: the field-level checks
+    # ("no link here") are added above, not inside `validate`, so numbering them there
+    # would miss them and leave a raw `{detail_field_number}` in the warning.
+    _number_link_issues(fields, issues)
 
     attribution_raw: str | None = None
     if schema.attribution_field:

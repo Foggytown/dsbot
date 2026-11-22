@@ -54,21 +54,37 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
         "en": "- Unknown qualification: '{detail_raw}'.",
     },
     "link_not_a_url": {
-        "ru": "- В поле 4 нет ссылки.",
-        "en": "- Field 4 contains no link.",
+        "ru": (
+            "- В пункте {detail_field_number} нет ссылки. Там нужна ссылка на "
+            "**одобренный** рапорт, который даёт право на повышение квалификации."
+        ),
+        "en": (
+            "- Field {detail_field_number} contains no link. It must be a link to an "
+            "**approved** report that grants the qualification promotion."
+        ),
     },
     "link_not_discord": {
-        "ru": "- Ссылка в поле 4 не ведёт на сообщение Discord.",
-        "en": "- The field 4 link is not a Discord message link.",
+        "ru": (
+            "- Ссылка в пункте {detail_field_number} не ведёт на сообщение Discord. "
+            "Нужна ссылка на **одобренный** рапорт, который даёт право на повышение "
+            "квалификации."
+        ),
+        "en": (
+            "- The link in field {detail_field_number} is not a Discord message link. "
+            "It must link to an **approved** report that grants the qualification "
+            "promotion."
+        ),
     },
     "link_in_wrong_field": {
         "ru": (
-            "- Ссылка на предыдущий рапорт стоит в пункте {detail_found_in}, "
-            "а её место — в пункте {detail_expected}. Перенесите её туда."
+            "- Ссылка на **одобренный** рапорт, дающий право на повышение квалификации, "
+            "должна стоять в пункте {detail_expected}, а сейчас она в пункте "
+            "{detail_found_in}. Перенесите её."
         ),
         "en": (
-            "- The previous report's link is in field {detail_found_in}, but it belongs "
-            "in field {detail_expected}. Move it there."
+            "- The link to the **approved** report that grants the qualification "
+            "promotion belongs in field {detail_expected}, but it is in field "
+            "{detail_found_in}. Move it there."
         ),
     },
     "evidence_text_without_file": {
