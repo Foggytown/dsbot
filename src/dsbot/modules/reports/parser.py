@@ -416,6 +416,8 @@ def validate(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue
                 )
             )
 
+    issues.extend(_links_in_wrong_field(schema, fields))
+
     # --- cross-field rules -------------------------------------------------
     # These are what make hard forms expressible: requirements that depend on another
     # field's value cannot live on a single field.
@@ -542,6 +544,76 @@ def _rule_message(rule: Rule, locale: str) -> str:
     if not rule.message:
         return rule.id
     return rule.message.get(locale) or next(iter(rule.message.values()))
+
+
+def _links_in_wrong_field(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue]:
+    """A Discord link written in the wrong numbered field.
+
+    The failure this exists for is quiet and misleading. Somebody pastes the previous
+    report's link into field 3 instead of 4; field 3 is the photos field, which accepts
+    text, so the link is swallowed without complaint and the report is judged **valid**.
+    The promotion link is then simply absent, and nothing said so.
+
+    Worse, if photos *are* attached the report validates anyway, so the mistake only
+    surfaces months later when somebody cannot find the evidence chain.
+
+    So: if a field that does not accept links holds one, and the schema has a field that
+    does, say so and name the field number to move it to. Only reported when the correct
+    field is actually empty - if the reporter put the link in both places the right one is
+    already there and there is nothing to fix.
+    """
+    link_field = next((bound for bound in fields if bound.spec.type == "discord_message_ref"), None)
+    if link_field is None or link_field.result.present:
+        return []
+
+    expected = _field_number(link_field.spec)
+    issues: list[FieldIssue] = []
+    for bound in fields:
+        if bound.spec.type == "discord_message_ref":
+            continue
+        if not _accepts_links(bound.spec):
+            continue
+        if not _looks_like_link(bound.raw_value):
+            continue
+        issues.append(
+            FieldIssue(
+                code="link_in_wrong_field",
+                field_id=link_field.spec.id,
+                detail={
+                    "found_in": _field_number(bound.spec),
+                    "expected": expected,
+                    "found_raw": bound.raw_value.strip(),
+                },
+            )
+        )
+    return issues
+
+
+def _accepts_links(spec: FieldSpec) -> bool:
+    """Whether this field type can legitimately hold a link.
+
+    An attachment field is text-capable (a reporter may write the photo count there), so a
+    link pasted into it is stored rather than rejected - which is exactly how it goes
+    missing. The identity field is excluded because a link there fails its own validation
+    loudly.
+    """
+    return spec.accepts_attachments or spec.type in {"text", "name_ref"}
+
+
+def _looks_like_link(raw: str) -> bool:
+    value = (raw or "").strip()
+    if not value:
+        return False
+    # A bare URL, or a link preceded by a label such as "Доказательства:".
+    return "http://" in value or "https://" in value
+
+
+def _field_number(spec: FieldSpec) -> str:
+    """The number the reporter sees, e.g. "4" from path 4 or "3.1" from path 3.1."""
+    path = (spec.path or "").strip()
+    if not path:
+        return spec.labels[0] if spec.labels else spec.id
+    return path.split(".")[0]
 
 
 def _has_attachment_evidence(bound: BoundField) -> bool:

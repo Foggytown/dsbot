@@ -42,6 +42,14 @@ SOURCE_CHOICES = [
     app_commands.Choice(name="База бота (только с момента запуска)", value="db"),
 ]
 
+# Whether a count is also posted into the publish channel. Asking for a number and also
+# broadcasting it are different intents, so the caller decides instead of the channel
+# setting always winning.
+PUBLISH_CHOICES = [
+    app_commands.Choice(name="Не публиковать (только мне)", value="no"),
+    app_commands.Choice(name="Опубликовать в канал отчётов", value="yes"),
+]
+
 
 class CountCommands(app_commands.Group, name="reports", description="Подсчёт рапортов"):
     """Counting, restricted to people who could already approve reports."""
@@ -188,8 +196,9 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         end="Конец периода, включительно (указывать вместе с start)",
         source="Откуда читать: история Discord (по умолчанию) или база бота",
         tier="Показать только один тир, например Instructor",
+        publish="Публиковать ли отчёт в канал из /dsbot report-target",
     )
-    @app_commands.choices(period=PERIOD_CHOICES, source=SOURCE_CHOICES)
+    @app_commands.choices(period=PERIOD_CHOICES, source=SOURCE_CHOICES, publish=PUBLISH_CHOICES)
     @app_commands.autocomplete(tier=tier_autocomplete)
     async def count(
         self,
@@ -201,6 +210,7 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         end: str | None = None,
         source: app_commands.Choice[str] | None = None,
         tier: str | None = None,
+        publish: app_commands.Choice[str] | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         channel_id = interaction.channel_id
@@ -267,7 +277,17 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             )
 
         destination = config.get("report_channel_id")
-        if destination and pages:
+        # Default is "do not publish": a staff member asking for a number has not asked to
+        # broadcast it. `publish:yes` is how the weekly table gets into the channel, and it
+        # is a deliberate choice rather than a side effect of the channel setting.
+        wants_publish = publish is not None and publish.value == "yes"
+        if wants_publish and not destination:
+            await interaction.followup.send(
+                "Публиковать некуда: не выбран канал отчётов. Задайте его командой "
+                "`/dsbot report-target`.",
+                ephemeral=True,
+            )
+        elif wants_publish and destination and pages:
             posted = 0
             problem = ""
             for page in pages:
@@ -289,6 +309,12 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
                     f"Отчёт выше посчитан верно — проблема только с каналом публикации.",
                     ephemeral=True,
                 )
+        elif destination and not wants_publish:
+            await interaction.followup.send(
+                f"Только для вас. Опубликовать в <#{destination}>: "
+                f"повторите с `publish:Опубликовать в канал отчётов`.",
+                ephemeral=True,
+            )
 
         log.info(
             "count_command_done",

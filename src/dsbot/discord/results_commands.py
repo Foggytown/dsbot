@@ -135,8 +135,8 @@ class ResultsCommands(app_commands.Group, name="results", description="Итог�
         if close <= datetime.now(UTC):
             await interaction.followup.send(
                 f"Эта дата уже прошла ({describe_close(close, timezone)}). "
-                "Укажите будущую — или запустите прошедший период вручную: "
-                "`/results run`.",
+                "Укажите будущую — или посчитайте прошедший период вручную: "
+                "`/reports count` с нужными датами и `publish:yes`.",
                 ephemeral=True,
             )
             return
@@ -227,79 +227,10 @@ class ResultsCommands(app_commands.Group, name="results", description="Итог�
         else:
             lines.append(
                 "**Внимание:** время закрытия уже прошло, и бот был выключен в этот "
-                "момент. Период будет пропущен. Запустить вручную: `/results run`."
+                "момент. Этот период будет пропущен — посчитайте его вручную командой "
+                "`/reports count` с нужными датами."
             )
         await interaction.followup.send("\n".join(lines), ephemeral=True)
-
-    # --- running -----------------------------------------------------------
-
-    @app_commands.command(
-        name="run",
-        description="Посчитать и опубликовать период вручную (без ожидания закрытия)",
-    )
-    async def run(self, interaction: discord.Interaction) -> None:
-        """Run the schedule's current period now.
-
-        This is the answer to "the bot was down at the close". It counts the period the
-        schedule points at and publishes it, then advances the schedule, exactly as an
-        automatic close would.
-        """
-        if not await self._require_admin(interaction):
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        channel_id = interaction.channel_id
-        assert channel_id is not None
-        binding = await self._binding(channel_id)
-        if binding is None:
-            await interaction.followup.send(
-                "Этот канал не привязан к форме рапорта.", ephemeral=True
-            )
-            return
-        if repos.binding_schedule(binding) is None:
-            await interaction.followup.send(
-                "Сначала задайте расписание: `/results set`.", ephemeral=True
-            )
-            return
-
-        from dsbot.modules.quotas.close import close_period
-
-        try:
-            outcome = await close_period(
-                db=self._db,
-                client=interaction.client,
-                binding_id=binding.id,
-                force=True,
-                developer_user_id=self._developer_user_id,
-            )
-        except Exception:
-            log.exception("results_manual_run_failed", channel_id=channel_id)
-            await interaction.followup.send(
-                "Не удалось посчитать период. Подробности в логах бота.", ephemeral=True
-            )
-            return
-
-        if outcome.action == "published":
-            await interaction.followup.send(
-                f"Опубликовано.\n"
-                f"**Период:** {outcome.period_label}\n"
-                f"**Людей в отчёте:** {outcome.people}\n"
-                f"**Страниц:** {outcome.pages}\n"
-                f"**Канал:** <#{outcome.destination}>\n"
-                f"**Следующее закрытие:** {describe_close(outcome.next_close, self._timezone)}"
-                if outcome.next_close
-                else f"Опубликовано в <#{outcome.destination}>.",
-                ephemeral=True,
-            )
-        else:
-            await interaction.followup.send(f"Не получилось: {outcome.problem}", ephemeral=True)
-        log.info(
-            "results_manual_run",
-            channel_id=channel_id,
-            action=outcome.action,
-            period=outcome.period_label,
-            user_id=interaction.user.id,
-        )
 
 
 async def register_results_commands(

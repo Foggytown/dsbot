@@ -61,6 +61,16 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
         "ru": "- Ссылка в поле 4 не ведёт на сообщение Discord.",
         "en": "- The field 4 link is not a Discord message link.",
     },
+    "link_in_wrong_field": {
+        "ru": (
+            "- Ссылка на предыдущий рапорт стоит в пункте {detail_found_in}, "
+            "а её место — в пункте {detail_expected}. Перенесите её туда."
+        ),
+        "en": (
+            "- The previous report's link is in field {detail_found_in}, but it belongs "
+            "in field {detail_expected}. Move it there."
+        ),
+    },
     "evidence_text_without_file": {
         "ru": "- В поле «{field_hint}» текст вместо фото.",
         "en": "- Field '{field_hint}' contains text instead of a photo.",

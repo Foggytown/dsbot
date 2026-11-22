@@ -529,6 +529,13 @@ Each of these shipped and had to be found by a live run or a user report.
     succeeded, and only a live comparison of the two commands' output exposed it. When a
     function takes a prepared result, either use it or do not accept it - and prefer a
     test that asserts the two entry points agree.
+33. **A link in the wrong numbered field was silently accepted.** Field 3 is the photos
+    field and accepts text, so a previous-report link pasted there (instead of field 4) was
+    stored without complaint; the promotion link was simply absent. With photos also
+    attached the report was judged **valid**, so the reporter was never told and the
+    evidence chain was broken. `link_in_wrong_field` now names both field numbers and tells
+    the reporter to move it. The general lesson: a field that "accepts text" will swallow
+    anything, so validate what the text *is*, not merely that something is there.
 
 ## Verification
 
@@ -635,12 +642,12 @@ Advancing first would mark a week as done while nothing was posted.
 **The published table is the Discord count.** `close_period` counts from history, and
 `publish_period` publishes *that* result. It does not re-count from the database: the
 archive only knows reactions the bot saw live, so a database recount showed every report as
-unreviewed. `/results run` and `/reports count` must render the same numbers, and
+unreviewed. A scheduled run and `/reports count` must render the same numbers, and
 `scripts/e2e-run-matches-count.py` asserts it.
 
 **A missed close is skipped, not caught up.** Decided explicitly: a bot that was down for
 three days must not dump a stale week into the channel on restart. It logs the skip,
-advances, and the admin can run it by hand with `/results run`. The one exception is a
+advances, and the admin can publish it by hand with `/reports count`. The one exception is a
 grace window (`DEFAULT_GRACE`, two hours) so that a redeploy which lands a minute after the
 boundary does not cost a week - that case is a restart, not an absence.
 

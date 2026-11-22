@@ -65,7 +65,7 @@ async def close_period(
     """Close one channel's period if it is due.
 
     `force` publishes regardless of the clock, which is what an admin uses to run a period
-    by hand (`/results run`) after the bot skipped one. In that mode the schedule is
+    by hand after the bot skipped one. In that mode the schedule is
     advanced only when the period is the one the schedule points at; a forced run of an
     arbitrary past period must not move the current schedule.
     """
@@ -251,7 +251,7 @@ async def count_period(
     period: Any,
     resolver: Any,
 ) -> Any:
-    """Count one period from Discord history. Shared by the scheduler and `/results run`."""
+    """Count one period from Discord history. Shared by the scheduler and the manual close."""
     from dsbot.modules.quotas.live import count_channel_from_discord
 
     return await count_channel_from_discord(

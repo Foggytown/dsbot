@@ -1,4 +1,4 @@
-"""Proves `/results run` publishes the same numbers as `/reports count`.
+"""Proves `the scheduled close` publishes the same numbers as `/reports count`.
 
 The bug: `publish_period` accepted the Discord count and then re-counted from the
 database, so every report rendered as unreviewed - the archive only holds reactions the
@@ -296,7 +296,7 @@ async def main() -> None:
             RenderContext(period_label=period.describe(MOSCOW), timezone=MOSCOW),
         )
 
-        # --- what /results run publishes -------------------------------
+        # --- what the scheduled close publishes -------------------------------
         close_at = parse_close("22.11.2026 23:59:59", MOSCOW)
         async with db.write_session() as session:
             await repos.set_binding_schedule(
@@ -317,7 +317,7 @@ async def main() -> None:
         for page in count_pages:
             print(page)
         print()
-        print("WHAT /results run PUBLISHED")
+        print("WHAT the scheduled close PUBLISHED")
         print("=" * 78)
         for _, body in sink.sent:
             print(body)
@@ -343,7 +343,7 @@ async def main() -> None:
             "the scheduled report must say the same thing as the manual count"
         )
         print()
-        print("OK: /results run publishes the Discord count, identical to /reports count")
+        print("OK: the scheduled close publishes the Discord count, identical to /reports count")
     finally:
         await db.dispose()
 
