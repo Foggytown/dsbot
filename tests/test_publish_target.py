@@ -66,7 +66,7 @@ class _Probe:
 async def test_a_forbidden_channel_reports_what_is_wrong() -> None:
     channel = _ForbiddenChannel()
 
-    problem = await can_post_to(None, channel)
+    problem = await can_post_to(channel)
 
     assert problem, "a forbidden channel must produce an explanation"
     assert "прав" in problem or "нет" in problem
@@ -76,7 +76,7 @@ async def test_a_forbidden_channel_reports_what_is_wrong() -> None:
 async def test_a_writable_channel_passes_and_leaves_nothing_behind() -> None:
     channel = _WritableChannel()
 
-    problem = await can_post_to(None, channel)
+    problem = await can_post_to(channel)
 
     assert problem == ""
     assert len(channel.sent) == 1
@@ -87,7 +87,7 @@ async def test_the_probe_mentions_no_people() -> None:
     """A probe must not ping anyone, and must not look like a report."""
     channel = _WritableChannel()
 
-    await can_post_to(None, channel)
+    await can_post_to(channel)
 
     assert "@" not in channel.sent[0]
 
@@ -104,6 +104,6 @@ async def test_a_channel_that_fails_to_delete_still_counts_as_working() -> None:
             self.sent.append(content)
             return _StickyProbe(1, self)
 
-    problem = await can_post_to(None, _Channel())
+    problem = await can_post_to(_Channel())
 
     assert problem == ""

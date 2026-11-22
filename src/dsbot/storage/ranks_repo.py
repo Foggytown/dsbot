@@ -147,6 +147,36 @@ async def _sync_tiers(session: AsyncSession, ladder: RankLadder, spec: LadderSpe
         removed=sorted(set(stored) - set(wanted)),
     )
 
+    # The roster stores a *snapshot* of the tier label and ordinal, because last week's
+    # report must not be rewritten by a later edit. But the label is presentation and the
+    # ordinal is ordering: after a rename, the weekly table would keep grouping people
+    # under the old heading until somebody happened to re-scrape, and nothing would tell
+    # them to. Refresh those two on existing rows; leave `required_per_week` frozen,
+    # because that one is a policy the report was already judged against.
+    await _refresh_roster_labels(session, ladder.id, wanted)
+
+
+async def _refresh_roster_labels(
+    session: AsyncSession, ladder_id: int, wanted: dict[str, Any]
+) -> None:
+    from dsbot.storage.models import RosterMember
+
+    rows = (
+        await session.scalars(select(RosterMember).where(RosterMember.ladder_id == ladder_id))
+    ).all()
+    changed = 0
+    for row in rows:
+        spec = wanted.get(row.tier_key or "")
+        if spec is None:
+            continue
+        label = spec.label or spec.key
+        if row.tier_label != label or row.tier_ordinal != spec.ordinal:
+            row.tier_label = label
+            row.tier_ordinal = spec.ordinal
+            changed += 1
+    if changed:
+        log.info("roster_labels_refreshed", ladder_id=ladder_id, rows=changed)
+
 
 async def _sync_tier_roles(session: AsyncSession, tier: RankTier, spec: Any) -> None:
     """Rewrite one tier's roles and capabilities, but only when they differ."""
@@ -178,9 +208,12 @@ async def _sync_tier_roles(session: AsyncSession, tier: RankTier, spec: Any) -> 
 
 
 async def _ladder_matches(session: AsyncSession, ladder: RankLadder, spec: LadderSpec) -> bool:
-    """Whether the stored ladder already says exactly what `spec` says."""
-    if ladder.purpose != spec.purpose:
-        return False
+    """Whether the stored ladder already says exactly what `spec` says.
+
+    Compares tiers only. `purpose` is not checked because `replace_ladder` assigns it
+    before calling this, so a comparison here could never fail - a check that cannot fire
+    is worse than no check, because it reads as protection.
+    """
     tiers = (await session.scalars(select(RankTier).where(RankTier.ladder_id == ladder.id))).all()
     stored: dict[str, dict[str, Any]] = {}
     for tier in tiers:

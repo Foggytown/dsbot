@@ -126,6 +126,7 @@ async def import_forms(
     rank_source_guild_id: int | None = None,
     locale: str = "ru",
     module_key: str = "reports",
+    overwrite_admin_edits: bool = False,
 ) -> ImportResult:
     """Validate and store one or more schemas, then bind them to the channel.
 
@@ -189,7 +190,7 @@ async def import_forms(
             session.add(row)
             await session.flush()
             created.append(definition.key)
-        elif _should_preserve(row, incoming):
+        elif _should_preserve(row, incoming) and not overwrite_admin_edits:
             # The file has not changed since the last import, but the stored form has, so
             # the difference is an admin's edit made from Discord. Keep it: that is the
             # whole reason the /dsbot set-values|add-value commands exist.

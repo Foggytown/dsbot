@@ -53,9 +53,6 @@ class Settings(BaseSettings):
     # simply never bind. The file in /data IS the panel-friendly route, because the panel
     # only keeps /data and the bot re-reads that file while running.
 
-    # The form applied to a newly bound channel when the channels file names none.
-    auto_bind_form: str = Field(default="forms/training.yaml")
-
     # The channels configuration file.
     #
     # Defaults to <state dir>/channels.yaml, i.e. the panel's /data volume, so an admin

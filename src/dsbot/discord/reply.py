@@ -167,7 +167,7 @@ def _partial_message(channel: Any, message_id: int) -> Any | None:
     return getter(message_id)
 
 
-async def can_post_to(client: Any, channel: Any) -> str:
+async def can_post_to(channel: Any) -> str:
     """Can the bot actually post here? Returns "" when it can, else the reason.
 
     Probed by sending a throwaway message and deleting it, rather than computing

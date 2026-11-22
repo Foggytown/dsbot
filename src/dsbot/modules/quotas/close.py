@@ -340,12 +340,16 @@ async def publish_period(
     outcome.run_id = await service.persist_run(request, outcome)
     pages = len(outcome.messages())
     posted = await service.publish(request, outcome, target_channel_id=target_channel_id)
+    # Read the service's own reason, never the sink's. `send` clears the sink's field but
+    # `edit` does not, so a later run that only edits would inherit the failure left by an
+    # earlier attempt, report success as broken, and refuse to advance the schedule on
+    # every tick. `service.last_error` is reset at the start of each `publish`.
+    reason = service.last_error
     if len(posted) < pages:
         # Partial publication must not look like success: the caller advances the schedule
         # on success, and the missing pages would never be posted.
-        reason = service.last_error or (f"опубликовано только {len(posted)} из {pages} страниц")
-        return posted, reason
-    return posted, getattr(sink, "last_error", "") or ""
+        reason = reason or f"опубликовано только {len(posted)} из {pages} страниц"
+    return posted, reason
 
 
 async def _build_resolver(db: Database, client: Any) -> Any:
@@ -387,4 +391,4 @@ async def destination_problem(client: Any, channel_id: int) -> str:
     channel = await _resolve_channel(client, channel_id)
     if channel is None:
         return f"канал <#{channel_id}> не найден или бот его не видит"
-    return await can_post_to(client, channel)
+    return await can_post_to(channel)

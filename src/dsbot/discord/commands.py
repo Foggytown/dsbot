@@ -431,7 +431,7 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
         if channel is not None:
             from dsbot.discord.reply import can_post_to
 
-            problem = await can_post_to(interaction.client, channel)
+            problem = await can_post_to(channel)
             if problem:
                 await interaction.followup.send(
                     f"⚠️ Канал {channel.mention} выбран, но публиковать туда не получится: "

@@ -513,8 +513,18 @@ def _parse_one_soldier(
         "canonical": None,
     }
 
+    # Split on the separator but do NOT drop empty parts: `SOB || 0016` is a typo, and
+    # filtering the empty part silently turns it into the valid `SOB | 0016`. That is the
+    # "strictness is deliberate" promise broken - and worse for the three-part form, where
+    # `SOB | 01/0016 || 0017` would swallow the empty slot and lose the system IDN without
+    # a word. Report the shape instead of repairing it.
     parts = [part.strip() for part in soldier.split("|")]
-    parts = [part for part in parts if part]
+
+    if any(not part for part in parts):
+        issues.append(
+            FieldIssue(code="identity_bad_format", field_id=field_id, detail={"raw": soldier})
+        )
+        return value, issues
 
     if len(parts) < 2:
         issues.append(

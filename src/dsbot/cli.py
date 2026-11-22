@@ -1189,9 +1189,21 @@ def form_apply(
     force: Annotated[
         bool, typer.Option("--force", help="Apply even if checks report problems")
     ] = False,
+    overwrite: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite",
+            help="Also replace values an admin changed from Discord, even if the file is unchanged",
+        ),
+    ] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
     """Compile a YAML form and make it the channel's form. No code changes.
+
+    On every start the channels file is re-imported, but an admin's edit made from Discord
+    is preserved unless the file itself changed. Re-applying an *unchanged* file therefore
+    does nothing by design; `--overwrite` is how an operator deliberately puts git back on
+    top, which is a decision made from a console and never guessed at.
 
     To set up a channel in another server, pass both ids:
 
@@ -1286,6 +1298,7 @@ def form_apply(
                     guild_id=guild,
                     rank_source_guild_id=rank_guild,
                     locale=locale,
+                    overwrite_admin_edits=overwrite,
                 )
         except ValueError as exc:
             typer.echo(f"FAILED: {exc}")
@@ -1299,6 +1312,12 @@ def form_apply(
             f"applied {schema.key} to {place}{where} "
             f"(created={result.created}, updated={result.updated})"
         )
+        if result.preserved:
+            typer.echo(
+                f"KEPT AS-IS: {', '.join(result.preserved)} - the file is unchanged since "
+                f"the last import, but the stored form was edited from Discord. Re-run with "
+                f"--overwrite to put the file back on top."
+            )
 
     asyncio.run(run_apply())
 
@@ -1594,11 +1613,22 @@ def roster_refresh(
 
             guild_id = binding.rank_source_guild_id or binding.guild_id
             ladder = ladders.get(guild_id)
-            if ladder is None or ladder.quota_ladder_id is None:
+            if ladder is None:
                 typer.echo(
                     f"no ladder for guild {guild_id}. Apply one first: "
                     "uv run dsbot ladder-apply --file forms/ladders/review.yaml"
                 )
+                raise typer.Exit(code=1)
+
+            # Ask the same question the slash command asks. A guild can hold more than one
+            # quota ladder and the channel names the one it wants in channels.yaml; taking
+            # the guild's single `quota_ladder_id` would scrape the wrong roles and produce
+            # a roster that disagrees with `/dsbot roster-refresh`.
+            from dsbot.modules.quotas.service import _quota_ladder_id
+
+            ladder_id = _quota_ladder_id(ladder, dict(binding.config or {}))
+            if ladder_id is None:
+                typer.echo(f"channel {channel} has no quota ladder, so there is nobody to track")
                 raise typer.Exit(code=1)
 
             async def work(client: Any) -> Any:
@@ -1608,7 +1638,7 @@ def roster_refresh(
                 return await service.refresh(
                     guild_id,
                     ladder,
-                    ladder_id=ladder.quota_ladder_id or 0,
+                    ladder_id=ladder_id,
                 )
 
             try:
@@ -1801,6 +1831,7 @@ def count_command(
                     channel_id=channel,
                     period=period,
                     resolver=resolver,
+                    use_cache=settings.reaction_cache,
                 )
                 context = RenderContext(
                     period_label=period.describe(timezone),

@@ -717,6 +717,17 @@ deliberately separated:
 So 17:00 and 23:59:59 on the 22nd report exactly the same week. Tying the window to the
 clock time instead made a 17:00 close report `15.11–22.11` - eight calendar days, correct
 arithmetic for "exactly 7×24 hours" and not what anybody means by "the week".
+
+**A close before the end of the day loses that day's tail.** This is a known and accepted
+consequence, not a bug: with a 17:00 close the report is generated at 17:00 but the window
+ends at midnight, so reports filed between 17:00 and 23:59 that day are inside the period
+already published and outside the next one. They are counted nowhere, and a manual
+`/reports count` for the same week that evening will show one or two more reports than the
+published table did.
+
+Decided explicitly: set the close to `23:59:59` if the whole day matters. The alternative -
+cutting the window at the close moment - would make the clock time shape the numbers again,
+which is exactly what was just fixed. Do not "repair" this by trimming the window.
 `Schedule.period_for(timezone)` is the only way to ask for the window, because "whole
 days" needs a timezone.
 
