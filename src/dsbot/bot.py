@@ -148,7 +148,6 @@ class Bot(discord.ext.commands.Bot):
         except Exception:
             log.exception("deferred_recovery_failed")
 
-        bindings = await self._load_bindings()
         # ALWAYS reconcile with the channels file. The panel keeps only /data across a
         # redeploy and replaces the rest of the checkout, so a channel added to the file
         # must be applied on every start or it would appear to "not work" until someone
@@ -244,8 +243,10 @@ class Bot(discord.ext.commands.Bot):
         that was down must not dump a stale week into the channel when it comes back.
         `close_period` records the period as skipped and moves to the next one.
 
-        `_closing` guards against a slow run overlapping the next tick, which would
-        otherwise publish the same period twice.
+        Ticks cannot overlap: this is a single coroutine, so the `for` loop finishes before
+        the next `sleep` begins. A per-binding lock would only be needed if a *second*
+        caller appeared - a manual close command. There is none today; add the lock with
+        that command, not before.
         """
         import dsbot.modules.quotas.close as close
         from dsbot.storage import repos as schedule_repos
@@ -629,6 +630,33 @@ class Bot(discord.ext.commands.Bot):
             )
         await self._recompute_verdict(event.message_id, None, None)
 
+    async def on_member_update(self, before: Any, after: Any) -> None:
+        """Drop a cached rank when somebody's roles change.
+
+        The resolver caches for 15 minutes. Without this, a promotion or a revocation took
+        effect only after the TTL expired: a newly appointed reviewer's reaction counted
+        for nothing, and somebody who lost the role could still decide a verdict. The
+        reaction path is the one place where "just wait" is not acceptable, because the
+        person has already acted by the time the role matters.
+
+        Only the cache is cleared. Nothing is re-resolved here: recomputing every open
+        report on a role change would be a burst of work for an event that usually does
+        not matter, and the next reaction resolves the new rank anyway.
+        """
+        if before.roles == after.roles:
+            return
+        guild = getattr(after, "guild", None)
+        if guild is None:
+            return
+        self.resolver.invalidate(guild.id, after.id)
+        log.info(
+            "rank_cache_invalidated",
+            guild_id=guild.id,
+            user_id=after.id,
+            roles_before=len(getattr(before, "roles", ())),
+            roles_after=len(getattr(after, "roles", ())),
+        )
+
     async def _store_reaction(
         self,
         event: ReactionAdded,
@@ -792,7 +820,14 @@ def _edit_changed_message(payload: discord.RawMessageUpdateEvent) -> bool:
     return not unchanged
 
 
-async def run_bot(settings: Settings) -> None:
+def _prepare_runtime(settings: Settings) -> InstanceLock:
+    """Validate the database location and take the single-instance lock.
+
+    Shared by `run` and `run --dry-run`, because a dry run still writes to the database -
+    it ingests messages, prepares the schema and syncs channels. Two processes on one
+    database is the corruption the lock exists to prevent, and it should not be reachable
+    through a flag whose name sounds harmless.
+    """
     if not settings.discord_token:
         raise RuntimeError("DSBOT_DISCORD_TOKEN is empty; put your token in .env")
 
@@ -824,6 +859,11 @@ async def run_bot(settings: Settings) -> None:
     except RuntimeError as exc:
         typer_echo_error(str(exc))
         raise SystemExit(1) from None
+    return lock
+
+
+async def run_bot(settings: Settings) -> None:
+    lock = _prepare_runtime(settings)
 
     bot = Bot(settings)
     stop = asyncio.Event()

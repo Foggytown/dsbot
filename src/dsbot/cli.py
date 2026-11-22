@@ -651,11 +651,21 @@ def run(
         else:
             await run_bot(settings)
             return
-        # Dry run: still connect and ingest, but never touch the channel.
+        # Dry run: still connects and ingests, but never touches the channel.
+        #
+        # It takes the lock even though it posts nothing, because it still *writes*:
+        # ingest, schema preparation and the channels sync all touch the database. Two
+        # processes on one database is exactly the corruption the lock exists to prevent,
+        # and "--dry-run" reads as harmless enough that somebody would try it next to the
+        # live bot.
+        from dsbot.bot import _prepare_runtime
+
+        lock = _prepare_runtime(settings)
         try:
             await bot.start(settings.discord_token)
         finally:
             await bot.close()
+            lock.release()
 
     asyncio.run(main())
 

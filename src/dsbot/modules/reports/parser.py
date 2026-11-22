@@ -578,19 +578,21 @@ def _drop_doubled_link_complaints(fields: list[BoundField], issues: list[FieldIs
     if not misplaced:
         return
 
-    # "A link is required" says nothing new when the link has been found elsewhere.
-    issues[:] = [issue for issue in issues if issue.code != "rule_required"]
+    # "A link is required" says nothing new when the link has been found elsewhere - but
+    # only for the field the link was found for. Filtering by the issue *code* alone would
+    # silently swallow an unrelated required-field error as soon as a form has a second
+    # conditional requirement.
+    link_fields = {issue.field_id for issue in issues if issue.code == "link_in_wrong_field"}
 
-    numbers = {bound.spec.id: _field_number(bound.spec) for bound in fields}
-    issues[:] = [
-        issue
-        for issue in issues
-        if not (
-            issue.code == "evidence_text_without_file"
-            and issue.field_id is not None
-            and numbers.get(issue.field_id) in misplaced
-        )
-    ]
+    def is_redundant(issue: FieldIssue) -> bool:
+        if issue.code == "rule_required":
+            return issue.field_id in link_fields
+        if issue.code == "evidence_text_without_file" and issue.field_id is not None:
+            numbers = {bound.spec.id: _field_number(bound.spec) for bound in fields}
+            return numbers.get(issue.field_id) in misplaced
+        return False
+
+    issues[:] = [issue for issue in issues if not is_redundant(issue)]
 
 
 def _links_in_wrong_field(

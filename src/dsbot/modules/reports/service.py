@@ -144,16 +144,14 @@ class ReportService:
         self, context: ChannelContext, group: list[GroupMessage]
     ) -> ProcessResult | None:
         """Parse an assembled group. Shared by live ingest, edits, retries and replay."""
-        return await self._evaluate(context, group, phase="initial")
+        return await self._evaluate(context, group)
 
     async def _evaluate(
         self,
         context: ChannelContext,
         group: list[GroupMessage],
-        *,
-        phase: str,
     ) -> ProcessResult | None:
-        """One parsing pass. `phase` decides whether the grace window still applies."""
+        """One parsing pass over a group."""
         if not group:
             return None
         head = group[0]
@@ -288,7 +286,7 @@ class ReportService:
         group = await self._load_group(context, author_id, message_id)
         if group is None:
             return None
-        return await self._evaluate(context, group, phase="retry")
+        return await self._evaluate(context, group)
 
     async def _load_group(
         self, context: ChannelContext, author_id: int, message_id: int
@@ -482,11 +480,24 @@ class ReportService:
             return False
 
         cleared = await self._reply.clear(existing.channel_id, existing.message_id)
+        if not cleared:
+            # Discord refused the delete (a permission change, or the message became
+            # undeletable). Keep the row: it is the only record that a warning is still
+            # visible in the channel, so a later pass can try again. Deleting it here left
+            # a stale warning on screen that the bot believed it had removed, and no
+            # future edit could ever clear it.
+            log.warning(
+                "warning_not_cleared",
+                report_id=report_id,
+                channel_id=existing.channel_id,
+                message_id=existing.message_id,
+            )
+            return False
+
         async with self._db.write_session() as session:
             await repos.delete_validation_message(session, report_id)
-        if cleared:
-            log.info("warning_cleared", report_id=report_id)
-        return cleared
+        log.info("warning_cleared", report_id=report_id)
+        return True
 
     async def _post_or_edit(
         self,
