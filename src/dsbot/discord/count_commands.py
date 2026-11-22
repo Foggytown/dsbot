@@ -2,22 +2,27 @@
 
 Design constraints that come straight from how the channel is used:
 
-  * **Any period.** Current week, last week, the last N days/weeks, or two explicit dates.
+  * **Any period.** Current week, last week, the last N days, or two explicit dates.
     A weekly report is the common case, but "how did November go" must not require a shell.
   * **Ephemeral by default.** A count is a staff tool, not channel noise. The caller sees
     the result immediately and alone.
-  * **Publishing is a choice.** An admin sets a destination channel; when it is set, the
-    same result is also posted there (silently, no ping) so it can be referenced later.
+  * **Publishing is a choice.** `publish:yes` also posts the result into the channel named
+    by `/dsbot report-target`. The default is not to publish: asking for a number is not
+    asking to broadcast it.
   * **Permission comes from the ladder, not from Discord.** Anyone whose tier holds
     `review` may run it. That is the same authority that approves reports, so the tool
     cannot grant access to someone who could not decide a verdict anyway.
   * **The result is the same text as the CLI and the scheduler.** One renderer, so a
     number cannot mean two things depending on where it is read.
+
+There is deliberately no CSV variant here. It duplicated this command with an extra file
+attachment and had to say "use the other s ubcommand for the same period", which is noise
+for somebody who just wants the numbers. A CSV is available from the CLI when it is
+genuinely needed for a spreadsheet.
 """
 
 from __future__ import annotations
 
-import io
 from typing import Any
 
 import discord
@@ -25,7 +30,6 @@ import structlog
 from discord import app_commands
 
 from dsbot.modules.quotas.period import Period, resolve_period
-from dsbot.modules.quotas.service import CountingService, CountRequest
 from dsbot.storage import repos
 from dsbot.storage.db import Database
 
@@ -35,11 +39,6 @@ log = structlog.get_logger(__name__)
 PERIOD_CHOICES = [
     app_commands.Choice(name="Текущая неделя", value="current"),
     app_commands.Choice(name="Прошлая неделя", value="last"),
-]
-
-SOURCE_CHOICES = [
-    app_commands.Choice(name="История Discord (рекомендуется)", value="discord"),
-    app_commands.Choice(name="База бота (только с момента запуска)", value="db"),
 ]
 
 # Whether a count is also posted into the publish channel. Asking for a number and also
@@ -166,12 +165,11 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
         binding: Any,
         *,
         period: app_commands.Choice[str] | None,
-        weeks: int | None,
         days: int | None,
         start: str | None,
         end: str | None,
     ) -> Period:
-        """Resolve the window once, so `count` and `csv` cannot disagree.
+        """Resolve the window from what the caller supplied.
 
         Raises ValueError with a readable sentence, which the caller shows to staff.
         """
@@ -180,7 +178,6 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             start=start,
             end=end,
             days=days,
-            weeks=weeks,
             which=period.value if period is not None else "current",
         )
 
@@ -190,27 +187,23 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
     )
     @app_commands.describe(
         period="Готовая неделя: текущая или прошлая",
-        weeks="Или: сколько последних недель, включая текущую",
+        publish="Публиковать ли отчёт в канал из /dsbot report-target",
+        tier="Показать только один тир, например Instructor",
         days="Или: сколько последних дней",
         start="Или: начало периода, ДД.ММ.ГГГГ или ГГГГ-ММ-ДД",
         end="Конец периода, включительно (указывать вместе с start)",
-        source="Откуда читать: история Discord (по умолчанию) или база бота",
-        tier="Показать только один тир, например Instructor",
-        publish="Публиковать ли отчёт в канал из /dsbot report-target",
     )
-    @app_commands.choices(period=PERIOD_CHOICES, source=SOURCE_CHOICES, publish=PUBLISH_CHOICES)
+    @app_commands.choices(period=PERIOD_CHOICES, publish=PUBLISH_CHOICES)
     @app_commands.autocomplete(tier=tier_autocomplete)
     async def count(
         self,
         interaction: discord.Interaction,
         period: app_commands.Choice[str] | None = None,
-        weeks: int | None = None,
+        publish: app_commands.Choice[str] | None = None,
+        tier: str | None = None,
         days: int | None = None,
         start: str | None = None,
         end: str | None = None,
-        source: app_commands.Choice[str] | None = None,
-        tier: str | None = None,
-        publish: app_commands.Choice[str] | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         channel_id = interaction.channel_id
@@ -234,31 +227,23 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             return
 
         try:
-            window = self._window(
-                binding, period=period, weeks=weeks, days=days, start=start, end=end
-            )
+            window = self._window(binding, period=period, days=days, start=start, end=end)
         except ValueError as exc:
             await interaction.followup.send(f"Не понял период: {exc}", ephemeral=True)
             return
 
-        chosen_source = source.value if source is not None else "discord"
         config = binding.config or {}
         timezone = self._timezone_for(binding)
         only_tier = (tier or "").strip() or None
 
         try:
-            if chosen_source == "discord":
-                pages, problems, counted = await self._live_report(
-                    interaction=interaction,
-                    channel_id=channel_id,
-                    window=window,
-                    timezone=timezone,
-                    only_tier=only_tier,
-                )
-            else:
-                pages, problems, counted = await self._db_report(
-                    channel_id, binding, window, timezone, only_tier
-                )
+            pages, problems, _counted = await self._live_report(
+                interaction=interaction,
+                channel_id=channel_id,
+                window=window,
+                timezone=timezone,
+                only_tier=only_tier,
+            )
         except Exception:
             log.exception("count_command_failed", channel_id=channel_id)
             await interaction.followup.send(
@@ -270,11 +255,6 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             await interaction.followup.send(page, ephemeral=True)
         for problem in problems:
             await interaction.followup.send(f"⚠️ {problem}", ephemeral=True)
-
-        if counted:
-            await interaction.followup.send(
-                "Файл для таблицы: `/reports csv` с тем же периодом.", ephemeral=True
-            )
 
         destination = config.get("report_channel_id")
         # Default is "do not publish": a staff member asking for a number has not asked to
@@ -320,7 +300,6 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             "count_command_done",
             channel_id=channel_id,
             user_id=interaction.user.id,
-            source=chosen_source,
             start=window.start.isoformat(),
             end=window.end.isoformat(),
         )
@@ -371,46 +350,6 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             )
         return pages, problems, bool(result.summary.tallies)
 
-    async def _db_report(
-        self,
-        channel_id: int,
-        binding: Any,
-        window: Period,
-        timezone: str,
-        only_tier: str | None = None,
-    ) -> tuple[list[str], list[str], bool]:
-        """Count from what the bot stored. Faster, but only covers uptime."""
-        service = CountingService(self._db)
-        request = CountRequest(
-            binding_id=binding.id,
-            channel_id=channel_id,
-            period=window,
-            timezone=timezone,
-        )
-        outcome = await service.count(
-            request,
-            scope=f"Канал: <#{channel_id}> · база бота",
-            persist=False,
-            only_tier=only_tier,
-        )
-        context_hidden = tuple(
-            str(value) for value in ((binding.config or {}).get("hidden_tiers") or [])
-        )
-        if context_hidden:
-            from dsbot.modules.quotas.render import RenderContext, render_message
-
-            context = RenderContext(
-                period_label=window.describe(timezone),
-                timezone=timezone,
-                scope=f"Канал: <#{channel_id}> · база бота",
-                hidden_tiers=context_hidden,
-                only_tier=only_tier,
-                developer_user_id=self._developer_user_id,
-            )
-            pages = render_message(outcome.summary, context)
-            return pages, list(outcome.problems), bool(outcome.summary.tallies)
-        return outcome.messages(), list(outcome.problems), bool(outcome.summary.tallies)
-
     async def _send_to(
         self, interaction: discord.Interaction, target: int, content: str
     ) -> tuple[bool, str]:
@@ -446,84 +385,6 @@ class CountCommands(app_commands.Group, name="reports", description="Подсч�
             log.warning("publish_send_failed", channel_id=target, error=str(exc))
             return False, f"Discord отклонил отправку в <#{target}>: {exc.text or exc}"
         return True, ""
-
-    @app_commands.command(name="csv", description="Выгрузка подсчёта в CSV-файл")
-    @app_commands.describe(
-        period="Готовая неделя: текущая или прошлая",
-        weeks="Или: сколько последних недель",
-        days="Или: сколько последних дней",
-        start="Или: начало периода, ДД.ММ.ГГГГ",
-        end="Конец периода, включительно",
-        source="Откуда читать: история Discord или база бота",
-        tier="Только один тир, например Instructor",
-    )
-    @app_commands.choices(period=PERIOD_CHOICES, source=SOURCE_CHOICES)
-    @app_commands.autocomplete(tier=tier_autocomplete)
-    async def csv(
-        self,
-        interaction: discord.Interaction,
-        period: app_commands.Choice[str] | None = None,
-        weeks: int | None = None,
-        days: int | None = None,
-        start: str | None = None,
-        end: str | None = None,
-        source: app_commands.Choice[str] | None = None,
-        tier: str | None = None,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        channel_id = interaction.channel_id
-        if channel_id is None or not await self._is_reviewer(interaction):
-            await interaction.followup.send("Недостаточно прав.", ephemeral=True)
-            return
-
-        binding = await self._binding(channel_id)
-        if binding is None:
-            await interaction.followup.send("Канал не привязан к форме.", ephemeral=True)
-            return
-
-        try:
-            window = self._window(
-                binding, period=period, weeks=weeks, days=days, start=start, end=end
-            )
-        except ValueError as exc:
-            await interaction.followup.send(f"Не понял период: {exc}", ephemeral=True)
-            return
-
-        from dsbot.modules.quotas.render import render_csv
-
-        chosen_source = source.value if source is not None else "discord"
-        only_tier = (tier or "").strip() or None
-
-        if chosen_source == "discord":
-            from dsbot.modules.quotas.live import count_channel_from_discord
-
-            result = await count_channel_from_discord(
-                channel=interaction.channel,
-                db=self._db,
-                channel_id=channel_id,
-                period=window,
-                resolver=self._resolver,
-                only_tier=only_tier,
-                hidden_tiers=self._hidden_for(binding),
-                use_cache=self._reaction_cache,
-            )
-            payload_text = render_csv(result.summary)
-        else:
-            service = CountingService(self._db)
-            request = CountRequest(
-                binding_id=binding.id,
-                channel_id=channel_id,
-                period=window,
-                timezone=self._timezone_for(binding),
-            )
-            outcome = await service.count(request, only_tier=only_tier)
-            payload_text = outcome.csv()
-
-        file = discord.File(
-            io.BytesIO(payload_text.encode("utf-8")),
-            filename=f"reports-{window.start:%Y-%m-%d}_{window.end:%Y-%m-%d}.csv",
-        )
-        await interaction.followup.send(file=file, ephemeral=True)
 
 
 async def register_count_commands(
