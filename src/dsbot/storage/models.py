@@ -598,6 +598,11 @@ class WeeklyResult(Base):
     rejected_count: Mapped[int] = mapped_column(Integer, default=0)
     pending_count: Mapped[int] = mapped_column(Integer, default=0)
     conflict_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Approved by somebody whose reviewing rights could not be confirmed. Counted, but
+    # stored separately: without the column the audit trail lost the distinction between
+    # "nobody reviewed it", "a reviewer approved it", and "somebody approved it whose role
+    # has since changed" - while `met` had already been computed with it.
+    unknown_approval_count: Mapped[int] = mapped_column(Integer, default=0)
     met: Mapped[bool] = mapped_column(Boolean, default=False)
 
 

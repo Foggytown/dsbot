@@ -67,6 +67,9 @@ ADDITIONS: tuple[_Addition, ...] = (
     # Fingerprint of the imported form, so an admin's edit made in Discord is not
     # overwritten by the next start. See FormSchema.import_hash.
     _Addition("form_schemas", "import_hash", "VARCHAR(64)"),
+    # "Approved by somebody whose rights cannot be confirmed" was counted in `met` but
+    # never stored, so the audit trail disagreed with the published table.
+    _Addition("weekly_results", "unknown_approval_count", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 

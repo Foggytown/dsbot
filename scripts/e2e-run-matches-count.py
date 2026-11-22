@@ -324,6 +324,39 @@ async def main() -> None:
 
         published = sink.sent[0][1] if sink.sent else ""
         print()
+
+        # The stored audit trail must say the same thing as the channel. This is the part
+        # that was wrong before: the table showed real verdicts while weekly_results held
+        # a recount from the archive, where every report looked unreviewed.
+        async with db.session() as session:
+            run = await repos.get_run_by_period(
+                session,
+                binding_id=binding.id,
+                period_start=period.start,
+                period_end=period.end,
+            )
+            assert run is not None, "the run must be stored"
+            stored = await repos.list_run_results(session, run.id)
+
+        print("WHAT WAS STORED IN weekly_results")
+        print("=" * 78)
+        for row in stored:
+            print(
+                f"  user {row.user_id} approved={row.approved_count} "
+                f"pending={row.pending_count} unknown={row.unknown_approval_count} "
+                f"required={row.required_count} met={row.met}"
+            )
+        print()
+
+        assert stored, "the run must have per-person rows"
+        row = stored[0]
+        assert row.approved_count == 1, (
+            "the stored row must show the approval the channel shows - a database recount "
+            "would store 0 and mark it pending"
+        )
+        assert row.pending_count == 0
+        assert row.met is True, "the stored row must agree that the quota was met"
+
         assert "✅" in published, (
             "the approval is visible in Discord history, so the published report must "
             "show it - a database recount would render it as unreviewed"

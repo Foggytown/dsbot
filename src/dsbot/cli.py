@@ -1688,14 +1688,33 @@ def count_command(
     ] = None,
     save: Annotated[bool, typer.Option(help="Store this run so a re-run updates it")] = False,
     publish: Annotated[int | None, typer.Option(help="Channel id to post the report to")] = None,
+    archive: Annotated[
+        bool,
+        typer.Option("--archive", help="Read the bot's own archive instead of Discord history"),
+    ] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Count approved reports per person for any period."""
+    """Count approved reports per person for any period.
+
+    Reads Discord history by default, exactly like `/reports count` and the weekly run, so
+    a number means the same thing wherever it came from. `--archive` reads the bot's own
+    database instead: only correct for a period the bot was running for, and it cannot see
+    reactions that happened while it was offline.
+    """
     settings = _settings(verbose)
+
+    if archive and publish is not None:
+        typer.echo(
+            "--archive cannot be combined with --publish: the archive is missing reactions "
+            "the bot did not see live, so publishing it would put wrong numbers in a "
+            "channel. Use the default (Discord history) to publish.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
     async def run() -> None:
         from dsbot.discord.reply import DiscordReplySink
-        from dsbot.modules.quotas.service import CountingService, CountRequest
+        from dsbot.modules.quotas.service import CountingService, CountOutcome, CountRequest
 
         db = Database(settings)
         try:
@@ -1731,37 +1750,74 @@ def count_command(
                 else tuple(str(v) for v in (config.get("hidden_tiers") or []))
             )
 
-            if publish is None:
-                # Counting is a pure database read; no Discord connection needed.
+            if archive:
+                # The bot's own database. Only right for a period it was running for, and
+                # it cannot see reactions from while it was offline - which is why this is
+                # opt-in rather than the default.
                 outcome = await CountingService(
                     db,
                     developer_user_id=settings.developer_user_id,
                 ).count(
                     request,
-                    scope=f"Канал: <#{channel}>",
+                    scope=f"Канал: <#{channel}> · база бота",
                     persist=persist,
                     hidden_tiers=hidden,
                 )
                 _print_outcome(outcome, csv_out)
                 return
 
+            # Default: read Discord history, the same path the slash command and the
+            # weekly run use. One number, one meaning.
             target_channel = publish
 
             async def work(client: Any) -> Any:
+                from dsbot.modules.quotas.live import count_channel_from_discord
+                from dsbot.modules.quotas.render import RenderContext
+                from dsbot.modules.ranks.resolver import RankResolver
+                from dsbot.modules.ranks.source import DiscordRankSource
+                from dsbot.storage import ranks_repo
+
+                resolved_channel = client.get_channel(channel)
+                if resolved_channel is None:
+                    resolved_channel = await client.fetch_channel(channel)
+
+                resolver = RankResolver(DiscordRankSource(client), {})
+                async with db.session() as session:
+                    resolver.set_ladders(await ranks_repo.load_all_ladders(session))
+
+                result = await count_channel_from_discord(
+                    channel=resolved_channel,
+                    db=db,
+                    channel_id=channel,
+                    period=period,
+                    resolver=resolver,
+                )
+                context = RenderContext(
+                    period_label=period.describe(timezone),
+                    timezone=timezone,
+                    scope=f"Канал: <#{channel}> · история Discord",
+                    hidden_tiers=hidden,
+                    developer_user_id=settings.developer_user_id,
+                )
                 service = CountingService(
                     db,
                     DiscordReplySink(client),
                     developer_user_id=settings.developer_user_id,
                 )
-                counted = await service.count(
-                    request,
-                    scope=f"Канал: <#{channel}>",
-                    persist=persist,
-                    hidden_tiers=hidden,
+                counted = CountOutcome(
+                    summary=result.summary,
+                    context=context,
+                    roster_size=len(result.summary.tallies),
+                    problems=list(result.problems),
                 )
+                if persist or target_channel is not None:
+                    counted.run_id = await service.persist_run(request, counted)
                 _print_outcome(counted, csv_out)
-                posted = await service.publish(request, counted, target_channel_id=target_channel)
-                typer.echo(f"posted to {target_channel}: {len(posted)} message(s)")
+                if target_channel is not None:
+                    posted = await service.publish(
+                        request, counted, target_channel_id=target_channel
+                    )
+                    typer.echo(f"posted to {target_channel}: {len(posted)} message(s)")
                 return counted
 
             await _with_lookup_client(settings, work)

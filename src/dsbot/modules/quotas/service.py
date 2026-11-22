@@ -159,7 +159,7 @@ class CountingService:
         )
 
         if persist:
-            outcome.run_id = await self._persist(request, outcome)
+            outcome.run_id = await self.persist_run(request, outcome)
         return outcome
 
     async def publish(
@@ -302,7 +302,15 @@ class CountingService:
             reactions = await repos.list_reactions_for_messages(session, message_ids)
         return list(reports), list(reactions)
 
-    async def _persist(self, request: CountRequest, outcome: CountOutcome) -> int:
+    async def persist_run(self, request: CountRequest, outcome: CountOutcome) -> int:
+        """Store one run and its per-person rows, returning the run id.
+
+        Public because the scheduler already has a count from Discord history and must
+        store *that*, not a second count read from the archive. Storing a different
+        summary than the one published is how the audit trail came to disagree with the
+        channel: the weekly table showed real verdicts while `weekly_results` claimed
+        every report was unreviewed.
+        """
         summary = outcome.summary
         payload = {
             "roster_size": outcome.roster_size,
@@ -332,6 +340,11 @@ class CountingService:
                     "pending_count": row.pending_count,
                     "rejected_count": row.rejected_count,
                     "conflict_count": row.conflict_count,
+                    # Without this the "approved by somebody whose rights cannot be
+                    # confirmed" credit vanished from the stored row, even though `met`
+                    # was computed with it. The audit trail then disagreed with the
+                    # published table.
+                    "unknown_approval_count": row.unknown_approval_count,
                     "met": row.met,
                 }
                 for row in summary.tallies

@@ -315,18 +315,17 @@ async def publish_period(
         period=period,
         timezone=timezone,
     )
-    # Persist the run so `publish` can attach the message ids to it, which is what makes a
-    # re-run edit the same message instead of posting a second one.
-    persisted = await service.count(request, persist=True, hidden_tiers=hidden_tiers)
-
-    # The published report must be the Discord count, not the database recount above.
+    # The published report is the Discord count. Persist **that** summary rather than
+    # counting again from the archive: a second count reads different data (the archive
+    # only knows reactions the bot saw live) and used to write numbers that disagreed with
+    # the table in the channel.
     outcome = CountOutcome(
         summary=counted.summary,
         context=context,
-        run_id=persisted.run_id,
         roster_size=len(counted.summary.tallies),
         problems=list(getattr(counted, "problems", []) or []),
     )
+    outcome.run_id = await service.persist_run(request, outcome)
     posted = await service.publish(request, outcome, target_channel_id=target_channel_id)
     return posted, getattr(sink, "last_error", "") or ""
 
