@@ -516,6 +516,19 @@ Each of these shipped and had to be found by a live run or a user report.
     without a restart and a timer cannot drift from the database. Publishing happens
     **before** the schedule advances: a failed publish must leave the period due, or that
     week is silently lost.
+31. **A count was thrown away and silently replaced by a different one.** `publish_period`
+    accepted the Discord count as a parameter named `counted` and then never used it,
+    calling `CountingService.count()` instead - which reads the database. The published
+    weekly report therefore showed every report as unreviewed, because the archive only
+    holds reactions the bot saw while running, while `/reports count` showed the real
+    verdicts. Both numbers were plausible, which is what made it hard to see. Having
+    counted once, publish that. If two paths can produce the same table, they must share
+    one result object, not re-derive it.
+32. **A parameter that is accepted and unused is worse than a missing one.** The bug above
+    was invisible to every test and to the type checker: `counted: Any` matched, the call
+    succeeded, and only a live comparison of the two commands' output exposed it. When a
+    function takes a prepared result, either use it or do not accept it - and prefer a
+    test that asserts the two entry points agree.
 
 ## Verification
 
@@ -588,6 +601,7 @@ scripts/e2e-roster-discord.py /dsbot roster-refresh populates the roster
 scripts/e2e-warning-age.py    an old report is stored but never warned about
 scripts/e2e-phantom-edit.py   real MESSAGE_UPDATE payloads: phantom edits skipped
 scripts/e2e-weekly-schedule.py set a schedule, close it, publish, roll forward
+scripts/e2e-run-matches-count.py run and count render the same table
 scripts/audit-warnings.py     read-only: which reports were warned about, and why
 scripts/e2e-panel-start.py    panel startup: bindings appear, bad DB URL ignored
 scripts/show-commands.py      print every slash command and its parameters
@@ -617,6 +631,12 @@ is not used for this.
 **The order of operations is the design.** Count, publish, *then* advance. If publishing
 fails the schedule does not move, so the period stays due and is retried on the next tick.
 Advancing first would mark a week as done while nothing was posted.
+
+**The published table is the Discord count.** `close_period` counts from history, and
+`publish_period` publishes *that* result. It does not re-count from the database: the
+archive only knows reactions the bot saw live, so a database recount showed every report as
+unreviewed. `/results run` and `/reports count` must render the same numbers, and
+`scripts/e2e-run-matches-count.py` asserts it.
 
 **A missed close is skipped, not caught up.** Decided explicitly: a bot that was down for
 three days must not dump a stale week into the channel on restart. It logs the skip,

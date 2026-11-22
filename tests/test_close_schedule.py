@@ -54,13 +54,20 @@ def test_an_unreadable_date_is_a_sentence_not_a_guess() -> None:
         parse_close("next sunday", MOSCOW)
 
 
-def test_the_period_ends_at_the_close_and_is_one_length_long() -> None:
-    """The admin writes the *end*, so the start is the length before it."""
+def test_the_period_covers_the_whole_closing_day() -> None:
+    """The admin writes the *end*, and means "all of the 22nd is included".
+
+    The stored end is one second after the closing instant, so the exclusive boundary
+    lands on the next midnight. Without that the label began a day earlier
+    (`15.11–22.11` instead of `16.11–22.11`) and looked like a counting bug.
+    """
     close = local("22.11.2026 23:59:59")
     schedule = Schedule(period_days=7, next_close=close)
 
-    assert schedule.current_period.end == close
-    assert schedule.current_period.start == close - timedelta(days=7)
+    assert schedule.current_period.end == close + timedelta(seconds=1)
+    assert schedule.current_period.start == close + timedelta(seconds=1) - timedelta(days=7)
+    # And it is exactly the ISO week, so a run and a `/reports count` agree.
+    assert schedule.current_period.describe(MOSCOW) == "16.11.2026–22.11.2026 (7 дн.)"
 
 
 def test_rolling_keeps_the_wall_clock_time() -> None:
@@ -103,7 +110,7 @@ def test_a_close_is_published_right_after_it_passes() -> None:
 
     assert due.action == "publish"
     assert due.period is not None
-    assert due.period.end == close
+    assert due.period.end == close + timedelta(seconds=1)
     assert due.next_close == close + timedelta(days=7)
 
 

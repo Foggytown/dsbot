@@ -61,11 +61,19 @@ class Schedule:
 
     @property
     def current_period(self) -> Period:
-        """The period ending at `next_close`."""
-        return Period(
-            start=self.next_close - self.period_length,
-            end=self.next_close,
-        )
+        """The period ending at `next_close`.
+
+        The admin writes a closing *instant* - `22.11.2026 23:59:59` - and means "the
+        period covers all of the 22nd". Adding one second makes the exclusive end land on
+        the next midnight, so the period is `[16.11 00:00, 23.11 00:00)` and the label
+        reads `16.11–22.11`, matching what `/reports count` shows for the same week.
+
+        Without this the period became `[15.11 23:59:59, 22.11 23:59:59)`, whose label
+        starts a day earlier. That looked like an off-by-one-day bug in the counting rather
+        than a labelling artifact, and cost real time to rule out.
+        """
+        end = self.next_close + CLOSE_SLACK
+        return Period(start=end - self.period_length, end=end)
 
     def rolled(self, *, after: datetime) -> Schedule:
         """The schedule whose next close is the first one strictly after `after`.

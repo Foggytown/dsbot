@@ -289,6 +289,75 @@ async def test_an_unreachable_destination_fails_before_counting(bound: Database)
     assert await _next_close(bound) == close_at, "a failed publish must not advance"
 
 
+async def test_the_published_report_uses_the_discord_count_not_the_database(
+    bound: Database,
+) -> None:
+    """The bug behind `/results run` showing everyone as unreviewed.
+
+    `publish_period` received the Discord count as `counted` and then ignored it, calling
+    `CountingService.count` instead - which reads the archive. The archive only holds
+    reactions the bot saw live, so a period reviewed while it was offline rendered as
+    entirely unreviewed. The numbers were plausible, which is what made it hard to spot.
+    """
+    from dsbot.modules.quotas.counting import CountSummary, MemberTally
+
+    close_at = parse_close("22.11.2026 23:59:59", MOSCOW)
+    await _arm(bound, close=close_at)
+    binding = await _binding(bound)
+
+    discord_summary = CountSummary(
+        tallies=[
+            MemberTally(
+                user_id=424242,
+                display_name="FromDiscord",
+                tier_label="Instructor",
+                approved_count=7,
+                required_count=1,
+            )
+        ]
+    )
+    captured: dict[str, Any] = {}
+
+    real_count = close_module.count_period
+    real_publish = close_module.publish_period
+
+    async def fake_count(**kwargs: Any) -> Any:
+        return _Counted(discord_summary)
+
+    async def capture_publish(**kwargs: Any) -> tuple[list[int], str]:
+        captured["summary"] = kwargs["counted"].summary
+        return [], "captured"
+
+    close_module.count_period = fake_count  # type: ignore[assignment]
+    close_module.publish_period = capture_publish  # type: ignore[assignment]
+    try:
+        await close_module.close_period(
+            db=bound,
+            client=_Client(),
+            binding_id=binding.id,
+            now=close_at + timedelta(minutes=1),
+            reply=RecordingReplySink(),
+        )
+    finally:
+        close_module.count_period = real_count  # type: ignore[assignment]
+        close_module.publish_period = real_publish  # type: ignore[assignment]
+
+    published = captured.get("summary")
+    assert published is not None, "nothing reached publish"
+    assert published is discord_summary, (
+        "the summary handed to publish must be the Discord one, not a database recount"
+    )
+    assert published.tallies[0].approved_count == 7
+
+
+class _Counted:
+    """Stands in for LiveCountResult: only `summary` and `problems` matter here."""
+
+    def __init__(self, summary: Any) -> None:
+        self.summary = summary
+        self.problems: list[str] = []
+
+
 def _fake(status: int) -> Any:
     class _Response:
         def __init__(self) -> None:

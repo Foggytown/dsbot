@@ -279,19 +279,27 @@ async def publish_period(
 ) -> tuple[list[int], str]:
     """Render, persist and publish one counted period.
 
-    Every caller must go through here. A different ordering - publish then persist, say -
-    would lose the message ids and make a re-run post a duplicate instead of editing.
+    **`counted` is the report.** It comes from `count_channel_from_discord`, which reads the
+    real channel history and the real reactions - the same path `/reports count` uses.
+
+    This used to ignore `counted` and call `CountingService.count()` instead, which reads
+    the *database*. That produced a visibly different report: every report showed as
+    unreviewed, because the archive only knows reactions the bot happened to see live. The
+    fix is not to re-count - it is to publish the count that was already made.
+
+    `CountingService.count` is still called, but only with `persist=True` to write the
+    audit row, and its summary is discarded in favour of `counted`.
 
     `reply` is injectable so the whole path can be exercised without a gateway connection.
     """
     from dsbot.discord.reply import DiscordReplySink
     from dsbot.modules.quotas.render import RenderContext
-    from dsbot.modules.quotas.service import CountingService, CountRequest
+    from dsbot.modules.quotas.service import CountingService, CountOutcome, CountRequest
 
     context = RenderContext(
         period_label=period.describe(timezone),
         timezone=timezone,
-        scope=f"Канал: <#{channel_id}>",
+        scope=f"Канал: <#{channel_id}> · история Discord",
         hidden_tiers=hidden_tiers,
         developer_user_id=developer_user_id,
     )
@@ -303,13 +311,19 @@ async def publish_period(
         period=period,
         timezone=timezone,
     )
-    # Persist first so `publish` can attach the message ids to a run row, which is what
-    # makes a manual re-run edit the same message instead of posting a second one.
-    outcome = await service.count(request, persist=True, hidden_tiers=hidden_tiers)
-    outcome.context = context
+    # Persist the run so `publish` can attach the message ids to it, which is what makes a
+    # re-run edit the same message instead of posting a second one.
+    persisted = await service.count(request, persist=True, hidden_tiers=hidden_tiers)
+
+    # The published report must be the Discord count, not the database recount above.
+    outcome = CountOutcome(
+        summary=counted.summary,
+        context=context,
+        run_id=persisted.run_id,
+        roster_size=len(counted.summary.tallies),
+        problems=list(getattr(counted, "problems", []) or []),
+    )
     posted = await service.publish(request, outcome, target_channel_id=target_channel_id)
-    # Returned, not stashed on a module attribute: two channels can close on the same tick,
-    # and a shared slot would let one close read the other's reason.
     return posted, getattr(sink, "last_error", "") or ""
 
 
