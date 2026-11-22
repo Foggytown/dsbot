@@ -562,6 +562,32 @@ def _number_link_issues(fields: list[BoundField], issues: list[FieldIssue]) -> N
         issue.detail.setdefault("field_number", numbers.get(issue.field_id, "?"))
 
 
+def _drop_doubled_link_complaints(fields: list[BoundField], issues: list[FieldIssue]) -> None:
+    """Do not complain twice about one field because it holds a link.
+
+    A link pasted into the photos field triggers both "text instead of a photo" (from the
+    field check) and "the link belongs elsewhere" (from the cross-field check). The first
+    is a consequence of the second: once the link is moved, the field is empty and the
+    photo complaint is correct. Showing both makes the fix look bigger than it is, and
+    the reporter has to work out which line to act on.
+    """
+    misplaced = {
+        issue.detail.get("found_in") for issue in issues if issue.code == "link_in_wrong_field"
+    }
+    if not misplaced:
+        return
+    numbers = {bound.spec.id: _field_number(bound.spec) for bound in fields}
+    issues[:] = [
+        issue
+        for issue in issues
+        if not (
+            issue.code == "evidence_text_without_file"
+            and issue.field_id is not None
+            and numbers.get(issue.field_id) in misplaced
+        )
+    ]
+
+
 def _links_in_wrong_field(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue]:
     """A Discord link written in the wrong numbered field.
 
@@ -678,6 +704,7 @@ def parse_report(
     # ("no link here") are added above, not inside `validate`, so numbering them there
     # would miss them and leave a raw `{detail_field_number}` in the warning.
     _number_link_issues(fields, issues)
+    _drop_doubled_link_complaints(fields, issues)
 
     attribution_raw: str | None = None
     if schema.attribution_field:

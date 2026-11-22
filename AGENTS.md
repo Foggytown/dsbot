@@ -552,6 +552,23 @@ Each of these shipped and had to be found by a live run or a user report.
     evidence chain was broken. `link_in_wrong_field` now names both field numbers and tells
     the reporter to move it. The general lesson: a field that "accepts text" will swallow
     anything, so validate what the text *is*, not merely that something is there.
+34. **The age limit froze existing warnings instead of only preventing new ones.** The
+    guard meant "do not complain about an ancient report" was applied to the whole warning
+    path, so an existing warning on an old report was never edited and never cleared. A
+    reporter who moved the link into field 4 saw the same complaint forever, which is the
+    "edit it and it clears itself" promise broken. The guard now applies only when there is
+    no warning row yet (`has_warning`); a warning that exists is always maintained. Two
+    separate questions: *may I start nagging*, and *may I update what I am already saying*.
+35. **Evidence text with no attachment was only a warning.** `3. фото` with zero files
+    attached was reported as a warning, and warnings do not invalidate a report - so a
+    report with no evidence at all validated as **valid** and counted toward a quota. It is
+    an error now. A field that names evidence is asserting a file exists; when it does not,
+    nothing about the report is correct.
+36. **A warning that says «evidence_2» is not a warning.** With no label on the evidence
+    fields, the fallback printed the parser's internal id, so the channel saw
+    "В поле «evidence_2» текст вместо фото". The hint now uses the reporter's own numbered
+    path ("пункт 3"), because that is what they are looking at. Never print an internal
+    identifier to a user.
 
 ## Verification
 
@@ -622,6 +639,7 @@ scripts/e2e-conflict.py       conflict stays silent and credits nobody
 scripts/e2e-ladder-log.py     the review-role diagnostic counts correctly
 scripts/e2e-roster-discord.py /dsbot roster-refresh populates the roster
 scripts/e2e-warning-age.py    an old report is stored but never warned about
+scripts/repro-stale-warning.py fixing part of an old report updates its warning
 scripts/e2e-phantom-edit.py   real MESSAGE_UPDATE payloads: phantom edits skipped
 scripts/e2e-weekly-schedule.py set a schedule, close it, publish, roll forward
 scripts/e2e-run-matches-count.py run and count render the same table

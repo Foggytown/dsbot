@@ -190,11 +190,18 @@ class ReportService:
         # deferred report that dies with the process is worse. Warn immediately; if the
         # photos arrive later the warning is cleared automatically.
         report_id = await self._persist(context, candidate, parsed, status="invalid")
+
+        # An existing warning must always be maintained, however old the report is: the
+        # age limit is about not CREATING a new complaint, never about freezing an old one.
+        async with self._db.session() as session:
+            existing = await repos.get_validation_message(session, report_id)
+
         if not self._may_warn(
             head,
             channel_id=context.channel_id,
             report_id=report_id,
             issues=issue_codes,
+            has_warning=existing is not None,
         ):
             return ProcessResult(
                 report_id=report_id,
@@ -221,16 +228,29 @@ class ReportService:
         )
 
     def _may_warn(
-        self, head: GroupMessage, *, channel_id: int, report_id: int, issues: list[str]
+        self,
+        head: GroupMessage,
+        *,
+        channel_id: int,
+        report_id: int,
+        issues: list[str],
+        has_warning: bool = False,
     ) -> bool:
-        """Is this report recent enough to be worth complaining about?
+        """Is this report recent enough to complain about *again*?
 
         The reply is a nudge to fix something that is still actionable. Re-evaluating a
         message from months ago - because somebody added a reaction, edited it, or a
         reconciliation sweep touched it - does not make it late, and warning then is
-        indistinguishable from the bot malfunctioning. It is stored either way; only the
-        reply to the channel is suppressed.
+        indistinguishable from the bot malfunctioning.
+
+        **An existing warning is always maintained**, however old the report is. The age
+        check exists to stop the bot *creating* a complaint about ancient history; letting
+        it also block *updates* froze warnings in place. A reporter who fixed one of three
+        problems kept seeing all three, and a fully corrected report kept its warning
+        forever, which is exactly the "edit it and it clears itself" promise broken.
         """
+        if has_warning:
+            return True
         if self._warn_max_age is None or self._warn_max_age <= timedelta(0):
             return True
         created = head.created_at
@@ -547,16 +567,23 @@ def _field_hint(field_id: str | None, parsed: ParseOutput) -> str:
     """A short name for a field, for use in a warning line.
 
     A hint sentence is too long to read inside «...», so the label is preferred and the
-    hint is only a fallback. Without a label the field path is used: «поле 3».
+    hint is only a fallback. Without a label, the form's numbered path is used - and when
+    the path is a sub-item like `3.2`, the parent number is used, because a reporter
+    thinks in items ("пункт 3"), not in parser ids. Falling back to the raw field id
+    produced "В поле «evidence_2»", which means nothing to anybody reading the channel.
     """
     if field_id is None:
         return "?"
     for bound in parsed.fields:
-        if bound.spec.id == field_id:
-            if bound.spec.labels:
-                return bound.spec.labels[0]
-            if bound.spec.path:
-                return f"поле {bound.spec.path}"
+        if bound.spec.id != field_id:
+            continue
+        if bound.spec.labels:
+            return bound.spec.labels[0]
+        if bound.spec.path:
+            return f"пункт {bound.spec.path.split('.')[0]}"
+        # An evidence slot with no label of its own belongs to its parent item.
+        if bound.item_path:
+            return f"пункт {bound.item_path[0]}"
     return field_id
 
 

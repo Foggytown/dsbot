@@ -293,7 +293,11 @@ def parse_attachment(raw: str, field_id: str, attachment_count: int, slot: int =
                 FieldIssue(
                     code="evidence_text_without_file",
                     field_id=field_id,
-                    severity="warning",
+                    # An error, not a warning. "Photo" written with no file attached is
+                    # the absence of evidence, and evidence is what the report is for.
+                    # As a warning it was reported and then ignored, so a report with
+                    # "3. фото" and zero attachments validated as valid.
+                    severity="error",
                     detail={"raw": text},
                 )
             ],
