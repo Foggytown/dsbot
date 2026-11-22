@@ -115,6 +115,12 @@ class Settings(BaseSettings):
     # stale, and please report it.
     reaction_cache: bool = Field(default=True)
 
+    # Publish a channel's period automatically when its close time passes.
+    #
+    # Each channel stores its own close time (`/results set`), so this only enables the
+    # watcher; nothing is scheduled here. Off means every report is run by hand.
+    weekly_schedule_enabled: bool = Field(default=True)
+
     # DEV ONLY. Accept messages authored by bots, so the live gateway path can be
     # exercised by posting a test message as the bot itself. Never enable in production.
     dev_accept_bot_messages: bool = Field(default=False)

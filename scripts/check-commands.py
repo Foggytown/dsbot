@@ -18,6 +18,7 @@ from discord import app_commands
 from dsbot.config import Settings
 from dsbot.discord.commands import AdminCommands
 from dsbot.discord.count_commands import CountCommands
+from dsbot.discord.results_commands import ResultsCommands
 from dsbot.storage.db import Database
 
 
@@ -30,12 +31,15 @@ async def main() -> None:
 
         admin = AdminCommands(db)
         count = CountCommands(db, None, "Europe/Moscow")
+        results = ResultsCommands(db)
         print("admin commands:", sorted(c.name for c in admin.commands))
         print("count commands:", sorted(c.name for c in count.commands))
+        print("results commands:", sorted(c.name for c in results.commands))
 
         tree = app_commands.CommandTree(discord.Client(intents=discord.Intents.none()))
         tree.add_command(admin)
         tree.add_command(count)
+        tree.add_command(results)
 
         checked = 0
         for group in tree.get_commands():

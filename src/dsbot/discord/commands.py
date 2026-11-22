@@ -397,11 +397,35 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
         channel_id = interaction.channel_id
         assert channel_id is not None
 
-        await set_report_target(
-            self._db,
-            channel_id,
-            publish_to=channel.id if channel is not None else 0,
-        )
+        # The target is usually a *different* channel from the report one, because the
+        # table belongs somewhere quieter. That channel is not bound to a form, and
+        # requiring it to be made the setting unusable in exactly the case it exists for:
+        # the call raised ValueError and the interaction failed with no message.
+        source_channel = channel_id
+        async with self._db.session() as session:
+            binding = await repos.get_binding_by_channel(session, channel_id)
+            if binding is None and channel is not None:
+                binding = await repos.get_binding_by_channel(session, channel.id)
+                if binding is not None:
+                    source_channel = channel.id
+        if binding is None:
+            await interaction.followup.send(
+                "Этот канал не привязан к форме рапорта, и публиковать нечего. "
+                "Вызовите команду в канале рапортов, указав канал для публикации.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await set_report_target(
+                self._db,
+                source_channel,
+                publish_to=channel.id if channel is not None else 0,
+            )
+        except ValueError as exc:
+            await interaction.followup.send(f"Не получилось: {exc}", ephemeral=True)
+            return
+
         if channel is None:
             await interaction.followup.send(
                 "Отчёты больше не публикуются в канал — только в ответ на команду.",
@@ -411,7 +435,7 @@ class AdminCommands(app_commands.Group, name="dsbot", description="dsbot configu
             await interaction.followup.send(
                 f"Отчёты будут публиковаться в {channel.mention}.", ephemeral=True
             )
-        log.info("admin_report_target", channel_id=channel_id, publish_to=channel)
+        log.info("admin_report_target", channel_id=source_channel, publish_to=channel)
 
     @app_commands.command(
         name="ladder-pin",

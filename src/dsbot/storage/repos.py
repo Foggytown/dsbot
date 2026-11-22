@@ -9,9 +9,10 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
+import structlog
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +43,8 @@ from dsbot.storage.models import (
     WeeklyResult,
     WeeklyRun,
 )
+
+log = structlog.get_logger(__name__)
 
 # --- raw events ------------------------------------------------------------
 
@@ -650,6 +653,78 @@ async def list_runs_for_binding(
 
 async def get_binding_by_id(session: AsyncSession, binding_id: int) -> ChannelBinding | None:
     return await session.get(ChannelBinding, binding_id)
+
+
+# --- close schedules -------------------------------------------------------
+#
+# The schedule lives in `channel_bindings.config`, not in its own table. That is
+# deliberate: the binding is already "the unit of behaviour for a channel", it survives a
+# redeploy because it lives in the database on /data, and it is already the place where
+# `report_channel_id` and `hidden_tiers` are kept. A separate table would be a second
+# place to look for the same channel's settings.
+
+
+async def set_binding_schedule(
+    session: AsyncSession,
+    *,
+    binding_id: int,
+    next_close: datetime,
+    period_days: int,
+) -> None:
+    """Store when this channel's next period closes, and how long a period is."""
+    binding = await session.get(ChannelBinding, binding_id)
+    if binding is None:
+        raise ValueError(f"binding {binding_id} not found")
+    config = dict(binding.config or {})
+    config["next_close"] = next_close.astimezone(UTC).isoformat()
+    config["period_days"] = period_days
+    binding.config = config
+
+
+async def clear_binding_schedule(session: AsyncSession, *, binding_id: int) -> None:
+    binding = await session.get(ChannelBinding, binding_id)
+    if binding is None:
+        return
+    config = dict(binding.config or {})
+    config.pop("next_close", None)
+    config.pop("period_days", None)
+    binding.config = config
+
+
+async def list_scheduled_bindings(session: AsyncSession) -> Sequence[ChannelBinding]:
+    """Bindings that have a close schedule. Filtered in Python, not SQL.
+
+    The schedule is JSON, and SQLite's JSON paths are not worth the fragility here: there
+    are a handful of bindings, and a Python filter cannot silently mis-parse a stored
+    datetime the way a LIKE can.
+    """
+    rows = (await session.scalars(select(ChannelBinding))).all()
+    return [row for row in rows if (row.config or {}).get("next_close")]
+
+
+def binding_schedule(binding: ChannelBinding) -> Any:
+    """The schedule stored on a binding, or None when the channel has none."""
+    from dsbot.modules.quotas.schedule import Schedule
+
+    config = binding.config or {}
+    raw_close = config.get("next_close")
+    if not raw_close:
+        return None
+    try:
+        close = datetime.fromisoformat(str(raw_close))
+    except ValueError:
+        log.warning("bad_stored_next_close", binding_id=binding.id, value=raw_close)
+        return None
+    if close.tzinfo is None:
+        close = close.replace(tzinfo=UTC)
+    try:
+        days = int(config.get("period_days") or 7)
+    except (TypeError, ValueError):
+        days = 7
+    try:
+        return Schedule(period_days=days, next_close=close)
+    except ValueError:
+        return None
 
 
 async def get_quota_policies(

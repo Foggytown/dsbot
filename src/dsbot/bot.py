@@ -48,6 +48,11 @@ log = structlog.get_logger(__name__)
 # enough that an admin sees their change within a few seconds, cheap enough to ignore.
 CHANNELS_POLL_SECONDS = 5.0
 
+# How often the close schedule is checked. The schedule is an editable field, not a timer
+# built at startup, so re-reading it is the only way an admin's change takes effect without
+# a restart. One read per minute for a handful of bindings is negligible.
+CLOSE_POLL_SECONDS = 60.0
+
 # Intents come from settings so the required portal toggles match what is implemented.
 # Message Content is always on (reports are text). Members is opt-in until ranks exist.
 
@@ -122,6 +127,15 @@ class Bot(discord.ext.commands.Bot):
             developer_user_id=self.settings.developer_user_id,
         )
 
+        from dsbot.discord.results_commands import register_results_commands
+
+        await register_results_commands(
+            self,
+            self.db,
+            timezone=self.settings.default_timezone,
+            developer_user_id=self.settings.developer_user_id,
+        )
+
         # Reports are warned about immediately now, but older rows may still carry the
         # retired "deferred" status from before that change. Resolve them on start so a
         # database migrated from an older version does not keep silent leftovers.
@@ -181,6 +195,8 @@ class Bot(discord.ext.commands.Bot):
             group_window_seconds=self.settings.report_group_window_seconds,
         )
         self._spawn(self._watch_channels_file())
+        if self.settings.weekly_schedule_enabled:
+            self._spawn(self._watch_close_schedule())
 
     async def _load_bindings(self) -> list[Any]:
         async with self.db.session() as session:
@@ -214,6 +230,58 @@ class Bot(discord.ext.commands.Bot):
                 await self._auto_bind()
             except Exception:
                 log.exception("channels_reload_failed", path=str(path))
+
+    async def _watch_close_schedule(self) -> None:
+        """Close periods when their time comes, while the bot runs.
+
+        Polling, not APScheduler, and on purpose. The schedule is one field per channel
+        that an admin edits from Discord, so a timer that was computed when the bot
+        started would be wrong the moment somebody changes the close. Re-reading the
+        stored value every minute cannot drift out of sync with the database, and caps
+        the worst-case delay at a minute.
+
+        A missed close is NOT caught up here. The admin asked for that explicitly: a bot
+        that was down must not dump a stale week into the channel when it comes back.
+        `close_period` records the period as skipped and moves to the next one.
+
+        `_closing` guards against a slow run overlapping the next tick, which would
+        otherwise publish the same period twice.
+        """
+        import dsbot.modules.quotas.close as close
+        from dsbot.storage import repos as schedule_repos
+
+        while True:
+            await asyncio.sleep(CLOSE_POLL_SECONDS)
+            if self.is_closed():
+                return
+            try:
+                async with self.db.session() as session:
+                    bindings = list(await schedule_repos.list_scheduled_bindings(session))
+            except Exception:
+                log.exception("close_schedule_read_failed")
+                continue
+
+            for binding in bindings:
+                if self.is_closed():
+                    return
+                try:
+                    outcome = await close.close_period(
+                        db=self.db,
+                        client=self,
+                        binding_id=binding.id,
+                        developer_user_id=self.settings.developer_user_id,
+                    )
+                except Exception:
+                    log.exception("close_period_failed", binding_id=binding.id)
+                    continue
+                if outcome.action == "failed":
+                    # Already logged inside; surface the reason where an operator looks.
+                    log.error(
+                        "close_period_problem",
+                        channel_id=outcome.channel_id,
+                        period=outcome.period_label,
+                        problem=outcome.problem,
+                    )
 
     async def _auto_bind(self) -> list[Any]:
         """Make the database match the channels file, then reload.

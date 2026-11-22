@@ -18,10 +18,11 @@ Deployed phases:
   as they happen so recent scans need no API calls; dashboards.
 
 **Where things stand.** Phase 3 is deployed and working on the real server: both channels
-are bound, the roster is scraped, and `/reports count` produces numbers. The next phase is
-scheduled weekly publication. Open decisions are listed at the end of this file under
-"Open questions" — read them before starting new work; several are choices that belong to
-the community, not to code.
+are bound, the roster is scraped, and `/reports count` produces numbers. Phase 4 - the
+periodic report - is implemented: a channel stores its own close time via `/results set`,
+and the bot publishes the finished period into the channel named by `/dsbot report-target`.
+Open decisions are listed at the end of this file under "Open questions" — read them before
+starting new work; several are choices that belong to the community, not to code.
 
 **The panel's settings are a web form, not a `.env` file.** Values persist across uploads,
 so a stale entry keeps applying until somebody deletes it by hand. Keep it minimal — token
@@ -502,6 +503,19 @@ Each of these shipped and had to be found by a live run or a user report.
     `validation_messages -> reports -> messages` and classifying each trigger from
     `raw_events` ("ONLY seen as an EDIT"). Two habits that paid off: make the audit tool
     refuse to lie about a stale file, and never write to a database pulled off the server.
+29. **A setting could only be made in the channel it did not apply to.** `/dsbot
+    report-target` wrote the destination onto the binding of the channel the command was
+    typed in, and a *destination* channel is not bound to a form. So typing it where it
+    makes sense raised `ValueError`, the interaction failed, and the user saw nothing -
+    the feature was reported as "doesn't work" and looked like a Discord problem. Any
+    command that configures one channel while being typed in another must resolve the
+    binding by intent, and must turn every failure into a visible sentence.
+30. **A schedule is a stored instant, not a timer.** Phase 4 deliberately does not use
+    APScheduler and does not build timers at startup. The close time is one editable field
+    per channel, re-read every minute, so an admin changing it from Discord takes effect
+    without a restart and a timer cannot drift from the database. Publishing happens
+    **before** the schedule advances: a failed publish must leave the period due, or that
+    week is silently lost.
 
 ## Verification
 
@@ -573,10 +587,46 @@ scripts/e2e-ladder-log.py     the review-role diagnostic counts correctly
 scripts/e2e-roster-discord.py /dsbot roster-refresh populates the roster
 scripts/e2e-warning-age.py    an old report is stored but never warned about
 scripts/e2e-phantom-edit.py   real MESSAGE_UPDATE payloads: phantom edits skipped
+scripts/e2e-weekly-schedule.py set a schedule, close it, publish, roll forward
 scripts/audit-warnings.py     read-only: which reports were warned about, and why
 scripts/e2e-panel-start.py    panel startup: bindings appear, bad DB URL ignored
 scripts/show-commands.py      print every slash command and its parameters
 ```
+
+## Phase 4 in one page
+
+The periodic report. Four moving parts:
+
+| Piece | Lives in | Answers |
+|---|---|---|
+| the schedule | `channel_bindings.config` (`next_close`, `period_days`) | when does this channel's period end |
+| `/results set` | `discord/results_commands.py` | the admin's one command to configure it |
+| the watcher | `bot.py::_watch_close_schedule` | has a close time passed |
+| the close | `modules/quotas/close.py` | count, publish, then advance |
+
+**The admin's model is one number.** `/results set period:week next_result:22.11.2026
+23:59:59` stores "the period *ending* at this moment is a week long". The period being
+counted is `[close - 7 days, close)`. Nobody has to reason about cron expressions, and
+"make this week two days longer" is one field.
+
+**Why polling and not APScheduler.** The close time is editable from Discord at any
+moment; a timer computed at startup would be wrong the instant somebody changes it. One
+read per minute cannot drift from the database. APScheduler stays in the dependencies but
+is not used for this.
+
+**The order of operations is the design.** Count, publish, *then* advance. If publishing
+fails the schedule does not move, so the period stays due and is retried on the next tick.
+Advancing first would mark a week as done while nothing was posted.
+
+**A missed close is skipped, not caught up.** Decided explicitly: a bot that was down for
+three days must not dump a stale week into the channel on restart. It logs the skip,
+advances, and the admin can run it by hand with `/results run`. The one exception is a
+grace window (`DEFAULT_GRACE`, two hours) so that a redeploy which lands a minute after the
+boundary does not cost a week - that case is a restart, not an absence.
+
+**A re-run edits, never duplicates.** `weekly_runs.published_ids` holds every page's
+message id, so running the same period again edits those messages. This is why the run is
+persisted *before* publishing.
 
 ## Open questions — decisions, not bugs
 
