@@ -361,7 +361,9 @@ def _parse_by_type(spec: FieldSpec, raw: str, attachment_count: int, slot: int =
 # --- validation ------------------------------------------------------------
 
 
-def validate(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue]:
+def validate(
+    schema: FormSchemaDef, fields: list[BoundField], tokenized: Tokenized | None = None
+) -> list[FieldIssue]:
     """Check required-ness, conditional requirements, and cross-field rules."""
     issues: list[FieldIssue] = []
     values = {b.spec.id: b for b in fields}
@@ -416,7 +418,7 @@ def validate(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue
                 )
             )
 
-    issues.extend(_links_in_wrong_field(schema, fields))
+    issues.extend(_links_in_wrong_field(schema, fields, tokenized))
 
     # --- cross-field rules -------------------------------------------------
     # These are what make hard forms expressible: requirements that depend on another
@@ -563,19 +565,22 @@ def _number_link_issues(fields: list[BoundField], issues: list[FieldIssue]) -> N
 
 
 def _drop_doubled_link_complaints(fields: list[BoundField], issues: list[FieldIssue]) -> None:
-    """Do not complain twice about one field because it holds a link.
+    """Do not say the same thing twice about the promotion link.
 
-    A link pasted into the photos field triggers both "text instead of a photo" (from the
-    field check) and "the link belongs elsewhere" (from the cross-field check). The first
-    is a consequence of the second: once the link is moved, the field is empty and the
-    photo complaint is correct. Showing both makes the fix look bigger than it is, and
-    the reporter has to work out which line to act on.
+    Three checks can fire together: "text instead of a photo" (the field holds a link),
+    "the link belongs in item 4" (it is in the wrong place), and "a link is required"
+    (item 4 is empty). All three are true, but the last two are consequences of the
+    first, and listing them makes a one-line fix look like three problems.
     """
     misplaced = {
         issue.detail.get("found_in") for issue in issues if issue.code == "link_in_wrong_field"
     }
     if not misplaced:
         return
+
+    # "A link is required" says nothing new when the link has been found elsewhere.
+    issues[:] = [issue for issue in issues if issue.code != "rule_required"]
+
     numbers = {bound.spec.id: _field_number(bound.spec) for bound in fields}
     issues[:] = [
         issue
@@ -588,7 +593,11 @@ def _drop_doubled_link_complaints(fields: list[BoundField], issues: list[FieldIs
     ]
 
 
-def _links_in_wrong_field(schema: FormSchemaDef, fields: list[BoundField]) -> list[FieldIssue]:
+def _links_in_wrong_field(
+    schema: FormSchemaDef,
+    fields: list[BoundField],
+    tokenized: Tokenized | None = None,
+) -> list[FieldIssue]:
     """A Discord link written in the wrong numbered field.
 
     The failure this exists for is quiet and misleading. Somebody pastes the previous
@@ -610,12 +619,16 @@ def _links_in_wrong_field(schema: FormSchemaDef, fields: list[BoundField]) -> li
 
     expected = _field_number(link_field.spec)
     issues: list[FieldIssue] = []
+    # Sub-item text is not kept on the bound field, so `3.1. <link>` is invisible to a
+    # check on `raw_value` alone. Scan the tokenized items as well, which is where the
+    # reporter's actual text lives.
     for bound in fields:
         if bound.spec.type == "discord_message_ref":
             continue
         if not _accepts_links(bound.spec):
             continue
-        if not _looks_like_link(bound.raw_value):
+        link_text = _link_in_field(bound, tokenized)
+        if link_text is None:
             continue
         issues.append(
             FieldIssue(
@@ -624,11 +637,38 @@ def _links_in_wrong_field(schema: FormSchemaDef, fields: list[BoundField]) -> li
                 detail={
                     "found_in": _field_number(bound.spec),
                     "expected": expected,
-                    "found_raw": bound.raw_value.strip(),
+                    "found_raw": link_text,
                 },
             )
         )
     return issues
+
+
+def _link_in_field(bound: BoundField, tokenized: Tokenized | None) -> str | None:
+    """The link held by this field, including one written as a sub-item.
+
+    `raw_value` is only the field's own text. Evidence is often written as
+    `3. Доказательства:` followed by `3.1. <link>`, and the sub-item lives in a separate
+    token, so checking the head alone missed the link entirely.
+    """
+    for candidate in (
+        bound.raw_value,
+        (bound.result.value or {}).get("raw") if isinstance(bound.result.value, dict) else None,
+    ):
+        if isinstance(candidate, str) and _looks_like_link(candidate):
+            return candidate.strip()
+
+    if tokenized is None:
+        return None
+    prefix = bound.item_path or bound.spec.path_tuple
+    if not prefix:
+        return None
+    for item in tokenized.items:
+        if len(item.path) <= len(prefix) or item.path[: len(prefix)] != prefix:
+            continue
+        if _looks_like_link(item.value):
+            return item.value.strip()
+    return None
 
 
 def _accepts_links(spec: FieldSpec) -> bool:
@@ -697,7 +737,7 @@ def parse_report(
         attachment_count if attachment_count is not None else group.total_attachments
     )
     fields = bind_fields(schema, tokenized, total_attachments)
-    issues = validate(schema, fields)
+    issues = validate(schema, fields, tokenized)
     for bound in fields:
         issues.extend(bound.result.issues)
     # Number the link issues once, after both sets are merged: the field-level checks

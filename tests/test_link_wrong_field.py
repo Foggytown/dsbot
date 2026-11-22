@@ -77,7 +77,112 @@ def test_a_link_in_both_places_is_not_flagged() -> None:
     assert "link_in_wrong_field" not in codes(result)
 
 
+def test_a_link_written_as_a_photo_sub_item_is_detected() -> None:
+    """The shape reporters actually use: `3. Доказательства:` then `3.1. <link>`.
+
+    Sub-item text is not part of the field's own value, so this was invisible to a check
+    on the field alone - the report validated as correct with the promotion link missing.
+    """
+    from pathlib import Path
+
+    from dsbot.modules.reports.yaml_form import parse_form_file
+
+    schema = parse_form_file(Path("forms/training.yaml"))
+    text = f"1. SOB | 0016\n2. INF\n3. Доказательства:\n     - 3.1. {LINK}\n     - 3.2. фото\n4."
+    candidate = ReportCandidate(
+        messages=[
+            GroupMessage(
+                message_id=1,
+                author_id=1,
+                created_at=datetime.now(UTC),
+                content=text,
+                attachment_count=2,
+            )
+        ]
+    )
+    result = parse_report([schema], candidate, attachment_count=2)
+
+    assert "link_in_wrong_field" in codes(result)
+    assert not result.is_valid  # type: ignore[attr-defined]
+    issue = next(i for i in result.issues if i.code == "link_in_wrong_field")  # type: ignore[attr-defined]
+    assert issue.detail["found_in"] == "3"
+    assert issue.detail["expected"] == "4"
+
+
+def test_the_warning_does_not_also_say_the_link_is_required() -> None:
+    """One problem, one line. "Move it" is the fix; "it is required" adds nothing."""
+    from pathlib import Path
+
+    from dsbot.modules.reports.yaml_form import parse_form_file
+
+    schema = parse_form_file(Path("forms/training.yaml"))
+    text = "1. SOB | 0016\n2. INF\n3. фото\n4. "
+    candidate = ReportCandidate(
+        messages=[
+            GroupMessage(
+                message_id=1,
+                author_id=1,
+                created_at=datetime.now(UTC),
+                content=text,
+                attachment_count=2,
+            )
+        ]
+    )
+    result = parse_report([schema], candidate, attachment_count=2)
+
+    # The link is simply missing here, so "required" is the right complaint.
+    assert codes(result) == ["rule_required"]
+
+
+def test_no_duplicate_when_the_link_is_misplaced() -> None:
+    from pathlib import Path
+
+    from dsbot.modules.reports.yaml_form import parse_form_file
+
+    schema = parse_form_file(Path("forms/training.yaml"))
+    text = f"1. SOB | 0016\n2. INF\n3. {LINK}\n4."
+    candidate = ReportCandidate(
+        messages=[
+            GroupMessage(
+                message_id=1,
+                author_id=1,
+                created_at=datetime.now(UTC),
+                content=text,
+                attachment_count=2,
+            )
+        ]
+    )
+    result = parse_report([schema], candidate, attachment_count=2)
+
+    found = codes(result)
+    assert "link_in_wrong_field" in found
+    assert "rule_required" not in found, "the link exists, it is just in the wrong place"
+
+
 def test_any_discord_link_is_accepted_without_being_fetched() -> None:
+    """Presence is the check; the linked report's approval is not verified.
+
+    Decided explicitly: senior instructors judge whether the linked report was approved
+    while approving this one. So the parser must accept *any* well-formed Discord message
+    link - including one in a guild this bot has never seen - and parsing is pure: it takes
+    text and attachments and has no client to fetch anything with.
+    """
+    import inspect
+
+    from dsbot.modules.reports import parser
+
+    # Parsing must stay a pure function of the text: no client, no I/O.
+    source = inspect.getsource(parser)
+    assert "await " not in source, "the parser must not perform I/O"
+    assert "discord.Client" not in source
+
+    foreign = (
+        "https://discord.com/channels/999999999999999999/888888888888888888/777777777777777777"
+    )
+    result = parse(f"1. SOB | 0016\n2. INF\n3. фото\n4. {foreign}", attachments=2)
+
+    assert result.is_valid, "any well-formed Discord message link satisfies field 4"  # type: ignore[attr-defined]
+    assert "link_not_discord" not in codes(result)
     """Presence is the check; the linked report's approval is not verified.
 
     Decided explicitly: senior instructors judge whether the linked report was approved

@@ -192,7 +192,8 @@ class ReportService:
         report_id = await self._persist(context, candidate, parsed, status="invalid")
 
         # An existing warning must always be maintained, however old the report is: the
-        # age limit is about not CREATING a new complaint, never about freezing an old one.
+        # age limit is about not CREATING a new complaint about history, never about
+        # leaving a live report's warning frozen after the author fixed it.
         async with self._db.session() as session:
             existing = await repos.get_validation_message(session, report_id)
 
@@ -236,18 +237,17 @@ class ReportService:
         issues: list[str],
         has_warning: bool = False,
     ) -> bool:
-        """Is this report recent enough to complain about *again*?
+        """Is this report recent enough to complain about?
 
         The reply is a nudge to fix something that is still actionable. Re-evaluating a
         message from months ago - because somebody added a reaction, edited it, or a
         reconciliation sweep touched it - does not make it late, and warning then is
         indistinguishable from the bot malfunctioning.
 
-        **An existing warning is always maintained**, however old the report is. The age
-        check exists to stop the bot *creating* a complaint about ancient history; letting
-        it also block *updates* froze warnings in place. A reporter who fixed one of three
-        problems kept seeing all three, and a fully corrected report kept its warning
-        forever, which is exactly the "edit it and it clears itself" promise broken.
+        **A warning that already exists is always maintained**, however old the report is.
+        Template checking is a live-only job; what the age limit prevents is the bot
+        *starting* to nag about history. Letting it also block updates left warnings
+        frozen: an author who fixed their report kept seeing the old complaint forever.
         """
         if has_warning:
             return True

@@ -569,6 +569,12 @@ Each of these shipped and had to be found by a live run or a user report.
     "В поле «evidence_2» текст вместо фото". The hint now uses the reporter's own numbered
     path ("пункт 3"), because that is what they are looking at. Never print an internal
     identifier to a user.
+37. **A link inside a sub-item was invisible.** Reporters write evidence as `3.
+    Доказательства:` followed by `3.1. <link>`. Sub-item text is a separate token and is
+    not part of the parent field's value, so a check on the bound field alone never saw the
+    link - and the report validated as correct with the promotion link missing. The check
+    now scans the tokenized sub-items too. Whichever structure a field is *written* in, the
+    check must look at the text, not at the parsed value.
 
 ## Verification
 
