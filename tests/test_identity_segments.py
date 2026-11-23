@@ -89,3 +89,41 @@ def test_a_slid_system_idn_is_caught() -> None:
     identity_field = next(bound for bound in result.fields if bound.spec.id == "identity")
     value = identity_field.result.value or {}
     assert value.get("canonical") is None or value.get("nrp_idn") is None
+
+
+def test_a_trailing_pipe_is_precise_only_where_it_can_be() -> None:
+    """`FORMATION | PP/00NN |` is somebody showing where the system IDN goes.
+
+    Anywhere else a trailing pipe is a stray character. Treating it as an unfinished
+    record everywhere would make the rule asymmetric: a complete three-part record followed
+    by `|` is not waiting for a fourth part.
+    """
+    shows_where = parse_identity_field("SOB | 01/0016 |")
+    assert [issue.code for issue in shows_where.issues] == ["nrp_missing"], (
+        "the prefixed form must still ask for its system IDN"
+    )
+
+    for stray in ("SOB | 0016 |", "SOB | 01/0016 | 0017 |", "SOB | 0016 | 0017 |"):
+        result = parse_identity_field(stray)
+        codes = [issue.code for issue in result.issues]
+        assert codes == ["identity_bad_format"], f"{stray!r} is a stray pipe, got {codes}"
+
+
+def test_a_stray_comma_explains_the_separator_not_the_idn() -> None:
+    """The reporter's IDN is fine; blaming it sends them to look at the wrong part."""
+    result = parse_identity_field("ARC | 0042, , ARC | 0043")
+
+    assert not result.is_valid
+    assert [issue.code for issue in result.issues] == ["identity_empty_soldier"]
+
+    from dsbot.modules.reports.templates import issue_line
+
+    issue = result.issues[0]
+    line = issue_line(
+        issue.code,
+        "ru",
+        field_hint="?",
+        **{f"detail_{key}": value for key, value in issue.detail.items()},
+    )
+    assert "запятая" in line
+    assert "ФОРМИРОВАНИЕ" not in line, "the message must not blame the IDN"

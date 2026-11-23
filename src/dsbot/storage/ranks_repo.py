@@ -169,17 +169,9 @@ async def _refresh_roster_labels(
         await session.scalars(select(RosterMember).where(RosterMember.ladder_id == ladder_id))
     ).all()
     changed = 0
-    stale: set[str] = set()
-    stale_rows = 0
     for row in rows:
         spec = wanted.get(row.tier_key or "")
         if spec is None:
-            # The tier no longer exists in the file. The row is left alone on purpose - its
-            # requirement was already applied to past weeks - but somebody still shows up in
-            # the weekly table as owing reports under a tier that was abolished, so it must
-            # not be silent.
-            stale.add(row.tier_key or "?")
-            stale_rows += 1
             continue
         label = spec.label or spec.key
         if row.tier_label != label or row.tier_ordinal != spec.ordinal:
@@ -188,18 +180,6 @@ async def _refresh_roster_labels(
             changed += 1
     if changed:
         log.info("roster_labels_refreshed", ladder_id=ladder_id, rows=changed)
-    if stale:
-        log.warning(
-            "roster_stale_tiers",
-            ladder_id=ladder_id,
-            keys=sorted(stale),
-            rows=stale_rows,
-            hint=(
-                "These people are on roster rows whose tier is no longer in the ladder, so "
-                "they still appear in the weekly table. Run `dsbot roster-refresh` (or "
-                "`/dsbot roster-refresh`) to rebuild the roster from current roles."
-            ),
-        )
 
 
 async def _sync_tier_roles(session: AsyncSession, tier: RankTier, spec: Any) -> None:
@@ -229,6 +209,56 @@ async def _sync_tier_roles(session: AsyncSession, tier: RankTier, spec: Any) -> 
         await session.execute(delete(TierCapability).where(TierCapability.tier_id == tier.id))
         for capability in wanted_caps:
             session.add(TierCapability(tier_id=tier.id, capability=capability))
+
+
+async def report_stale_roster(session: AsyncSession) -> int:
+    """Warn about roster rows whose tier no longer exists in their ladder.
+
+    Called on **every** start, not only when a ladder changes. The state it describes is
+    persistent: a person whose tier was abolished keeps a roster row - deliberately, because
+    their requirement was already applied to past weeks - and therefore keeps appearing in
+    the weekly table. Warning only inside `_sync_tiers` made it a one-shot event, so the
+    next start said nothing while the state was unchanged, which is the silence this exists
+    to prevent.
+
+    Also catches a different route to the same state: a ladder file edited on a running bot
+    is re-applied by the file watcher without a restart, and that path never went through
+    the sync-time warning at all.
+
+    Returns the number of stale rows, so a caller can log or assert on it.
+    """
+    from dsbot.storage.models import RosterMember
+
+    stale: dict[int, set[str]] = {}
+    total = 0
+    ladders = (await session.scalars(select(RankLadder))).all()
+    for ladder in ladders:
+        keys = set(
+            (
+                await session.scalars(select(RankTier.key).where(RankTier.ladder_id == ladder.id))
+            ).all()
+        )
+        rows = (
+            await session.scalars(select(RosterMember).where(RosterMember.ladder_id == ladder.id))
+        ).all()
+        orphans = {row.tier_key or "?" for row in rows if (row.tier_key or "") not in keys}
+        if orphans:
+            stale[ladder.id] = orphans
+            total += sum(1 for row in rows if (row.tier_key or "") not in keys)
+
+    for ladder_id, keys in stale.items():
+        log.warning(
+            "roster_stale_tiers",
+            ladder_id=ladder_id,
+            keys=sorted(keys),
+            rows=total,
+            hint=(
+                "These people are on roster rows whose tier is no longer in the ladder, so "
+                "they still appear in the weekly table. Run `dsbot roster-refresh` (or "
+                "`/dsbot roster-refresh`) to rebuild the roster from current roles."
+            ),
+        )
+    return total
 
 
 async def _ladder_matches(session: AsyncSession, ladder: RankLadder, spec: LadderSpec) -> bool:

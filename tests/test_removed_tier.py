@@ -98,10 +98,14 @@ async def test_removing_a_tier_deletes_its_override(two_tiers: tuple[Database, i
     assert await _overrides(db) == [], "the override must be gone, not parked as NULL"
 
 
-async def test_a_removed_tier_warns_about_stale_roster_rows(
-    two_tiers: tuple[Database, int],
-) -> None:
-    """The people stay counted - their past weeks were judged - but silently is not allowed."""
+async def test_a_removed_tier_warns_on_every_start(two_tiers: tuple[Database, int]) -> None:
+    """The people stay counted - their past weeks were judged - but silently is not allowed.
+
+    The warning used to live inside `_sync_tiers`, so it fired once, when the ladder changed,
+    and never again while the state persisted. That is the same silence, just delayed, so
+    the check runs on every start now and keeps saying so until somebody re-scrapes.
+    """
+    from structlog.testing import capture_logs
 
     db, ladder_id = two_tiers
     async with db.write_session() as session:
@@ -126,24 +130,50 @@ async def test_a_removed_tier_warns_about_stale_roster_rows(
             ],
         )
 
-    # structlog does not go through `logging` unless configured to, so use its own capture.
-    from structlog.testing import capture_logs
+    async with db.write_session() as session:
+        await ranks_repo.replace_ladder(session, ladder(tier("keep", 10, roles=[111], required=2)))
 
-    with capture_logs() as events:
-        async with db.write_session() as session:
-            await ranks_repo.replace_ladder(
-                session, ladder(tier("keep", 10, roles=[111], required=2))
-            )
+    # Every subsequent start must warn again, because the state has not changed.
+    for start in range(3):
+        with capture_logs() as events:
+            async with db.session() as session:
+                stale_rows = await ranks_repo.report_stale_roster(session)
+        hits = [event for event in events if event.get("event") == "roster_stale_tiers"]
+        assert hits, f"start {start + 1} said nothing about the stale tier"
+        assert hits[0]["keys"] == ["drop"]
+        assert stale_rows == 1
 
     # The roster keeps the stale row on purpose: its requirement was already applied.
     async with db.session() as session:
         roster = await repos.list_roster(session, ladder_id)
     assert {row.user_id for row in roster} == {7, 8}
 
-    stale = [event for event in events if event.get("event") == "roster_stale_tiers"]
-    assert stale, f"a removed tier must be reported, got {[e.get('event') for e in events]}"
-    assert stale[0]["keys"] == ["drop"]
-    assert stale[0]["rows"] == 1
+
+async def test_no_warning_when_every_tier_still_exists(two_tiers: tuple[Database, int]) -> None:
+    from structlog.testing import capture_logs
+
+    db, ladder_id = two_tiers
+    async with db.write_session() as session:
+        await repos.replace_roster(
+            session,
+            ladder_id,
+            [
+                {
+                    "user_id": 7,
+                    "tier_key": "keep",
+                    "tier_label": "Keep",
+                    "tier_ordinal": 10,
+                    "required_per_week": 2,
+                }
+            ],
+        )
+
+    with capture_logs() as events:
+        async with db.session() as session:
+            stale_rows = await ranks_repo.report_stale_roster(session)
+
+    assert stale_rows == 0
+    assert not [event for event in events if event.get("event") == "roster_stale_tiers"]
 
 
 async def _overrides(db: Database) -> list[int]:

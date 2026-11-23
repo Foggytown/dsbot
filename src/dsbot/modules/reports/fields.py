@@ -450,12 +450,11 @@ def parse_identity(
     # how the `||` hole got in.
     soldiers = [part.strip() for part in text.split(",")]
     if any(not soldier for soldier in soldiers):
+        # A separate code, by the same logic as `semicolon_not_allowed`: the reporter's IDN
+        # is fine and the complaint is about the separator, so telling them "field 1 must be
+        # FORMATION | IDN" sends them to look at the one part that is correct.
         field_issues.append(
-            FieldIssue(
-                code="identity_bad_format",
-                field_id=field_id,
-                detail={"raw": text},
-            )
+            FieldIssue(code="identity_empty_soldier", field_id=field_id, detail={"raw": text})
         )
         return FieldResult(
             value={
@@ -551,9 +550,13 @@ def _parse_one_soldier(
     # A trailing separator with nothing after it is the common way somebody shows they
     # meant to add the system IDN. Leaving that as the precise message costs nothing:
     # `SOB | 01/0016 |` should say "the prefixed form needs its system IDN", not a generic
-    # "wrong format". This applies only when the IDN before it is prefixed and therefore
-    # *requires* a system IDN - a plain `SOB | 0016 |` is a stray pipe, not an oversight.
-    if len(parts) >= 3 and parts[-1] == "" and all(part for part in parts[:-1]) and "/" in parts[1]:
+    # "wrong format".
+    #
+    # Deliberately only for the exact three-part shape `FORMATION | PP/00NN |`, with the
+    # IDN before it prefixed and therefore *requiring* a system IDN. A plain
+    # `SOB | 0016 |` is a stray pipe, and `SOB | 01/0016 | 0017 |` is a stray pipe after a
+    # complete record - neither is somebody showing where the missing part goes.
+    if len(parts) == 3 and parts[-1] == "" and "/" in parts[1]:
         parts = parts[:-1]
 
     if any(not part for part in parts):

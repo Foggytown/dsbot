@@ -178,6 +178,16 @@ ISSUE_LINES: Final[dict[str, dict[str, str]]] = {
             "For example: ARC | 0042, ARC | 0043."
         ),
     },
+    "identity_empty_soldier": {
+        "ru": (
+            "- В пункте 1 лишняя запятая: между бойцами не должно быть пустого места. "
+            "Например: ARC | 0042, ARC | 0043."
+        ),
+        "en": (
+            "- Field 1 has a stray comma: no empty entry between soldiers. "
+            "For example: ARC | 0042, ARC | 0043."
+        ),
+    },
     "list_allowed_qualifications": {
         "ru": "- Допустимые квалификации: {detail_options}.",
         "en": "- Allowed qualifications: {detail_options}.",

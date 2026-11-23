@@ -52,6 +52,13 @@ async def sync_channels(
 
     ladder_ids = await _apply_ladders(session, spec, ladders_dir, result)
 
+    # Checked on every start, not only when a ladder changed: the state it reports persists.
+    # A person whose tier was abolished keeps their roster row on purpose, so the warning
+    # must repeat until somebody re-scrapes the roster.
+    from dsbot.storage import ranks_repo
+
+    await ranks_repo.report_stale_roster(session)
+
     for entry in spec.channels:
         form_path = _form_path(entry.form, forms_dir)
         schema = parse_form_file(form_path)
