@@ -443,8 +443,36 @@ def parse_identity(
             present=True,
         )
 
+    # Comma-separated soldiers. An empty element is reported, not dropped: `ARC | 0042, ,
+    # ARC | 0043` is a deviation from the template, and dropping the empty slot makes the
+    # bot silently accept a shape nobody wrote on purpose. It happens to lose nothing here
+    # (no number slides into a vacated position, as with `||`), but "harmless this time" is
+    # how the `||` hole got in.
     soldiers = [part.strip() for part in text.split(",")]
-    soldiers = [soldier for soldier in soldiers if soldier]
+    if any(not soldier for soldier in soldiers):
+        field_issues.append(
+            FieldIssue(
+                code="identity_bad_format",
+                field_id=field_id,
+                detail={"raw": text},
+            )
+        )
+        return FieldResult(
+            value={
+                "formation": None,
+                "raw": text,
+                "idn_text": None,
+                "lore_idn": None,
+                "nrp_idn": None,
+                "prefix": None,
+                "idn_kind": "plain",
+                "idn_number": None,
+                "canonical": None,
+                "all_identities": [],
+            },
+            issues=field_issues,
+            present=True,
+        )
 
     all_identities: list[dict[str, Any]] = []
     first_value: dict[str, Any] | None = None
@@ -519,6 +547,14 @@ def _parse_one_soldier(
     # `SOB | 01/0016 || 0017` would swallow the empty slot and lose the system IDN without
     # a word. Report the shape instead of repairing it.
     parts = [part.strip() for part in soldier.split("|")]
+
+    # A trailing separator with nothing after it is the common way somebody shows they
+    # meant to add the system IDN. Leaving that as the precise message costs nothing:
+    # `SOB | 01/0016 |` should say "the prefixed form needs its system IDN", not a generic
+    # "wrong format". This applies only when the IDN before it is prefixed and therefore
+    # *requires* a system IDN - a plain `SOB | 0016 |` is a stray pipe, not an oversight.
+    if len(parts) >= 3 and parts[-1] == "" and all(part for part in parts[:-1]) and "/" in parts[1]:
+        parts = parts[:-1]
 
     if any(not part for part in parts):
         issues.append(

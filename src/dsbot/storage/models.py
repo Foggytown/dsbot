@@ -485,6 +485,13 @@ class QuotaPolicy(Base):
     is a property of the rank: "an instructor files three reports a week". This table
     exists only for the exception - one channel needing a different number - so an admin
     does not have to fork the whole ladder to tune a single channel.
+
+    Only `required_count` is read. `period`, `rank_strategy`, `count_rejected` and
+    `count_pending` are left over from an earlier schema and are written by
+    `admin.set_quota` but never consulted: the count always uses the week and always
+    credits approved+pending+approved-unknown. They are kept rather than dropped because
+    the live database is the only copy of months of history and schema changes here are
+    additive only - but do not assume setting them does anything.
     """
 
     __tablename__ = "quota_policies"

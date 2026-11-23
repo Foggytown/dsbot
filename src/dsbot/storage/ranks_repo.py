@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import structlog
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dsbot.modules.ranks.ladder import LadderSpec
@@ -99,13 +99,17 @@ async def _sync_tiers(session: AsyncSession, ladder: RankLadder, spec: LadderSpe
     }
     wanted = {tier_spec.key: tier_spec for tier_spec in spec.tiers}
 
-    # 1. Remove tiers that are gone from the file, releasing any override pointing at them.
+    # 1. Remove tiers that are gone from the file, and any override that pointed at them.
+    #
+    # DELETE, not "set the reference to NULL". A row whose `tier_id` is NULL keys on None in
+    # `_required_by_tier`, while roster rows always carry a numeric ordinal, so it can never
+    # match anybody: it is not saved history but litter, and it looks like a global default
+    # in `get_quota_policies` while silently doing nothing. If the same tier key returns to
+    # the file later it gets a new `tier_id`, so the override would not come back anyway.
     for key, tier in stored.items():
         if key in wanted:
             continue
-        await session.execute(
-            update(QuotaPolicy).where(QuotaPolicy.tier_id == tier.id).values(tier_id=None)
-        )
+        await session.execute(delete(QuotaPolicy).where(QuotaPolicy.tier_id == tier.id))
         await session.delete(tier)
     await session.flush()
 
@@ -165,9 +169,17 @@ async def _refresh_roster_labels(
         await session.scalars(select(RosterMember).where(RosterMember.ladder_id == ladder_id))
     ).all()
     changed = 0
+    stale: set[str] = set()
+    stale_rows = 0
     for row in rows:
         spec = wanted.get(row.tier_key or "")
         if spec is None:
+            # The tier no longer exists in the file. The row is left alone on purpose - its
+            # requirement was already applied to past weeks - but somebody still shows up in
+            # the weekly table as owing reports under a tier that was abolished, so it must
+            # not be silent.
+            stale.add(row.tier_key or "?")
+            stale_rows += 1
             continue
         label = spec.label or spec.key
         if row.tier_label != label or row.tier_ordinal != spec.ordinal:
@@ -176,6 +188,18 @@ async def _refresh_roster_labels(
             changed += 1
     if changed:
         log.info("roster_labels_refreshed", ladder_id=ladder_id, rows=changed)
+    if stale:
+        log.warning(
+            "roster_stale_tiers",
+            ladder_id=ladder_id,
+            keys=sorted(stale),
+            rows=stale_rows,
+            hint=(
+                "These people are on roster rows whose tier is no longer in the ladder, so "
+                "they still appear in the weekly table. Run `dsbot roster-refresh` (or "
+                "`/dsbot roster-refresh`) to rebuild the roster from current roles."
+            ),
+        )
 
 
 async def _sync_tier_roles(session: AsyncSession, tier: RankTier, spec: Any) -> None:

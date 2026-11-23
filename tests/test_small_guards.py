@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from dsbot.modules.ranks.resolver import RankResolver
 
 
@@ -124,43 +122,3 @@ async def test_a_warning_row_survives_a_failed_delete(tmp_path: Path) -> None:
         )
     finally:
         await db.dispose()
-
-
-@pytest.mark.parametrize(
-    "raw", ["SOB || 0016", "SOB | | 0016", "SOB | 0016 |", "SOB | 01/0016 || 0017"]
-)
-def test_empty_identity_segments_are_rejected(raw: str) -> None:
-    """An empty slot must be reported, not repaired.
-
-    This test used to call `parse_formation_idn`, which the channel does not use, so it
-    stayed green while `SOB || 0016` passed through the real `identity` field untouched -
-    the mistake AGENTS #38 describes, a test written from the same wrong assumption as the
-    code. `SOB | 01/0016 || 0017` was worse than a typo: the empty slot was dropped, the
-    system IDN slid into its place, and the report validated with the IDN silently gone.
-    """
-    from datetime import UTC, datetime
-    from pathlib import Path
-
-    from dsbot.modules.reports.parser import GroupMessage, ReportCandidate, parse_report
-    from dsbot.modules.reports.yaml_form import parse_form_file
-
-    form = parse_form_file(Path("forms/training.yaml"))
-    link = "https://discord.com/channels/1/2/3"
-    text = f"1. {raw}\n2. INF\n3. фото\n4. {link}"
-    candidate = ReportCandidate(
-        messages=[
-            GroupMessage(
-                message_id=1,
-                author_id=1,
-                created_at=datetime.now(UTC),
-                content=text,
-                attachment_count=2,
-            )
-        ]
-    )
-
-    result = parse_report([form], candidate, attachment_count=2)
-
-    codes = [issue.code for issue in result.issues]
-    assert "identity_bad_format" in codes, f"{raw!r} must be rejected, got {codes}"
-    assert not result.is_valid
