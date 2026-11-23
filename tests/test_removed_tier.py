@@ -176,6 +176,103 @@ async def test_no_warning_when_every_tier_still_exists(two_tiers: tuple[Database
     assert not [event for event in events if event.get("event") == "roster_stale_tiers"]
 
 
+async def test_each_ladder_reports_its_own_row_count(tmp_path: Path) -> None:
+    """A shared `rows` total made every line overstate its own evidence.
+
+    Two ladders with one stale row each both logged `rows=2`, so the line pointed at a
+    number that only existed across ladders. A log that proves something other than what it
+    says is the same class of error as a diagnostic reporting zero while the feature works.
+    """
+    from structlog.testing import capture_logs
+
+    from dsbot.storage import admin, ranks_repo, repos
+    from dsbot.storage.db import Database
+
+    db = Database(Settings(database_url=f"sqlite+aiosqlite:///{tmp_path / 'multi.db'}"))
+    await db.create_all()
+    try:
+        async with db.write_session() as session:
+            await admin.ensure_schema_seed(session, DEFAULT_SCHEMAS)
+            await admin.bind_channel(
+                session,
+                guild_id=GUILD,
+                channel_id=CHANNEL,
+                module_key="reports",
+                schema_key="training_report",
+            )
+            for key, role in (("q1", 111), ("q2", 222)):
+                await ranks_repo.replace_ladder(
+                    session,
+                    LadderSpec(
+                        key=key,
+                        guild_id=GUILD,
+                        purpose="quota",
+                        tiers=[
+                            TierSpec(
+                                key="gone",
+                                label="Gone",
+                                ordinal=10,
+                                roles=[role],
+                                required_per_week=1,
+                            )
+                        ],
+                    ),
+                )
+        async with db.session() as session:
+            group = (await ranks_repo.load_all_ladders(session))[GUILD]
+            ladder_ids = [index.ladder_id for index in group.indexes if index.ladder_id]
+
+        # Two stale rows on each ladder, so a shared total would say 4 on both lines.
+        for ladder_id in ladder_ids:
+            async with db.write_session() as session:
+                await repos.replace_roster(
+                    session,
+                    ladder_id,
+                    [
+                        {
+                            "user_id": user,
+                            "tier_key": "gone",
+                            "tier_label": "Gone",
+                            "tier_ordinal": 10,
+                            "required_per_week": 1,
+                        }
+                        for user in (7, 8)
+                    ],
+                )
+        async with db.write_session() as session:
+            for key, role in (("q1", 111), ("q2", 222)):
+                await ranks_repo.replace_ladder(
+                    session,
+                    LadderSpec(
+                        key=key,
+                        guild_id=GUILD,
+                        purpose="quota",
+                        tiers=[
+                            TierSpec(
+                                key="keep",
+                                label="Keep",
+                                ordinal=10,
+                                roles=[role],
+                                required_per_week=1,
+                            )
+                        ],
+                    ),
+                )
+
+        with capture_logs() as events:
+            async with db.session() as session:
+                total = await ranks_repo.report_stale_roster(session)
+
+        assert total == 4, "the return value is the overall count"
+        lines = [e for e in events if e.get("event") == "roster_stale_tiers"]
+        assert len(lines) == 2
+        for line in lines:
+            assert line["rows"] == 2, f"each line must count its own ladder, got {line}"
+            assert line["untiered"] == 0
+    finally:
+        await db.dispose()
+
+
 async def _overrides(db: Database) -> list[int]:
     async with db.session() as session:
         rows = (await session.scalars(select(QuotaPolicy))).all()

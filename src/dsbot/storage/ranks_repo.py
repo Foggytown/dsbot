@@ -229,8 +229,11 @@ async def report_stale_roster(session: AsyncSession) -> int:
     """
     from dsbot.storage.models import RosterMember
 
-    stale: dict[int, set[str]] = {}
-    total = 0
+    # Counted per ladder, not globally. A single `rows` total shared by every line made each
+    # line claim more than it could support: two ladders with one stale row each both said
+    # `rows=2`. A log line that proves something other than what it says is the same class
+    # of error as a diagnostic that reports zero while the feature works.
+    stale: dict[int, tuple[set[str], int, int]] = {}
     ladders = (await session.scalars(select(RankLadder))).all()
     for ladder in ladders:
         keys = set(
@@ -241,17 +244,26 @@ async def report_stale_roster(session: AsyncSession) -> int:
         rows = (
             await session.scalars(select(RosterMember).where(RosterMember.ladder_id == ladder.id))
         ).all()
-        orphans = {row.tier_key or "?" for row in rows if (row.tier_key or "") not in keys}
+        orphans = [row for row in rows if (row.tier_key or "") not in keys]
         if orphans:
-            stale[ladder.id] = orphans
-            total += sum(1 for row in rows if (row.tier_key or "") not in keys)
+            stale[ladder.id] = (
+                {row.tier_key or "?" for row in orphans},
+                len(orphans),
+                # A row with no tier at all is a different problem from a tier that was
+                # removed: the scraper always writes `tier_key`, so it should not happen, and
+                # lumping the two together would misdescribe both.
+                sum(1 for row in orphans if not row.tier_key),
+            )
 
-    for ladder_id, keys in stale.items():
+    total = 0
+    for ladder_id, (keys, count, untiered) in stale.items():
+        total += count
         log.warning(
             "roster_stale_tiers",
             ladder_id=ladder_id,
             keys=sorted(keys),
-            rows=total,
+            rows=count,
+            untiered=untiered,
             hint=(
                 "These people are on roster rows whose tier is no longer in the ladder, so "
                 "they still appear in the weekly table. Run `dsbot roster-refresh` (or "
