@@ -432,7 +432,7 @@ class ReportService:
         async with self._db.session() as session:
             existing = await repos.get_validation_message(session, report_id)
 
-        post_message_id = await self._post_or_edit(
+        post_message_id, was_edited = await self._post_or_edit(
             context,
             existing.message_id if existing else None,
             body,
@@ -463,8 +463,12 @@ class ReportService:
         # nothing about *which* report was complained about, which made a real incident
         # impossible to diagnose from the log: every line was a bot message id, and the
         # only way back to the report was a database query.
+        #
+        # The event name distinguishes a new warning from an updated one. Both used to be
+        # `warning_posted`, so fixing one report produced three identical-looking lines with
+        # the same message id and read as duplicate posting.
         log.info(
-            "warning_posted",
+            "warning_edited" if was_edited else "warning_posted",
             channel_id=context.channel_id,
             report_id=report_id,
             report_message_id=report_message_id,
@@ -505,16 +509,24 @@ class ReportService:
         message_id: int | None,
         body: str,
         report_message_id: int,
-    ) -> int | None:
+    ) -> tuple[int | None, bool]:
+        """Post the warning, or edit the existing one. Returns (id, was_edited).
+
+        The flag matters for the log: the same call serves both "a warning appeared" and
+        "a warning was updated", and reporting an edit as `warning_posted` made a single
+        warning look like several. That is how one report produced three
+        `warning_posted` lines carrying the same message id, which reads as a duplicate-post
+        bug when nothing was posted at all.
+        """
         assert self._reply is not None
         if message_id is not None:
             edited = await self._reply.edit(context.channel_id, message_id, body)
             if edited:
-                return message_id
-            message_id = None
-        return await self._reply.send(
+                return message_id, True
+        posted = await self._reply.send(
             context.channel_id, body, reference_message_id=report_message_id
         )
+        return posted, False
 
     def _compose_warning(
         self,

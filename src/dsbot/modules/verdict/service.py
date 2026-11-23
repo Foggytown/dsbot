@@ -100,8 +100,13 @@ class VerdictService:
             )
 
         if update.changed:
+            # `previous=None` means the report had no verdict yet, so "changed to pending"
+            # is just the first evaluation of an unreviewed report. Logging that as a
+            # transition says a decision moved when nothing moved, and `by_user_id=None`
+            # on the line reads like an anonymous reviewer.
+            first_pending = previous is None and result.verdict == "pending"
             log.info(
-                "verdict_changed",
+                "verdict_initial" if first_pending else "verdict_changed",
                 report_id=report_id,
                 previous=previous,
                 verdict=result.verdict,
