@@ -14,15 +14,24 @@ Deployed phases:
 - **Phase 2 (done):** cross-server rank resolution, verdict engine from reactions.
 - **Phase 3 (done):** counting reports per person for any period, read from Discord
   history; roster and quota ladders; slash commands; CSV and optional publication.
-- **Next (not started):** scheduled weekly posting. Possible later: ingesting reactions
-  as they happen so recent scans need no API calls; dashboards.
+- **Phase 4 (done, running live):** a per-channel close time via `/results set`, and the
+  bot publishes the finished period itself into `/dsbot report-target`.
+- **Next:** nothing scheduled. Possible later: ingesting reactions as they happen so
+  recent scans need no API calls; dashboards.
 
-**Where things stand.** Phase 3 is deployed and working on the real server: both channels
-are bound, the roster is scraped, and `/reports count` produces numbers. Phase 4 - the
-periodic report - is implemented: a channel stores its own close time via `/results set`,
-and the bot publishes the finished period into the channel named by `/dsbot report-target`.
+**Where things stand.** Both earlier phases are deployed, and phase 4 has now closed a real
+week unattended on the server: `period_closed period='16.11.2026–22.11.2026 (7 дн.)'
+people=43 pages=1`, published into a separate channel with the schedule rolled forward. The
+warning lifecycle also works end to end: editing a report three times shrank its warning and
+then removed it.
+
 Open decisions are listed at the end of this file under "Open questions" — read them before
 starting new work; several are choices that belong to the community, not to code.
+
+**Before trusting any diagnosis, check it against the real form and real data.** A whole
+class of mistakes in this project came from testing `DEFAULT_SCHEMAS` (a legacy built-in)
+instead of `forms/training.yaml`, and from asserting a behaviour instead of observing it.
+See mistakes 38 and 43.
 
 **The panel's settings are a web form, not a `.env` file.** Values persist across uploads,
 so a stale entry keeps applying until somebody deletes it by hand. Keep it minimal — token
@@ -615,6 +624,33 @@ Each of these shipped and had to be found by a live run or a user report.
     after the parser twice before pointing at the handler that never ran. When a bug is
     "nothing happened", find the log line that *would* have been written and establish that
     it is absent - do not reason from a line that describes a different event.
+40. **One log line for two different events.** `warning_posted` was emitted for both posting
+    a new warning and editing an existing one, so fixing one report produced three identical
+    lines carrying the same message id. That reads as duplicate posting and will be reported
+    as a bug against code that is working. `_post_or_edit` now returns whether it edited, and
+    the event is `warning_edited`. Same for `verdict_changed`, which was logged for the
+    *first* evaluation of a report that had no verdict yet - nothing changed, and
+    `by_user_id=None` on a line about a decision reads like an anonymous reviewer. It is
+    `verdict_initial` now. Name a log line after the event that actually happened.
+41. **A warning that fires once for a state that persists.** The stale-roster warning lived
+    inside `_sync_tiers`, which only runs when a ladder changes. It fired at the deploy that
+    removed a tier and never again, while the person kept appearing in the weekly table under
+    an abolished tier. An event-shaped check for a state-shaped problem. The check now runs
+    from `sync_channels` on every start, so it repeats until somebody re-scrapes - and it
+    also catches a ladder edited on a running bot, which never went through the sync-time
+    path at all.
+42. **A log line that counts the wrong thing.** `roster_stale_tiers` summed every orphan row
+    across all ladders and printed that total on each line: two ladders with one stale row
+    each both logged `rows=2`. Count per ladder, and say so. A log that proves something
+    other than what it claims is the same class as a diagnostic that reports zero while the
+    feature works.
+43. **An empty slot silently repaired.** `SOB || 0016` and `SOB | 01/0016 || 0017` passed as
+    valid because empty segments were filtered out; in the second the system IDN slid into
+    the vacated position and was lost without a word. An empty slot is a deviation, not a
+    typo to fix silently: it is `identity_bad_format` now, and an empty comma-separated
+    soldier is `identity_empty_soldier` (the IDN is fine, the complaint is about the
+    separator). The lesson underneath: a test that calls a parser production does not use
+    proves nothing - it was written from the same wrong assumption and stayed green.
 
 ## Verification
 
@@ -692,6 +728,19 @@ scripts/e2e-run-matches-count.py run and count render the same table
 scripts/audit-warnings.py     read-only: which reports were warned about, and why
 scripts/e2e-panel-start.py    panel startup: bindings appear, bad DB URL ignored
 scripts/show-commands.py      print every slash command and its parameters
+```
+
+Test files worth knowing, because each pins one decision:
+
+```
+tests/test_ladder_in_place.py    an edited ladder keeps overrides and the roster
+tests/test_form_edits_survive.py a Discord edit survives restart; git wins on change
+tests/test_roster_scope.py       review-only people are not in the weekly table
+tests/test_removed_tier.py       a removed tier warns on every start, override deleted
+tests/test_identity_segments.py  empty IDN slots rejected, on the REAL form
+tests/test_log_honesty.py        a post is not an edit, a first verdict is not a change
+tests/test_publish_contract.py   all pages or nothing; one access probe, not two
+tests/test_stale_warning.py      an existing warning is maintained, never frozen
 ```
 
 ## Phase 4 in one page
